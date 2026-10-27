@@ -9,7 +9,9 @@ import { ILightClient } from "contracts/light-clients/interfaces/ILightClient.so
 /// @notice Interface for the access controlled functions of the IBC v2 light client router
 interface IICS02ClientAccessControlled {
     /// @notice Adds a client to the client router.
-    /// @dev Only a caller with `CLIENT_ID_CUSTOMIZER_ROLE` can call this function.
+    /// @dev Only a caller with `ID_CUSTOMIZER_ROLE` can call this function. The client must hold code and the
+    /// counterparty Merkle prefix must have at least one element. Clients are not deduplicated: see the default
+    /// overload.
     /// @param clientId The custom client identifier
     /// @param counterpartyInfo The counterparty client information
     /// @param client The address of the client contract
@@ -125,6 +127,11 @@ interface IICS02Client is IICS02ClientAccessControlled {
     function getNextClientSeq() external view returns (uint256);
 
     /// @notice Adds a client to the client router.
+    /// @dev Anyone can call this function. The client must hold code and the counterparty Merkle prefix must have
+    /// at least one element. Clients are not deduplicated: a second local client that names the same counterparty
+    /// client id shares that counterparty's receipt and acknowledgement paths, so a packet sent through it can be
+    /// acknowledged with an unrelated packet's acknowledgement and cannot time out. Use only client identifiers
+    /// that were registered by the operator.
     /// @param counterpartyInfo The counterparty client information
     /// @param client The address of the client contract
     /// @return The client identifier

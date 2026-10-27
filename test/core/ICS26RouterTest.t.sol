@@ -18,7 +18,7 @@ import { IAccessManaged } from "@openzeppelin-contracts/access/manager/IAccessMa
 import { IIBCApp } from "contracts/core/interfaces/IIBCApp.sol";
 
 import { ICS26Router } from "contracts/core/ICS26Router.sol";
-import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { ISpectreTendermintMsgs } from "contracts/light-clients/spectre/messages/ISpectreTendermintMsgs.sol";
 import { IMembershipMsgs } from "contracts/light-clients/spectre/messages/IMembershipMsgs.sol";
 import { ICS20Lib } from "contracts/apps/ics20/libraries/ICS20Lib.sol";
 import { ICS24Host } from "contracts/core/libraries/ICS24Host.sol";
@@ -73,6 +73,8 @@ contract ICS26RouterTest is Test {
         accessManager.grantRole(IBCRolesLib.PAUSER_ROLE, pauser, 0);
         accessManager.grantRole(IBCRolesLib.UNPAUSER_ROLE, unpauser, 0);
 
+        // `addClient` rejects an address without code; the calls to the client are mocked below
+        vm.etch(mockClient, hex"00");
         ics26Router.addClient(
             IICS02ClientMsgs.CounterpartyInfo("42-dummy-01", testHelper.COSMOS_MERKLE_PREFIX()), mockClient
         );
@@ -85,7 +87,7 @@ contract ICS26RouterTest is Test {
                 kvPairs: new IMembershipMsgs.KVPair[](0),
                 merkleProofs: new IMembershipMsgs.MerkleProof[](0),
                 appHash: bytes32(0),
-                trustedConsensusState: IICS07TendermintMsgs.ConsensusState({
+                trustedConsensusState: ISpectreTendermintMsgs.ConsensusState({
                     timestamp: 0, root: bytes32(0), nextValidatorsHash: bytes32(0)
                 }),
                 membershipType: IMembershipMsgs.MembershipType.Membership,
@@ -345,6 +347,42 @@ contract ICS26RouterTest is Test {
         );
 
         vm.expectRevert(IICS24HostErrors.IBCMultiPayloadPacketNotSupported.selector);
+        vm.prank(relayer);
+        ics26Router.timeoutPacket(IICS26RouterMsgs.MsgTimeoutPacket({ packet: packet, nonMembershipMsg: bytes("") }));
+    }
+
+    function test_failure_counterpartyMismatch() public {
+        string memory otherClient = "not-the-registered-counterparty";
+        IICS26RouterMsgs.Packet memory packet = IICS26RouterMsgs.Packet({
+            sequence: 1,
+            sourceClient: otherClient,
+            destClient: testHelper.FIRST_CLIENT_ID(),
+            timeoutTimestamp: uint64(block.timestamp + 1000),
+            payloads: new IICS26RouterMsgs.Payload[](1)
+        });
+
+        // An inbound packet names its sender's client, which must be the counterparty of the receiving client
+        vm.expectRevert(
+            abi.encodeWithSelector(IICS26RouterErrors.IBCInvalidCounterparty.selector, "42-dummy-01", otherClient)
+        );
+        vm.prank(relayer);
+        ics26Router.recvPacket(IICS26RouterMsgs.MsgRecvPacket({ packet: packet, membershipMsg: bytes("") }));
+
+        // An ack or timeout names the destination client, which must be the counterparty of the sending client
+        packet.sourceClient = testHelper.FIRST_CLIENT_ID();
+        packet.destClient = otherClient;
+
+        vm.expectRevert(
+            abi.encodeWithSelector(IICS26RouterErrors.IBCInvalidCounterparty.selector, "42-dummy-01", otherClient)
+        );
+        vm.prank(relayer);
+        ics26Router.ackPacket(
+            IICS26RouterMsgs.MsgAckPacket({ packet: packet, acknowledgement: bytes(""), membershipMsg: bytes("") })
+        );
+
+        vm.expectRevert(
+            abi.encodeWithSelector(IICS26RouterErrors.IBCInvalidCounterparty.selector, "42-dummy-01", otherClient)
+        );
         vm.prank(relayer);
         ics26Router.timeoutPacket(IICS26RouterMsgs.MsgTimeoutPacket({ packet: packet, nonMembershipMsg: bytes("") }));
     }

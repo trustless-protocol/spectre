@@ -11,13 +11,30 @@ import (
 	relayerclient "relayer/client"
 	"strconv"
 	"time"
+
+	"github.com/ethereum/go-ethereum/common/hexutil"
 )
 
 func cosmosCurrentSlotReady(currentSlot, sigSlot uint64) bool {
 	return currentSlot >= sigSlot+cosmosCatchUpSafetySlots
 }
 
-func (w *Worker) buildEthClientUpdateHeadersWithPeriodCrossing(stdCtx context.Context, beaconAPIURL string, ethClientState *relayerclient.EthereumClientState, trustedSlot, trustedPeriod, targetPeriod uint64, finalityUpdate *relayerclient.LightClientFinalityUpdate, finalizedSlot uint64) ([][]byte, error) {
+// executionHeaderRLPHex returns the hex RLP execution header the wasm client needs for a finalized
+// header in the Gloas format, or "" for a pre-Gloas-format header, which carries its own payload
+// header. Fetching it here also checks the header against its proven block hash, so a node that
+// serves the wrong bytes fails now rather than after a transaction has been paid for.
+func executionHeaderRLPHex(ctx context.Context, source relayerclient.RawHeaderSource, finalized relayerclient.LightClientHeader) (string, error) {
+	if !finalized.IsGloasFormat() {
+		return "", nil
+	}
+	_, raw, err := relayerclient.ResolveExecution(ctx, source, finalized)
+	if err != nil {
+		return "", err
+	}
+	return hexutil.Encode(raw), nil
+}
+
+func (w *Worker) buildEthClientUpdateHeadersWithPeriodCrossing(stdCtx context.Context, beaconAPIURL string, source relayerclient.RawHeaderSource, ethClientState *relayerclient.EthereumClientState, trustedSlot, trustedPeriod, targetPeriod uint64, finalityUpdate *relayerclient.LightClientFinalityUpdate, finalizedSlot uint64) ([][]byte, error) {
 	count := targetPeriod - trustedPeriod + 1
 	bctx, bcancel := context.WithTimeout(stdCtx, 15*time.Second)
 	lightClientUpdates, err := relayerclient.GetLightClientUpdates(bctx, beaconAPIURL, trustedPeriod, count)
@@ -69,12 +86,17 @@ func (w *Worker) buildEthClientUpdateHeadersWithPeriodCrossing(stdCtx context.Co
 			return nil, err
 		}
 
+		executionRLP, err := executionHeaderRLPHex(stdCtx, source, update.FinalizedHeader)
+		if err != nil {
+			return nil, fmt.Errorf("execution header for finalized slot %d: %w", updateFinalizedSlot, err)
+		}
 		header := relayerclient.EthereumHeader{
 			ActiveSyncCommittee: relayerclient.ActiveSyncCommittee{
 				Next: &syncCommittee,
 			},
-			ConsensusUpdate: update,
-			TrustedSlot:     latestTrustedSlot,
+			ConsensusUpdate:    update,
+			TrustedSlot:        latestTrustedSlot,
+			ExecutionHeaderRLP: executionRLP,
 		}
 
 		headerBytes, err := json.Marshal(header)
@@ -132,10 +154,15 @@ func (w *Worker) buildEthClientUpdateHeadersWithPeriodCrossing(stdCtx context.Co
 			SignatureSlot:           finalityUpdate.SignatureSlot,
 		}
 
+		executionRLP, err := executionHeaderRLPHex(stdCtx, source, finalityUpdate.FinalizedHeader)
+		if err != nil {
+			return nil, fmt.Errorf("execution header for finalized slot %d: %w", finalizedSlot, err)
+		}
 		header := relayerclient.EthereumHeader{
 			ActiveSyncCommittee: activeSyncCommittee,
 			ConsensusUpdate:     consensusUpdate,
 			TrustedSlot:         latestTrustedSlot,
+			ExecutionHeaderRLP:  executionRLP,
 		}
 
 		headerBytes, err := json.Marshal(header)
@@ -193,24 +220,22 @@ func cloneEthereumClientState(state *relayerclient.EthereumClientState) *relayer
 	return &cloned
 }
 
-func ethProofStateFromFinalityUpdate(base *relayerclient.EthereumClientState, finalityUpdate *relayerclient.LightClientFinalityUpdate, finalizedSlot uint64) (*relayerclient.EthereumClientState, uint64, error) {
+func ethProofStateFromFinalityUpdate(ctx context.Context, source relayerclient.RawHeaderSource, base *relayerclient.EthereumClientState, finalityUpdate *relayerclient.LightClientFinalityUpdate, finalizedSlot uint64) (*relayerclient.EthereumClientState, uint64, error) {
 	proofState := cloneEthereumClientState(base)
 	if proofState == nil {
 		return nil, 0, fmt.Errorf("ethereum client state is nil")
 	}
 
-	finalizedExecutionBlock, err := strconv.ParseUint(finalityUpdate.FinalizedHeader.Execution.BlockNumber, 10, 64)
+	// The same values the wasm client stores when it applies this update, so proofs are built
+	// against the execution block the client will trust.
+	execution, _, err := relayerclient.ResolveExecution(ctx, source, finalityUpdate.FinalizedHeader)
 	if err != nil {
-		return nil, 0, fmt.Errorf("failed to parse finalized execution block number: %w", err)
-	}
-	finalizedTimestamp, err := strconv.ParseUint(finalityUpdate.FinalizedHeader.Execution.Timestamp, 10, 64)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to parse finalized execution timestamp: %w", err)
+		return nil, 0, fmt.Errorf("failed to resolve finalized execution header: %w", err)
 	}
 
 	proofState.LatestSlot = finalizedSlot
-	proofState.LatestExecutionBlockNumber = finalizedExecutionBlock
-	return proofState, finalizedTimestamp, nil
+	proofState.LatestExecutionBlockNumber = execution.BlockNumber
+	return proofState, execution.Timestamp, nil
 }
 
 // parseSlot parses a slot string to uint64

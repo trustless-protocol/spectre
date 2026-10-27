@@ -29,6 +29,17 @@ type TrackFunc func(packet []byte, height uint64) bool
 // so the timeout scanner stops considering a packet that can no longer time out.
 type UntrackFunc func(packet []byte)
 
+// PendingSettledFunc reports whether a terminal source event has already closed
+// this exact packet in the durable pending tracker. It is intentionally separate
+// from chain.Destination settlement checks: this closes the local handoff race,
+// where a terminal event and the batch handler run concurrently.
+type PendingSettledFunc func(packet []byte) bool
+
+// MarkPendingSettledFunc persists a settlement learned from a destination check.
+// It returns false only when durable persistence failed; callers still skip the
+// known-settled packet and log the degraded persistence separately.
+type MarkPendingSettledFunc func(packet []byte) bool
+
 // ClientUpdateObserver records the source-chain timestamp trusted by a client
 // after an update is submitted or the builder confirms it is current.
 type ClientUpdateObserver func(trustedAt time.Time)
@@ -59,16 +70,25 @@ func WithTimeoutScanner(interval time.Duration, scan ScanFunc) Option {
 
 // WithPacketTracker records every recv-relayed (SendPacket) packet via track, so
 // the path's timeout scanner can refund it if delivery never completes. Tracking
-// happens regardless of relay outcome (mirrors the legacy "track every send"
-// invariant), so a packet that fails to relay and then times out is still
-// refunded. untrack removes a packet once the relay succeeds — after delivery it
-// can no longer time out, so keeping it in the tracker only bloats it and makes
-// the scanner query a receipt it will always find (mirrors the legacy handleCosmos
-// PendingTracker.Remove-on-recv). untrack may be nil (no removal hook).
+// happens regardless of relay outcome, so a packet that fails to relay and then
+// times out is still refunded. untrack removes a packet once the relay succeeds —
+// after delivery it can no longer time out, so keeping it in the tracker only
+// bloats it and makes the scanner query a receipt it will always find. untrack
+// may be nil (no removal hook).
 func WithPacketTracker(track TrackFunc, untrack UntrackFunc) Option {
 	return func(m *Module) {
 		m.track = track
 		m.untrack = untrack
+	}
+}
+
+// WithPendingSettlementGuard wires the durable terminal-tombstone operations for
+// a packet tracker. It is paired with WithPacketTracker on paths whose source can
+// emit a terminal event while a packet is already handed to handleBatch.
+func WithPendingSettlementGuard(isSettled PendingSettledFunc, markSettled MarkPendingSettledFunc) Option {
+	return func(m *Module) {
+		m.pendingSettled = isSettled
+		m.markPendingSettled = markSettled
 	}
 }
 

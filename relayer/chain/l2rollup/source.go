@@ -106,6 +106,15 @@ type Source struct {
 	// without it.
 	includeProvisional bool
 
+	// cosmosState reconciles scanned events against what Cosmos already records,
+	// so a packet another relayer settled is not proven a second time. nil skips
+	// reconciliation entirely (one-shot and test callers).
+	cosmosState CosmosPacketState
+
+	// recovery persists the scan cursor across restarts. nil keeps the cursor in
+	// memory only, which is what the tests and any one-shot caller want.
+	recovery *services.RecoveryStateStore
+
 	// settle is called for terminal L2 events; see WithSettleHook. nil means the
 	// source drops them, which is what it did before terminal events were read.
 	settle func(packet []byte)
@@ -115,6 +124,10 @@ type Source struct {
 	// terminal and settles no debt. nil means no ledger is running.
 	settleAck func(packet []byte)
 
+	// track registers a send with the pending tracker; see WithPendingTracker.
+	// nil means the enumeration backstop cannot register what it skips.
+	track func(packet []byte, height uint64) bool
+
 	// logScanChunk caps the block span of a single eth_getLogs. 0 means "one call
 	// for the whole range", which is what every provider that does not cap the span
 	// wants. Providers that do cap it vary by three orders of magnitude (Alchemy's
@@ -122,6 +135,15 @@ type Source struct {
 	// names neither the setting nor a workable value — so this is configuration,
 	// not a constant.
 	logScanChunk uint64
+
+	// routerDeployBlock is the block the L2 router was deployed at; 0 when not
+	// configured. The flush's log lookups start there (see evmflush.Router).
+	routerDeployBlock uint64
+
+	// flush is the enumeration backstop's cursors and log-range policy; see
+	// flush.go. Touched only from UnrelayedPackets, which the relay module calls
+	// on one goroutine.
+	flush flushState
 }
 
 // Source satisfies chain.Source.
@@ -142,6 +164,33 @@ func NewSource(chainType chain.ChainType, eth *ethclient.Client, headKind HeadKi
 		srcChainID:         srcChainID,
 		includeProvisional: includeProvisional,
 	}
+}
+
+// WithRecoveryState gives this source a durable scan cursor. Without one the
+// cursor lives only in Subscribe's stack frame, so a restart resumes at
+// head - L2_STARTUP_LOOKBACK_BLOCKS and anything older is never rescanned --
+// an acknowledgement written before that window strands its packet, and its
+// escrow with it, silently (#308).
+//
+// An option rather than a constructor parameter because it is genuinely
+// optional: the one-shot and test paths run without durable state, and
+// NewSource already carries nine arguments.
+func (s *Source) WithRecoveryState(store *services.RecoveryStateStore) *Source {
+	s.recovery = store
+	return s
+}
+
+// WithCosmosPacketState lets the scan reconcile against Cosmos before relaying:
+// an event whose work is already settled there is dropped rather than proven
+// again. Without it the L2 path is the only one of the four that relays purely on
+// what it saw in a block, with no on-chain check that the work is still needed --
+// so a second relayer settling a packet leaves this one proving it anyway.
+//
+// An option, not a constructor parameter, for the same reason as
+// WithRecoveryState: the one-shot and test paths have no Cosmos endpoint.
+func (s *Source) WithCosmosPacketState(state CosmosPacketState) *Source {
+	s.cosmosState = state
+	return s
 }
 
 // WithLogScanChunk caps the block span of each eth_getLogs this source issues.
@@ -180,8 +229,32 @@ func (s *Source) WithAckSettleHook(settle func(packet []byte)) *Source {
 	return s
 }
 
+// WithPendingTracker lets the enumeration backstop register a send it is about
+// to skip. The backstop drops a send already past its timeout instead of
+// relaying it, leaving the refund to the timeout scanner -- but the scanner reads
+// only the pending tracker, and a send the block scan missed was never put there.
+// Sends the backstop DOES return are tracked by the module's own hook; this one
+// covers the ones it does not.
+//
+// It takes the proto-marshaled packet and its block height, the form of the
+// module's relay.TrackFunc, and reports false when the durable write failed.
+//
+// Optional; without it an expired send found only by the backstop is not refunded.
+func (s *Source) WithPendingTracker(track func(packet []byte, height uint64) bool) *Source {
+	s.track = track
+	return s
+}
+
 func (s *Source) WithLogScanChunk(n uint64) *Source {
 	s.logScanChunk = n
+	return s
+}
+
+// WithRouterDeployBlock sets the block the L2 router was deployed at, so the
+// enumeration backstop asks for the router's whole history in one log query
+// instead of walking bounded windows back from the head. 0 keeps the walk.
+func (s *Source) WithRouterDeployBlock(n uint64) *Source {
+	s.routerDeployBlock = n
 	return s
 }
 
@@ -206,7 +279,7 @@ func (s *Source) RelayableHeight(ctx context.Context) (uint64, error) {
 	defer cancel()
 	root, found, err := s.attestor.AttestedUpTo(cctx, s.srcChainID, s.includeProvisional)
 	if err != nil {
-		return 0, classifyAttestorFailure("L2Source:"+s.srcChainID,
+		return 0, classifyAttestorFailure("RelayableHeight",
 			fmt.Errorf("l2 source: attested-up-to (kind=%d): %w", s.headKind, err))
 	}
 	if !found {
@@ -329,6 +402,15 @@ func l2StorageProof(ctx context.Context, l2 *ethclient.Client, router ethcommon.
 	}
 	copy(value[len(value)-len(sp.Value):], sp.Value) // left-pad to the full word
 
+	// An all-zero word is an empty slot, not a commitment. Marshalling it anyway
+	// produces a proof the L2 wasm client rejects, which costs a transaction and
+	// reads as permanent -- dropping a packet whose only problem was being proven
+	// at a height the destination client had not reached yet.
+	if value == ([32]byte{}) {
+		return nil, fmt.Errorf("l2 source: commitment slot %s is empty at height %d: %w",
+			storageKey.Hex(), height, relayerclient.ErrCommitmentAbsent)
+	}
+
 	return json.Marshal(EvmStorageProof{
 		Key:   hexBytes(storageKey.Bytes()),
 		Value: byteList(value[:]),
@@ -336,7 +418,35 @@ func l2StorageProof(ctx context.Context, l2 *ethclient.Client, router ethcommon.
 	})
 }
 
-// NonMembershipProof is unused on the L2 source relay path: L2-origin packet
+// NonMembershipProof proves that the L2 router has not written the receipt for
+// a Cosmos-origin packet at height. It emits the bare EvmStorageProof expected
+// by the attestor-backed L2 wasm client; the Ethereum beacon proof envelope is
+// incompatible with that client.
+//
+// This is exported for the Cosmos->L2 timeout scanner. The normal L2 source
+// path only proves membership because its own timeouts are settled on the L2.
+func NonMembershipProof(ctx context.Context, l2 *ethclient.Client, router ethcommon.Address, packet channeltypesv2.Packet, height uint64) ([]byte, error) {
+	path := services.EthPath(packet.DestinationClient, packet.Sequence, 2)
+	storageKey := crypto.Keccak256Hash(crypto.Keccak256(path), ethcommon.HexToHash(services.ICS26_IBC_STORAGE_SLOT).Bytes())
+	raw, err := relayerclient.EthGetProof(ctx, l2, router, []ethcommon.Hash{storageKey}, new(big.Int).SetUint64(height))
+	if err != nil {
+		return nil, fmt.Errorf("l2 source: prove absent receipt at height %d: %w", height, err)
+	}
+	if len(raw.Storage) == 0 {
+		return nil, fmt.Errorf("l2 source: eth_getProof returned no storage proof for receipt key %s", storageKey.Hex())
+	}
+	sp := raw.Storage[0]
+	if len(sp.Value) != 0 {
+		return nil, fmt.Errorf("l2 source: receipt slot %s is populated at height %d: %w", storageKey.Hex(), height, relayerclient.ErrPacketAlreadyReceived)
+	}
+	return json.Marshal(EvmStorageProof{
+		Key:   hexBytes(storageKey.Bytes()),
+		Value: byteList(sp.Value),
+		Proof: byteMatrix(sp.Proof),
+	})
+}
+
+// Source.NonMembershipProof is unused on the L2 source relay path: L2-origin packet
 // timeouts are handled by the async timeout scanner (as on the ETH source), not the
 // Subscribe->relay flow, so no TimeoutPacket event reaches here.
 func (s *Source) NonMembershipProof(_ context.Context, _ []byte, _ uint64) ([]byte, error) {

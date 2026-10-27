@@ -36,6 +36,7 @@
         "l2_wasm_client_id": "08-wasm-3",
         "l2_ics26_client_id": "base-client-0",
         "head_kind": "safe",
+        "router_deploy_block": 0,
         "rollup_profile": {
           "common": {
             "l2_chain_id": 84538453,

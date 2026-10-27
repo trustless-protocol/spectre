@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"relayer/logbridge"
 )
 
 // blackHoleServer accepts the request and then never writes a response, holding
@@ -34,7 +36,7 @@ func blackHoleServer(t *testing.T) *httptest.Server {
 	return srv
 }
 
-func TestDialEthRPCBoundsAHangingCall(t *testing.T) {
+func TestDialEthRPC_BoundsAHangingCall(t *testing.T) {
 	srv := blackHoleServer(t)
 
 	c, err := DialEthRPC(context.Background(), srv.URL, 250*time.Millisecond)
@@ -62,7 +64,7 @@ func TestDialEthRPCBoundsAHangingCall(t *testing.T) {
 	}
 }
 
-func TestDialEthRPCLeavesWebsocketUnbounded(t *testing.T) {
+func TestDialEthRPC_LeavesWebsocketUnbounded(t *testing.T) {
 	// A ws:// URL must not receive an http.Client deadline — an event
 	// subscription is long-lived by design. Dialing a closed port fails either
 	// way, so assert on the option plumbing instead: the call must not report a
@@ -88,66 +90,68 @@ func TestDialEthRPCLeavesWebsocketUnbounded(t *testing.T) {
 	}
 }
 
-func TestDialCosmosRPCBoundsAHangingCall(t *testing.T) {
-	srv := blackHoleServer(t)
+func TestDialCosmosRPC(t *testing.T) {
+	t.Run("bounds a hanging call", func(t *testing.T) {
+		srv := blackHoleServer(t)
 
-	c, err := DialCosmosRPC(srv.URL, "/websocket", 250*time.Millisecond)
-	if err != nil {
-		t.Fatalf("DialCosmosRPC: %v", err)
-	}
-
-	done := make(chan error, 1)
-	go func() {
-		_, err := c.Status(context.Background())
-		done <- err
-	}()
-
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("expected the hanging call to fail, got nil error")
+		c, err := DialCosmosRPC(srv.URL, "/websocket", 250*time.Millisecond)
+		if err != nil {
+			t.Fatalf("DialCosmosRPC: %v", err)
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("call did not return: the transport timeout was not applied")
-	}
+
+		done := make(chan error, 1)
+		go func() {
+			_, err := c.Status(context.Background())
+			done <- err
+		}()
+
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatal("expected the hanging call to fail, got nil error")
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("call did not return: the transport timeout was not applied")
+		}
+	})
+
+	// TestDialCosmosRPC/does not time out the subscription pins the property the whole
+	// approach rests on: the deadline must reach the JSON-RPC caller and not the
+	// WebSocket client, or it would silently undo the live-path fix in #377.
+	t.Run("does not time out the subscription", func(t *testing.T) {
+		srv := blackHoleServer(t)
+
+		c, err := DialCosmosRPC(srv.URL, "/websocket", time.Nanosecond)
+		if err != nil {
+			t.Fatalf("DialCosmosRPC: %v", err)
+		}
+		if c.WSEvents == nil {
+			t.Fatal("WSEvents is nil: the subscription client was not constructed")
+		}
+		// WSEvents holds its own connection, built by newWSEvents without reference
+		// to the http.Client we bounded — so an absurdly small HTTP timeout must not
+		// have prevented it from being set up.
+	})
+
+	// The two failures that decide whether a live Cosmos subscription is alive are
+	// reported only through CometBFT's logger, which is a nop until SetLogger is
+	// called. Nothing in this repository called it, so a resubscribe that gave up
+	// and every event dropped on a full channel left no trace in any log. This pins
+	// the wiring, because losing it again would be invisible.
+	t.Run("wires the comet logger", func(t *testing.T) {
+		c, err := DialCosmosRPC("http://127.0.0.1:26657", "/websocket", DefaultRPCTimeout)
+		if err != nil {
+			t.Fatalf("DialCosmosRPC: %v", err)
+		}
+		if _, ok := c.WSEvents.Logger.(cometLogger); !ok {
+			t.Fatalf("WSEvents logger is %T, want cometLogger: CometBFT's subscription errors go to a nop logger without it", c.WSEvents.Logger)
+		}
+	})
 }
 
-// TestDialCosmosRPCDoesNotTimeOutTheSubscription pins the property the whole
-// approach rests on: the deadline must reach the JSON-RPC caller and not the
-// WebSocket client, or it would silently undo the live-path fix in #377.
-func TestDialCosmosRPCDoesNotTimeOutTheSubscription(t *testing.T) {
-	srv := blackHoleServer(t)
-
-	c, err := DialCosmosRPC(srv.URL, "/websocket", time.Nanosecond)
-	if err != nil {
-		t.Fatalf("DialCosmosRPC: %v", err)
-	}
-	if c.WSEvents == nil {
-		t.Fatal("WSEvents is nil: the subscription client was not constructed")
-	}
-	// WSEvents holds its own connection, built by newWSEvents without reference
-	// to the http.Client we bounded — so an absurdly small HTTP timeout must not
-	// have prevented it from being set up.
-}
-
-// The two failures that decide whether a live Cosmos subscription is alive are
-// reported only through CometBFT's logger, which is a nop until SetLogger is
-// called. Nothing in this repository called it, so a resubscribe that gave up
-// and every event dropped on a full channel left no trace in any log. This pins
-// the wiring, because losing it again would be invisible.
-func TestDialCosmosRPCWiresTheCometLogger(t *testing.T) {
-	c, err := DialCosmosRPC("http://127.0.0.1:26657", "/websocket", DefaultRPCTimeout)
-	if err != nil {
-		t.Fatalf("DialCosmosRPC: %v", err)
-	}
-	if _, ok := c.WSEvents.Logger.(cometLogger); !ok {
-		t.Fatalf("WSEvents logger is %T, want cometLogger: CometBFT's subscription errors go to a nop logger without it", c.WSEvents.Logger)
-	}
-}
-
-// TestCometLoggerFormat: the adapter has to carry the key/values, since the
+// TestCometLogger_Format: the adapter has to carry the key/values, since the
 // query and the error are the whole content of the lines it exists to surface.
-func TestCometLoggerFormat(t *testing.T) {
+func TestCometLogger_Format(t *testing.T) {
 	var buf strings.Builder
 	prevOut, prevFlags := log.Writer(), log.Flags()
 	log.SetOutput(&buf)
@@ -162,6 +166,18 @@ func TestCometLoggerFormat(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("log line missing %q:\n%s", want, got)
 		}
+	}
+	// The level has to lead the line: logbridge reads it from the start, and a viewer
+	// shows an ERROR buried mid-message as info. These are the lines that report an
+	// abandoned resubscribe and a dropped event.
+	if !strings.HasPrefix(got, logbridge.Error+"[cometbft] ") {
+		t.Fatalf("an Error must start with the error token, got:\n%s", got)
+	}
+
+	buf.Reset()
+	cometLogger{}.Info("resubscribed", "query", "tm.event='Tx'")
+	if got := buf.String(); !strings.HasPrefix(got, "[cometbft] resubscribed") {
+		t.Fatalf("an Info line is unmarked, so it is info; got:\n%s", got)
 	}
 	if strings.Contains(got, "noisy") {
 		t.Fatalf("Debug must be dropped, it would bury the relayer's own log:\n%s", got)

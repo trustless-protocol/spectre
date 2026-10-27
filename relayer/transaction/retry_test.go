@@ -8,14 +8,12 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"relayer/chain"
+	"relayer/services"
 	"strings"
 	"testing"
 
-	"relayer/chain"
-	"relayer/services"
-
 	errortypes "github.com/cosmos/cosmos-sdk/types/errors"
-
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -75,7 +73,7 @@ func revertProbeClient(t *testing.T, blockGas uint64, callError string, onCall f
 	return client
 }
 
-func TestClassifyEthRevertDoesNotTrustRejectedProbe(t *testing.T) {
+func TestClassifyEthRevert_DoesNotTrustRejectedProbe(t *testing.T) {
 	const gasLimit = uint64(16_000_000)
 	client := revertProbeClient(t, 30_000_000, "gas required exceeds allowance", nil)
 	endpoint := services.EVMEndpoint{Client: client}
@@ -85,7 +83,7 @@ func TestClassifyEthRevertDoesNotTrustRejectedProbe(t *testing.T) {
 	}
 }
 
-func TestClassifyEthRevertClampsProbeToBlockGas(t *testing.T) {
+func TestClassifyEthRevert_ClampsProbeToBlockGas(t *testing.T) {
 	const (
 		gasLimit = uint64(16_000_000)
 		blockGas = uint64(30_000_000)
@@ -123,92 +121,108 @@ func oogPlan(t *testing.T, msgCount, headroomStep int, base, maxBlockGas uint64,
 	return chain.Climb(plan, at)
 }
 
-func TestPlanCosmosOutOfGasSplitsABatchBeforeTouchingHeadroom(t *testing.T) {
-	// Splitting is preferred while it is available: the halves are simulated
-	// separately, which fixes the cause (one estimate covering too much work)
-	// rather than papering over it with a bigger multiplier.
-	for _, msgCount := range []int{2, 3, 16} {
-		next, _, ok := oogPlan(t, msgCount, 0, 1_000_000, 30_000_000, true)
-		if !ok || next.What != knobBatchSize {
-			t.Fatalf("msgCount=%d planned %v (ok=%v), want a batch split", msgCount, next, ok)
+func TestPlanCosmosOutOfGas(t *testing.T) {
+	t.Run("splits a batch before touching headroom", func(t *testing.T) {
+		// Splitting is preferred while it is available: the halves are simulated
+		// separately, which fixes the cause (one estimate covering too much work)
+		// rather than papering over it with a bigger multiplier.
+		for _, msgCount := range []int{2, 3, 16} {
+			next, _, ok := oogPlan(t, msgCount, 0, 1_000_000, 30_000_000, true)
+			if !ok || next.What != knobBatchSize {
+				t.Fatalf("msgCount=%d planned %v (ok=%v), want a batch split", msgCount, next, ok)
+			}
+			if next.To >= uint64(msgCount) {
+				t.Fatalf("msgCount=%d planned %d messages; a split that does not shrink is the same attempt", msgCount, next.To)
+			}
 		}
-		if next.To >= uint64(msgCount) {
-			t.Fatalf("msgCount=%d planned %d messages; a split that does not shrink is the same attempt", msgCount, next.To)
+		// Even at the last headroom step, a multi-message batch still splits. The
+		// gas counter is not the batch counter, and reading it as one would exhaust a
+		// ladder that still has messages to halve.
+		last := len(cosmosGasHeadroom) - 1
+		if next, _, ok := oogPlan(t, 4, last, 1_000_000, 30_000_000, true); !ok || next.What != knobBatchSize {
+			t.Fatalf("multi-message at the last headroom step planned %v (ok=%v), want a batch split", next, ok)
 		}
-	}
-	// Even at the last headroom step, a multi-message batch still splits. The
-	// gas counter is not the batch counter, and reading it as one would exhaust a
-	// ladder that still has messages to halve.
-	last := len(cosmosGasHeadroom) - 1
-	if next, _, ok := oogPlan(t, 4, last, 1_000_000, 30_000_000, true); !ok || next.What != knobBatchSize {
-		t.Fatalf("multi-message at the last headroom step planned %v (ok=%v), want a batch split", next, ok)
-	}
-}
+	})
 
-func TestPlanCosmosOutOfGasEscalatesASingleMessage(t *testing.T) {
-	var seen []uint64
-	for step := 0; step < len(cosmosGasHeadroom)-1; step++ {
-		next, _, ok := oogPlan(t, 1, step, 1_000_000, 30_000_000, true)
+	t.Run("escalates a single message", func(t *testing.T) {
+		var seen []uint64
+		for step := 0; step < len(cosmosGasHeadroom)-1; step++ {
+			next, _, ok := oogPlan(t, 1, step, 1_000_000, 30_000_000, true)
+			if !ok || next.What != knobCosmosGas {
+				t.Fatalf("1 msg at step=%d planned %v (ok=%v), want a gas escalation", step, next, ok)
+			}
+			seen = append(seen, next.To)
+		}
+		// Each rung must be a different number, or "escalating" re-sends the tx that
+		// just failed.
+		for i := 1; i < len(seen); i++ {
+			if seen[i] <= seen[i-1] {
+				t.Fatalf("gas rungs %v do not increase; the retry would repeat the failed attempt", seen)
+			}
+		}
+	})
+
+	// The two floors. Without them "transient" is unbounded, which is the defect.
+	t.Run("bottoms out as permanent", func(t *testing.T) {
+		last := len(cosmosGasHeadroom) - 1
+		next, bottom, ok := oogPlan(t, 1, last, 1_000_000, 30_000_000, true)
+		if ok {
+			t.Fatalf("single message at the last headroom step planned %v; the ladder must end, or the retry loop never does", next)
+		}
+		// The bottom must stay usable as the error it came from. A classification
+		// that swallowed the cause would make every existing check downstream —
+		// errors.Is on the relay failure, errors.As on the tx failure — start
+		// answering no.
+		if !errors.Is(bottom, services.ErrPermanentRelayFailure) {
+			t.Fatal("the bottom no longer reads as a permanent relay failure; relay/batch.go would re-queue a dead packet forever")
+		}
+		if !chain.IsPermanent(bottom) {
+			t.Fatal("the bottom is not tagged permanent for the engine")
+		}
+		var txFail *services.CosmosTxFailure
+		if !errors.As(bottom, &txFail) || txFail.Stage != "DeliverTx" {
+			t.Fatalf("the originating tx failure is no longer reachable through the bottom: %v", bottom)
+		}
+
+		// At the block ceiling a larger factor buys nothing: the next attempt would be
+		// the same transaction. That is permanent however many steps are left.
+		if next, _, ok := oogPlan(t, 1, 0, 30_000_000, 30_000_000, true); ok {
+			t.Fatalf("single message already at the block gas limit planned %v, want permanent", next)
+		}
+		if next, _, ok := oogPlan(t, 1, 0, 31_000_000, 30_000_000, true); ok {
+			t.Fatalf("single message above the block gas limit planned %v, want permanent", next)
+		}
+	})
+
+	// A chain that does not report a block max (MaxGas unset) must not be read as
+	// "the ceiling is 0, everything is permanent" — that would dead-letter valid
+	// packets on the first out-of-gas.
+	t.Run("with no block limit still escalates", func(t *testing.T) {
+		next, _, ok := oogPlan(t, 1, 0, 1_000_000, 0, true)
 		if !ok || next.What != knobCosmosGas {
-			t.Fatalf("1 msg at step=%d planned %v (ok=%v), want a gas escalation", step, next, ok)
+			t.Fatalf("no block max reported planned %v (ok=%v), want a gas escalation", next, ok)
 		}
-		seen = append(seen, next.To)
-	}
-	// Each rung must be a different number, or "escalating" re-sends the tx that
-	// just failed.
-	for i := 1; i < len(seen); i++ {
-		if seen[i] <= seen[i-1] {
-			t.Fatalf("gas rungs %v do not increase; the retry would repeat the failed attempt", seen)
+	})
+
+	// An atomic batch keeps its all-or-nothing shape: it must never be split, only
+	// given more gas, however many messages it carries.
+	t.Run("terminates and preserves atomicity", func(t *testing.T) {
+		if next, _, ok := oogPlan(t, 2, 0, 1, 10, true); !ok || next.What != knobBatchSize {
+			t.Fatalf("splittable batch planned %v (ok=%v), want a split", next, ok)
 		}
-	}
-}
-
-// The two floors. Without them "transient" is unbounded, which is the defect.
-func TestPlanCosmosOutOfGasBottomsOutAsPermanent(t *testing.T) {
-	last := len(cosmosGasHeadroom) - 1
-	next, bottom, ok := oogPlan(t, 1, last, 1_000_000, 30_000_000, true)
-	if ok {
-		t.Fatalf("single message at the last headroom step planned %v; the ladder must end, or the retry loop never does", next)
-	}
-	// The bottom must stay usable as the error it came from. A classification
-	// that swallowed the cause would make every existing check downstream —
-	// errors.Is on the relay failure, errors.As on the tx failure — start
-	// answering no.
-	if !errors.Is(bottom, services.ErrPermanentRelayFailure) {
-		t.Fatal("the bottom no longer reads as a permanent relay failure; relay/batch.go would re-queue a dead packet forever")
-	}
-	if !chain.IsPermanent(bottom) {
-		t.Fatal("the bottom is not tagged permanent for the engine")
-	}
-	var txFail *services.CosmosTxFailure
-	if !errors.As(bottom, &txFail) || txFail.Stage != "DeliverTx" {
-		t.Fatalf("the originating tx failure is no longer reachable through the bottom: %v", bottom)
-	}
-
-	// At the block ceiling a larger factor buys nothing: the next attempt would be
-	// the same transaction. That is permanent however many steps are left.
-	if next, _, ok := oogPlan(t, 1, 0, 30_000_000, 30_000_000, true); ok {
-		t.Fatalf("single message already at the block gas limit planned %v, want permanent", next)
-	}
-	if next, _, ok := oogPlan(t, 1, 0, 31_000_000, 30_000_000, true); ok {
-		t.Fatalf("single message above the block gas limit planned %v, want permanent", next)
-	}
-}
-
-// A chain that does not report a block max (MaxGas unset) must not be read as
-// "the ceiling is 0, everything is permanent" — that would dead-letter valid
-// packets on the first out-of-gas.
-func TestPlanCosmosOutOfGasWithNoBlockLimitStillEscalates(t *testing.T) {
-	next, _, ok := oogPlan(t, 1, 0, 1_000_000, 0, true)
-	if !ok || next.What != knobCosmosGas {
-		t.Fatalf("no block max reported planned %v (ok=%v), want a gas escalation", next, ok)
-	}
+		if next, _, ok := oogPlan(t, 2, 0, 1, 10, false); !ok || next.What != knobCosmosGas {
+			t.Fatalf("atomic batch planned %v (ok=%v), want a gas escalation and never a split", next, ok)
+		}
+		if next, _, ok := oogPlan(t, 1, len(cosmosGasHeadroom)-1, 10, 10, false); ok {
+			t.Fatalf("at the ceiling planned %v, want permanent", next)
+		}
+	})
 }
 
 // A batch that is just under the block limit is still worth one attempt AT the
 // limit: that is more gas than the attempt that failed, so it is a real change.
 // Cutting the ladder off instead would dead-letter a packet one rung early.
-func TestCosmosGasLadderClampsToTheBlockLimitBeforeStopping(t *testing.T) {
+func TestCosmosGasLadder_ClampsToTheBlockLimitBeforeStopping(t *testing.T) {
 	const blockMax = uint64(30_000_000)
 	base := uint64(float64(blockMax)/cosmosGasHeadroom[1]) + 1 // step 1 lands just over the limit
 	next, ok := CosmosGasLadder(base, blockMax)(0)
@@ -267,7 +281,7 @@ func TestLaddersChangeSomethingEachRungAndEnd(t *testing.T) {
 // The batch ladder stops at one message rather than zero: a single message that
 // still runs out of gas is not a batching problem, and planCosmosOutOfGas hands
 // it to the gas ladder instead.
-func TestCosmosBatchLadderStopsAtOneMessage(t *testing.T) {
+func TestCosmosBatchLadder_StopsAtOneMessage(t *testing.T) {
 	if next, ok := CosmosBatchLadder(1)(0); ok {
 		t.Fatalf("a single message planned a split to %v; there is nothing to split", next)
 	}
@@ -285,7 +299,7 @@ func TestCosmosBatchLadderStopsAtOneMessage(t *testing.T) {
 // Drive the planner the way the send path does and show the sequence of actions
 // terminates from every starting point. This is the property the whole change
 // exists for; the individual cases above only pin its pieces.
-func TestCosmosOutOfGasRetriesTerminate(t *testing.T) {
+func TestCosmosOutOfGas_RetriesTerminate(t *testing.T) {
 	const blockMax = uint64(30_000_000)
 	for _, msgCount := range []int{1, 2, 5, 32} {
 		msgs, step := msgCount, 0
@@ -317,7 +331,7 @@ func TestCosmosOutOfGasRetriesTerminate(t *testing.T) {
 // The ladder must actually climb. A flat or descending entry would make an
 // "escalation" re-send the same transaction, restoring the loop while looking
 // like it had been fixed.
-func TestCosmosGasHeadroomIsStrictlyIncreasing(t *testing.T) {
+func TestCosmosGasHeadroom_IsStrictlyIncreasing(t *testing.T) {
 	if len(cosmosGasHeadroom) < 2 {
 		t.Fatal("a single-entry ladder cannot escalate; the retry would repeat the failed attempt")
 	}
@@ -335,7 +349,7 @@ func TestCosmosGasHeadroomIsStrictlyIncreasing(t *testing.T) {
 
 // The predicate comes from the SDK's registered error rather than the literals
 // "sdk" and 11, so it tracks whatever the chain actually sends.
-func TestCosmosOutOfGasMatchesTheSDKError(t *testing.T) {
+func TestCosmosOutOfGas_MatchesTheSDKError(t *testing.T) {
 	cs, code := errortypes.ErrOutOfGas.Codespace(), errortypes.ErrOutOfGas.ABCICode()
 	if !cosmosOutOfGas(cs, code) {
 		t.Fatalf("cosmosOutOfGas(%q, %d) = false, want true for the SDK's own ErrOutOfGas", cs, code)
@@ -357,7 +371,7 @@ func TestCosmosOutOfGasMatchesTheSDKError(t *testing.T) {
 // named was not the gas the retry would use -- and, worse, once finalGasLimit had
 // been clamped to maxBlockGas every rung flattened onto the clamp and the ladder
 // reported itself exhausted with real headroom steps still to go.
-func TestCosmosGasLadderAnchorsOnUnscaledGas(t *testing.T) {
+func TestCosmosGasLadder_AnchorsOnUnscaledGas(t *testing.T) {
 	const (
 		simulated = uint64(1_000_000)
 		blockMax  = uint64(10_000_000)
@@ -416,4 +430,31 @@ func TestCosmosGasLadderAnchorsOnUnscaledGas(t *testing.T) {
 			t.Fatalf("ladder yielded %d rungs; it must climb and then stop", attempts)
 		}
 	})
+}
+
+func TestProbeErrorClassesAreDisjoint(t *testing.T) {
+	for _, text := range []string{"out of gas", "gas required exceeds allowance", "exceeds block gas limit", "intrinsic gas too low", "dial tcp: timeout"} {
+		err := errors.New(text)
+		count := 0
+		for _, class := range []bool{isExecutionOutOfGas(err), isGasAllowanceRejection(err), isProbeTransportError(err)} {
+			if class {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Fatalf("%q matched %d classes, want exactly one", text, count)
+		}
+	}
+}
+
+func TestApplyCosmosGasHeadroom_FallbackCosmosGasLimitIncreasesAcrossOOGRetries(t *testing.T) {
+	const fallback = uint64(200_000)
+	previous := uint64(0)
+	for step := range cosmosGasHeadroom {
+		got := applyCosmosGasHeadroom(fallback, step)
+		if got <= previous {
+			t.Fatalf("fallback gas at step %d = %d, want greater than previous %d", step, got, previous)
+		}
+		previous = got
+	}
 }

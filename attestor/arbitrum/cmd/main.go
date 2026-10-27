@@ -8,19 +8,25 @@ import (
 	"log"
 	"math/big"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"attestor/arbitrum"
 	"attestor/arbitrum/adapter"
 	boldattestor "attestor/arbitrum/bold"
 	"attestor/core"
 	"attestor/host"
+	attestortypes "attestor/types"
 	"attestor/types/attestation"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
@@ -38,7 +44,7 @@ func runAttestor(ctx context.Context, configPath string) error {
 		return err
 	}
 
-	nitroClient, err := ethclient.DialContext(ctx, config.NitroRPCURL)
+	nitroClient, err := attestortypes.DialEthRPC(ctx, config.NitroRPCURL, attestortypes.DefaultRPCTimeout)
 	if err != nil {
 		return fmt.Errorf("connect to Nitro RPC: %w", err)
 	}
@@ -55,6 +61,9 @@ func runAttestor(ctx context.Context, configPath string) error {
 	if err := validateNitroChainID(ctx, nitroWSClient, config.L2ChainID, "WebSocket"); err != nil {
 		return err
 	}
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(collectors.NewGoCollector())
+	metrics := arbitrum.NewMetrics(registry)
 	signer, err := attestation.NewSigner(config.L2ChainID, config.AttestationSigningKey)
 	if err != nil {
 		return fmt.Errorf("load attestation signing key: %w", err)
@@ -77,7 +86,7 @@ func runAttestor(ctx context.Context, configPath string) error {
 	if err != nil {
 		return fmt.Errorf("load runtime poll interval: %w", err)
 	}
-	l1Client, err := ethclient.DialContext(ctx, config.L1RPCURL)
+	l1Client, err := attestortypes.DialEthRPC(ctx, config.L1RPCURL, attestortypes.DefaultRPCTimeout)
 	if err != nil {
 		return fmt.Errorf("connect to Ethereum L1 RPC: %w", err)
 	}
@@ -94,6 +103,8 @@ func runAttestor(ctx context.Context, configPath string) error {
 	if err != nil {
 		return fmt.Errorf("load attested-root state: %w", err)
 	}
+	attestedRootStore.SetMetrics(metrics)
+	metrics.ObserveStore(config.SrcChain, attestedRootStore.Stats())
 	assertionPollInterval, err := config.AssertionPollDuration()
 	if err != nil {
 		return fmt.Errorf("load assertion poll interval: %w", err)
@@ -103,6 +114,7 @@ func runAttestor(ctx context.Context, configPath string) error {
 		runtimeState,
 		attestedRootStore,
 		boldattestor.AssertionAttestorConfig{
+			L1IngestHead:    config.L1IngestHead,
 			PollInterval:    assertionPollInterval,
 			MaxL1BlockRange: config.AssertionBlockRange(),
 		},
@@ -118,6 +130,9 @@ func runAttestor(ctx context.Context, configPath string) error {
 		return true, store.BindSourceIdentity(sourceIdentity)
 	}); err != nil {
 		return fmt.Errorf("bind and persist attested-root source identity: %w", err)
+	}
+	if err := assertionLoop.ReconcileStartup(ctx); err != nil {
+		return err
 	}
 	attestationHead, err := config.NormalizedAttestationHead()
 	if err != nil {
@@ -151,6 +166,25 @@ func runAttestor(ctx context.Context, configPath string) error {
 		return fmt.Errorf("listen for attestor gRPC at %s: %w", config.GRPCListenAddress, err)
 	}
 	defer listener.Close()
+	metricsListener, err := net.Listen("tcp", config.MetricsListenAddress)
+	if err != nil {
+		return fmt.Errorf("listen for attestor metrics at %s: %w", config.MetricsListenAddress, err)
+	}
+	defer metricsListener.Close()
+	metricsServer := &http.Server{
+		Handler:           promhttp.HandlerFor(registry, promhttp.HandlerOpts{}),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		if serveErr := metricsServer.Serve(metricsListener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			log.Printf("attestor metrics server failed: %v", serveErr)
+		}
+	}()
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = metricsServer.Shutdown(shutdownCtx)
+	}()
 
 	attestorHost, err := host.New(host.Config{
 		Routes: map[string]core.Ports{
@@ -162,7 +196,12 @@ func runAttestor(ctx context.Context, configPath string) error {
 				Runner: host.RunnerFunc(func(runCtx context.Context) error {
 					return arbitrum.MonitorRuntimeState(
 						runCtx,
-						runtimeAndDerivedRefresher{runtime: runtimeState, derived: derivedAttestor},
+						runtimeAndDerivedRefresher{
+							runtime: runtimeState,
+							derived: derivedAttestor,
+							store:   attestedRootStore,
+							metrics: metrics,
+						},
 						nitroWSClient,
 						arbitrum.RuntimeMonitorConfig{ReconcileInterval: runtimePollInterval},
 					)
@@ -173,7 +212,12 @@ func runAttestor(ctx context.Context, configPath string) error {
 				Runner: host.RunnerFunc(func(runCtx context.Context) error {
 					// Assertion backfill can be large; its loop retries transient L1
 					// failures without taking the sidecar down.
-					assertionLoop.Run(runCtx)
+					assertionLoop.RunWithObserver(runCtx, func(syncErr error) {
+						if syncErr != nil {
+							metrics.ObserveAssertionFailure(config.SrcChain)
+						}
+						metrics.ObserveStore(config.SrcChain, attestedRootStore.Stats())
+					})
 					return nil
 				}),
 			},
@@ -184,6 +228,7 @@ func runAttestor(ctx context.Context, configPath string) error {
 		return fmt.Errorf("initialize attestor host: %w", err)
 	}
 	log.Printf("attestor gRPC listening at %s", listener.Addr())
+	log.Printf("attestor metrics listening at %s/metrics", metricsListener.Addr())
 	if err := attestorHost.Run(ctx); err != nil {
 		return fmt.Errorf("run attestor host: %w", err)
 	}
@@ -249,8 +294,10 @@ type derivedRootSyncer interface {
 }
 
 type runtimeAndDerivedRefresher struct {
-	runtime runtimeStateRefresher
+	runtime *arbitrum.RuntimeState
 	derived derivedRootSyncer
+	store   *arbitrum.AttestedRootStore
+	metrics *arbitrum.Metrics
 }
 
 func (r runtimeAndDerivedRefresher) Refresh(
@@ -258,10 +305,15 @@ func (r runtimeAndDerivedRefresher) Refresh(
 ) ([]arbitrum.FinalizedConsistency, error) {
 	checks, err := r.runtime.Refresh(ctx)
 	if err != nil {
+		r.metrics.ObserveRuntimeFailure(r.store.SrcChain())
 		return nil, err
 	}
+	r.metrics.ObserveRuntime(r.store.SrcChain(), r.runtime.Snapshot(), checks)
 	if err := r.derived.SyncOnce(ctx); err != nil {
+		r.metrics.ObserveDerivedFailure(r.store.SrcChain())
+		r.metrics.ObserveStore(r.store.SrcChain(), r.store.Stats())
 		return nil, err
 	}
+	r.metrics.ObserveStore(r.store.SrcChain(), r.store.Stats())
 	return checks, nil
 }

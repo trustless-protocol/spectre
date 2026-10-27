@@ -15,9 +15,11 @@ import (
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 
-	"relayer/prover"
+	"time"
+
 	"relayer/relay"
 	"relayer/services"
+	"relayer/status"
 	"relayer/transaction"
 	utils "relayer/utils"
 )
@@ -25,6 +27,12 @@ import (
 // Start starts the relay service loop.
 // It loads config from a JSON file, connects to Cosmos and Ethereum,
 // and subscribes to send_packet events to relay packets.
+// statusBindGrace is how long start waits to see whether the status endpoint
+// bound before carrying on. Listening either works immediately or fails
+// immediately, so this is long enough to catch "port already in use" and short
+// enough that it never delays a healthy start noticeably.
+const statusBindGrace = 200 * time.Millisecond
+
 func Start(logger *zap.Logger) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "start",
@@ -63,17 +71,23 @@ func Start(logger *zap.Logger) *cobra.Command {
 			// Checks that only apply to relaying, so they live here rather than in
 			// the shared loadConfig. Run before the prover load: a config error
 			// should surface immediately, not after the bucket registry is read.
-			// One process, one source → destination pair. First of the two: a config
-			// declaring two paths is the more fundamental mistake, and reporting a
-			// missing field on one of them would send the operator to fix the wrong
-			// thing. Both run before the prover load, so a config error surfaces at
-			// once rather than after the bucket registry is read.
-			if err := validateSingleRelayPair(cfg, configPath); err != nil {
+			// One process, one source → destination pair: loadConfig has already
+			// refused a file declaring more than one (rejectExtraRelayPaths), so
+			// what is left is that it declares one at all -- `start` with nothing
+			// to relay is a config mistake, not an idle process.
+			if err := requireRelayPath(cfg, configPath); err != nil {
 				return err
 			}
 			if err := validateRelayStartupConfig(cfg); err != nil {
 				return err
 			}
+			// Before anything opens a state directory: state written by the previous
+			// layout is not read by this build, and starting anyway would look like a
+			// clean first run while pending packets quietly stopped being tracked.
+			if err := checkLegacyStateLayout(configPath); err != nil {
+				return err
+			}
+
 			// Stamp the path onto every log line from here on. A1 makes this a
 			// process-level constant, and the merge point (journald, Loki) is where
 			// several relayer processes lose the file boundary that used to tell
@@ -85,12 +99,25 @@ func Start(logger *zap.Logger) *cobra.Command {
 			// chain-id and deployment probes, the signer lock, the prover, the relay
 			// loops -- describes live state, and in a merged log that is where the
 			// line stops saying which process it came from. relayPathID is safe here
-			// because validateSingleRelayPair has already proved there is exactly one.
+			// because loadConfig and requireRelayPath have proved there is exactly one.
 			//
 			// Shadowing `logger` is deliberate: every builder and lifecycle line
 			// below takes it from here, so the scoped logger reaches them without
 			// anyone having to remember to pass the right one.
 			logger := stampRelayPath(logger, relayPathID(cfg))
+
+			// After the stamp, not before: TestStart/stamps the relay path before it can fail
+			// holds that EVERY zap line start emits carries relay_path, and a line
+			// above the stamp would be the first exception. Putting this one line
+			// below costs nothing the two checks above do not already cover --
+			// validateSingleRelayPair names configPath in all three of its errors --
+			// and it still runs before anything that needs a network read, which is
+			// where a run against the wrong file starts reporting live state the
+			// operator cannot find in the file they were looking at.
+			//
+			// (validateRelayStartupConfig's error names the client id but not the
+			// file; that gap predates this and is not this change's to close.)
+			logConfigTarget(logger, "start", configPath, cfg)
 
 			// Third: everything that needs a read to prove wrong — the state
 			// directory, the Cosmos chain id, the deployed contracts and the client
@@ -100,7 +127,10 @@ func Start(logger *zap.Logger) *cobra.Command {
 			// cmd.Context(): each probe wraps what it is given in a timeout, so on
 			// cmd.Context() a Ctrl-C during a hung endpoint would wait the full
 			// budget out per endpoint.
-			if err := validateStartupConfig(runCtx, cfg); err != nil {
+			// The state directory this process will actually write into, derived
+			// the same way the loops below derive it. A1 has already proved there
+			// is exactly one path, so there is exactly one directory to judge.
+			if err := validateStartupConfig(runCtx, cfg, startupStateDir(configPath, cfg)); err != nil {
 				return err
 			}
 			// Last of the startup gates, because it is the only one that takes
@@ -113,44 +143,37 @@ func Start(logger *zap.Logger) *cobra.Command {
 			}
 			defer releaseSigner()
 
-			// Load the prover once and share it across every source loop — the
+			// Load the prover once and share it across the relay loops — the
 			// bucket registry (r1cs/pk/vk) is read-only after load, so concurrent
 			// GenerateProof calls are safe. On a GPU backend the calls serialize
 			// on the device; correctness is unaffected.
 			binDir := envOrDefault("PROVER_BIN_DIR", "./bin")
-			selectedBackend, hasBackendOverride, err := proofBackendFromFlags(cmd)
+			logger.Sugar().Infof("start: loading prover artifacts from %s", binDir)
+			p, err := buildProverService(cmd, binDir)
 			if err != nil {
-				return fmt.Errorf("failed to resolve proof backend: %w", err)
+				return err
 			}
+			defer p.Stop()
 
-			var p *prover.EcipProver
-			if hasBackendOverride {
-				logger.Sugar().Infof("start: overriding proof backend via flags: %s", selectedBackend.Name())
-				p, err = prover.NewProverWithBackend(binDir, selectedBackend)
-			} else {
-				p, err = prover.NewProver(binDir)
-			}
-			if err != nil {
-				return fmt.Errorf("failed to load prover: %w", err)
-			}
-
-			// validateSingleRelayPair proved above that these hold at most one entry
-			// each, and that together they hold at least one.
-			sources := cfg.CosmosToEthConfigs
-			l2Dests := cfg.CosmosToL2Configs
-			l2Sources := cfg.L2ToCosmosConfigs
+			// One path: loadConfig refused a file with more than one, and
+			// requireRelayPath proved there is at least one, so each direction
+			// below is a single value behind its presence flag -- nothing to loop
+			// over, nothing to pick from.
+			//
 			// validateL2TimeoutReturnPathConfigs is gone with #328: the return path
-			// is now resolved per dest by matching the L2 chain id at build time
+			// is now resolved for the dest by matching the L2 chain id at build time
 			// (l2TimeoutReturnPathConfigForDest), so a separate up-front pass would
 			// only duplicate it. This check stays because it answers a different
-			// question -- whether each l2_to_cosmos source's configured chain id is
+			// question -- whether the l2_to_cosmos source's configured chain id is
 			// the chain its RPC actually serves -- and it must run before anything
 			// dials.
 			// runCtx, not cmd.Context(): the probe wraps whatever it is given in a
 			// 10s timeout, so on cmd.Context() a Ctrl-C during a hung L2 RPC waited
-			// out 10s per source before the process could exit.
-			if err := validateL2ChainIDs(runCtx, l2Sources); err != nil {
-				return err
+			// out the full 10s before the process could exit.
+			if cfg.HasL2ToCosmos {
+				if err := validateL2ChainID(runCtx, cfg.L2ToCosmosConfig); err != nil {
+					return err
+				}
 			}
 			// EVM nonces are per (chain id, sender), and the Handler mutex only
 			// serializes allocations in this process. Resolve every EVM endpoint's
@@ -163,15 +186,13 @@ func Start(logger *zap.Logger) *cobra.Command {
 			}
 			defer releaseEVMSignerLocks()
 			// Env overrides (ICS26_CLIENT_ID, COSMOS_WASM_CLIENT_ID, ROLE_MANAGER)
-			// name a single source, and a process now runs exactly one — so they
-			// can only ever apply to the source that is running. What used to keep
-			// them off the wrong source was a count taken here; that job belongs to
-			// validateSingleRelayPair now.
+			// name a single source, and a process runs exactly one — so they can
+			// only ever apply to the source that is running; effectiveRelayIDs and
+			// effectiveRoleManager apply them unconditionally for that reason.
 			//
 			// They reach the cosmos_to_eth builder only. buildCosmosToL2Dest does
 			// not consult the environment, so evmDeploymentsInConfig must not apply
-			// them to a cosmos_to_l2 entry either -- see the two loops there.
-			const allowEnvOverride = true
+			// them to the cosmos_to_l2 entry either -- see the two branches there.
 
 			// One shared TransactionHandler across all sources. What sharing buys is
 			// the mutex, not the cache: two sources can target the SAME (chain,
@@ -199,12 +220,41 @@ func Start(logger *zap.Logger) *cobra.Command {
 			// A path runs at most two engines: the forward leg, plus the return leg
 			// for Cosmos↔L2. Cosmos↔ETH is one engine — runAdapterEngine drives both
 			// of its directions internally.
+			// Held for the life of the process: the lock IS the descriptor, so these
+			// are collected early and never deferred into a shorter scope. The
+			// kernel releases them at exit, including on SIGKILL.
+			var stateLocks []*os.File
+			// Released only here, when RunE returns and the process is leaving.
+			// This is not tidiness: os.File carries a finalizer that closes the
+			// descriptor once the value is unreachable, and closing it releases the
+			// flock. A slice that is only ever appended to is exactly the shape the
+			// collector is free to reclaim, which would silently hand the directory
+			// to a second process while this one is still running.
+			defer func() {
+				for _, lock := range stateLocks {
+					_ = lock.Close()
+				}
+			}()
+
 			const maxEnginesPerPath = 2
-			loopErrCh := make(chan error, maxEnginesPerPath)
 			cleanups := make([]func(), 0, maxEnginesPerPath)
 			relayCtx, cancelRelays := context.WithCancel(runCtx)
 			defer cancelRelays()
-			l2ReturnPaths := make([]l2TimeoutReturnPathConfig, 0, len(l2Dests))
+
+			// One path per process (#418), so an engine failure is THE failure: no
+			// other path is left to keep serving. What used to be here was a
+			// buffered channel, a select arm on it, and a nested select to prefer a
+			// buffered error over a coincident done -- a gathering layer sized for
+			// many unrelated loops in one process, which is the arrangement #418
+			// removed.
+			//
+			// The collection stays, because a Cosmos<->L2 path still runs two
+			// engines. First error wins and cancels its sibling: the return leg has
+			// nothing to do once the forward leg is gone, and cancelling is what
+			// keeps the teardown as prompt as the channel made it. See engineErrors.
+			engineErrs := newEngineErrors(cancelRelays)
+			recordEngineErr := engineErrs.record
+			var l2ReturnPaths []l2TimeoutReturnPathConfig
 			onceCleanup := func(cleanup func()) func() {
 				var once sync.Once
 				return func() {
@@ -222,146 +272,206 @@ func Start(logger *zap.Logger) *cobra.Command {
 			stopAndCleanup := func() error {
 				return stopRelaysAndCleanup(cancelRelays, wg.Wait, cleanups, workersStuck.Load)
 			}
-			for i := range sources {
+
+			// One endpoint answers for the whole process, so the engines below
+			// register with it as they start. It binds nothing unless the config
+			// asked for an address, and a failure to bind stops the relayer rather
+			// than leaving an operator to discover during an incident that the thing
+			// they were told to query was never listening.
+			statusReg := &status.Registry{}
+			statusErrCh := make(chan error, 1)
+			if cfg.StatusAddress != "" {
+				var controls *status.Controls
+				if cfg.StatusAllowControl {
+					controls = &status.Controls{Reactivate: statusReg.Reactivate}
+				}
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					if err := status.Serve(relayCtx, cfg.StatusAddress, statusReg.Snapshot, controls); err != nil {
+						statusErrCh <- err
+					}
+				}()
+				select {
+				case err := <-statusErrCh:
+					stopAndCleanup()
+					return err
+				case <-time.After(statusBindGrace):
+				}
+			}
+			if cfg.HasCosmosToEth {
+				c2e := cfg.CosmosToEthConfig
+				// The EFFECTIVE id, the one the builder below will relay with. Naming
+				// the directory from the raw config id let the lock and the cursors
+				// describe a different relay pair than the process actually served.
+				// Resolved ONCE. The same value names the directory below and is
+				// handed to the builder, so the lock, the cursors and the pair being
+				// relayed cannot describe different clients.
+				ids := effectiveRelayIDs(c2e)
+				stateDir := relayStateDir(configPath, "cosmos-to-eth", ids)
+				// Claim the directory before dialling anything. A second process
+				// with the same identity must stop here, not after it has opened
+				// sockets and begun advancing the cursors this one owns.
+				lock, err := lockStateDir(stateDir)
+				if err != nil {
+					stopAndCleanup()
+					return err
+				}
+				stateLocks = append(stateLocks, lock)
 				svc, deps, cleanup, err := buildCosmosToEthSource(
-					logger, sources[i], cfg.EthToCosmosConfig, cfg.BatchConfig, p, txHandler,
+					logger, c2e, cfg.EthToCosmosConfig, cfg.BatchConfig, p, txHandler,
 					buildCosmosToEthSourceOptions{
-						allowEnvOverride:   allowEnvOverride,
+						ids:                ids,
+						roleManager:        effectiveRoleManager(c2e),
 						startSubscriptions: true,
+						relayStateDir:      stateDir,
 						// start drives the eth->cosmos direction, so a missing
 						// cosmos_wasm_client_id must fail here rather than at the
-						// first packet that needs it.
+						// first packet that needs it. Unrelated to the state
+						// directory above, and it arrived after this branch was
+						// cut, so it is kept rather than replaced.
 						relaysEVMToCosmos: true,
-						pendingStateDir:   pendingStateDir(configPath, "cosmos-to-eth", sources[i].ICS26ClientID),
 					},
 				)
 				if err != nil {
 					stopAndCleanup()
-					return fmt.Errorf("cosmos_to_eth source %q: %w", sources[i].ICS26ClientID, err)
+					return fmt.Errorf("cosmos_to_eth source %q: %w", c2e.ICS26ClientID, err)
 				}
 				cleanup = onceCleanup(cleanup)
 				cleanups = append(cleanups, cleanup)
 				wg.Add(1)
 				go func(svc *services.Services, deps services.RelayDeps, cleanup func()) {
 					defer wg.Done()
-					// Chain-adapter RelayModule engine — the sole relay engine since
-					// the legacy services.StartLoop was removed after the cutover.
-					err := runAdapterEngine(relayCtx, svc, deps)
+					// Chain-adapter RelayModule engine — the sole relay engine.
+					err := runAdapterEngine(relayCtx, svc, deps, statusReg)
 					releaseOrHold(logger, cleanup, &workersStuck, err, "cosmos_to_eth", deps.IDs.CosmosOnEVM)
 					if err != nil {
-						loopErrCh <- fmt.Errorf("cosmos_to_eth source %q: %w", deps.IDs.CosmosOnEVM, err)
+						recordEngineErr(fmt.Errorf("cosmos_to_eth source %q: %w", deps.IDs.CosmosOnEVM, err))
 					}
 				}(svc, deps, cleanup)
 			}
 
-			// One independent relay loop per Cosmos→L2 destination: the same groth16
-			// pipeline as Cosmos→ETH pointed at the L2's SpectreClient/ICS26Router,
-			// with no reverse beacon direction.
+			// The Cosmos→L2 destination: the same groth16 pipeline as Cosmos→ETH
+			// pointed at the L2's SpectreClient/ICS26Router, with no reverse beacon
+			// direction.
 			//
-			// Built in two passes: first resolve every dest's return path and match
-			// every l2_to_cosmos source, then launch the goroutines below. This way
-			// a return-path mismatch aborts before any Cosmos→L2 connection opens,
-			// instead of after the relay loop is already dialing/subscribing.
-			builtL2Dests := make([]builtL2Dest, 0, len(l2Dests))
-			for i := range l2Dests {
+			// Built before anything launches: first resolve the destination's return
+			// path and match the l2_to_cosmos source to it, then start the goroutines
+			// below. This way a return-path mismatch aborts before any Cosmos→L2
+			// connection opens, instead of after the relay loop is already
+			// dialing/subscribing.
+			var l2Dest *builtL2Dest
+			if cfg.HasCosmosToL2 {
+				d := cfg.CosmosToL2Config
+				l2StateDir := relayStateDir(configPath, "cosmos-to-l2", relayClientIDs{
+					router: d.ICS26ClientID,
+					wasm:   d.CosmosWasmClientID,
+				})
+				l2Lock, err := lockStateDir(l2StateDir)
+				if err != nil {
+					stopAndCleanup()
+					return err
+				}
+				stateLocks = append(stateLocks, l2Lock)
 				svc, deps, cleanup, err := buildCosmosToL2Dest(
-					logger, l2Dests[i], cfg.BatchConfig, p, txHandler,
-					pendingStateDir(configPath, "cosmos-to-l2", l2Dests[i].ICS26ClientID),
+					logger, d, cfg.BatchConfig, p, txHandler,
+					l2StateDir,
 				)
 				if err != nil {
 					stopAndCleanup()
-					return fmt.Errorf("cosmos_to_l2 dest %q: %w", l2Dests[i].ICS26ClientID, err)
+					return fmt.Errorf("cosmos_to_l2 dest %q: %w", d.ICS26ClientID, err)
 				}
 				cleanup = onceCleanup(cleanup)
 				cleanups = append(cleanups, cleanup)
-				name := ""
-				if i < len(cfg.CosmosToL2Names) {
-					name = cfg.CosmosToL2Names[i]
-				}
-				// Only resolve the return-path chain id when there's an
+				// Only resolve the return-path chain id when there is an
 				// l2_to_cosmos source to match it against; otherwise a
 				// forward-only deployment pays an avoidable L2 RPC round
 				// trip (and startup-abort risk) for a path nothing consults.
-				if len(l2Sources) > 0 {
-					returnPath, err := l2TimeoutReturnPathConfigForDest(runCtx, name, l2Dests[i], l2TimeoutReturnPath{svc: svc, deps: deps})
+				if cfg.HasL2ToCosmos {
+					returnPath, err := l2TimeoutReturnPathConfigForDest(runCtx, cfg.CosmosToL2Name, d, l2TimeoutReturnPath{svc: svc, deps: deps})
 					if err != nil {
 						stopAndCleanup()
-						return fmt.Errorf("cosmos_to_l2 dest %q: %w", l2Dests[i].ICS26ClientID, err)
+						return fmt.Errorf("cosmos_to_l2 dest %q: %w", d.ICS26ClientID, err)
 					}
 					l2ReturnPaths = append(l2ReturnPaths, returnPath)
 				}
-				// Accumulate rather than launching here: nothing dials, subscribes
-				// or submits until every dest and source has built and matched.
-				// hasReturnLeg is deliberately NOT set here: which destinations an
-				// l2_to_cosmos source actually resolves to is only known once the
-				// source loop below has matched them. Deriving it from
-				// len(l2Sources) > 0 was wrong for any multi-L2 config -- a source
-				// matches exactly one destination, so every other destination
-				// recorded debt nothing in this process could ever settle.
-				builtL2Dests = append(builtL2Dests, builtL2Dest{svc: svc, deps: deps, cleanup: cleanup})
+				// Not launched here: nothing dials, subscribes or submits until the
+				// source below has built and matched. hasReturnLeg is deliberately
+				// NOT set here either: whether the l2_to_cosmos source resolves to
+				// THIS destination is only known once it has matched.
+				l2Dest = &builtL2Dest{svc: svc, deps: deps, cleanup: cleanup}
 			}
 
-			// One independent relay module per L2->Cosmos source (opstack/arbitrum).
-			// Each dials its own L1/L2/Cosmos clients + attestor sidecar; they share
-			// the TransactionHandler (same Cosmos signer -> shared sequence path).
-			type builtL2Source struct {
-				module   *relay.Module
-				cleanup  func()
-				srcChain string
-			}
-			builtL2Sources := make([]builtL2Source, 0, len(l2Sources))
-			settling := make([]*services.Services, 0, len(l2Sources))
-			for i := range l2Sources {
-				timeoutReturn, err := findL2TimeoutReturnPath(runCtx, l2Sources[i], l2ReturnPaths)
+			// The L2->Cosmos source (opstack/arbitrum): its own L1/L2/Cosmos clients
+			// + attestor sidecar, sharing the TransactionHandler (same Cosmos signer
+			// -> shared sequence path).
+			var l2Source *relay.Module
+			var l2SourceCleanup func()
+			if cfg.HasL2ToCosmos {
+				src := cfg.L2ToCosmosConfig
+				timeoutReturn, err := findL2TimeoutReturnPath(runCtx, src, l2ReturnPaths)
 				if err != nil {
 					stopAndCleanup()
-					return fmt.Errorf("l2_to_cosmos source %q: %w", l2Sources[i].AttestorSrcChain, err)
+					return fmt.Errorf("l2_to_cosmos source %q: %w", src.AttestorSrcChain, err)
 				}
-				// Remember WHICH destination this source settles for. timeoutReturn
-				// carries that destination's own *services.Services, and sharing
-				// that instance is the whole mechanism: one side records the debt,
-				// the other clears it from the same ledger.
-				settling = append(settling, timeoutReturn.svc)
-				module, cleanup, err := buildL2ToCosmosModule(logger, l2Sources[i], txHandler, timeoutReturn)
+				l2SrcStateDir := relayStateDir(configPath, "l2-to-cosmos", relayClientIDs{
+					router: src.L2ICS26ClientID,
+					wasm:   src.L2WasmClientID,
+				})
+				l2SrcLock, err := lockStateDir(l2SrcStateDir)
 				if err != nil {
 					stopAndCleanup()
-					return fmt.Errorf("l2_to_cosmos source %q: %w", l2Sources[i].AttestorSrcChain, err)
+					return err
+				}
+				stateLocks = append(stateLocks, l2SrcLock)
+				module, timeoutRecovery, cleanup, err := buildL2ToCosmosModule(logger, src, txHandler, timeoutReturn, l2SrcStateDir)
+				if err != nil {
+					stopAndCleanup()
+					return fmt.Errorf("l2_to_cosmos source %q: %w", src.AttestorSrcChain, err)
 				}
 				cleanup = onceCleanup(cleanup)
 				cleanups = append(cleanups, cleanup)
-				builtL2Sources = append(builtL2Sources, builtL2Source{module: module, cleanup: cleanup, srcChain: l2Sources[i].AttestorSrcChain})
-			}
-
-			// Now that every source has matched, each destination knows whether
-			// anything will settle what it records.
-			markReturnLegs(builtL2Dests, settling)
-
-			// Every Cosmos→L2 dest and L2→Cosmos source above built and matched
-			// cleanly — only now do we start dialing/subscribing/submitting.
-			for _, d := range builtL2Dests {
-				wg.Add(1)
-				go func(svc *services.Services, deps services.RelayDeps, cleanup func(), watchAcks bool) {
-					defer wg.Done()
-					err := runCosmosToL2Engine(relayCtx, svc, deps, watchAcks)
-					releaseOrHold(logger, cleanup, &workersStuck, err, "cosmos_to_l2", deps.IDs.CosmosOnEVM)
-					if err != nil {
-						loopErrCh <- fmt.Errorf("cosmos_to_l2 dest %q: %w", deps.IDs.CosmosOnEVM, err)
+				l2Source, l2SourceCleanup = module, cleanup
+				// Now that the source has matched, the destination knows whether
+				// anything will settle what it records. timeoutReturn carries that
+				// destination's own *services.Services, and sharing that instance is
+				// the whole mechanism: one side records the debt, the other clears it
+				// from the same ledger.
+				if l2Dest != nil {
+					l2Dest.hasReturnLeg = destHasReturnLeg(l2Dest.svc, []*services.Services{timeoutReturn.svc})
+					if l2Dest.hasReturnLeg {
+						l2Dest.timeoutRecovery = &timeoutRecovery
 					}
-				}(d.svc, d.deps, d.cleanup, d.hasReturnLeg)
+				}
 			}
-			for _, s := range builtL2Sources {
+
+			// Both halves built and matched cleanly — only now start
+			// dialing/subscribing/submitting.
+			if l2Dest != nil {
 				wg.Add(1)
-				go func(module *relay.Module, cleanup func(), srcChain string) {
+				go func(d builtL2Dest) {
 					defer wg.Done()
-					err := runL2Engine(relayCtx, module)
+					err := runCosmosToL2Engine(relayCtx, d.svc, d.deps, statusReg, d.timeoutRecovery, d.hasReturnLeg)
+					releaseOrHold(logger, d.cleanup, &workersStuck, err, "cosmos_to_l2", d.deps.IDs.CosmosOnEVM)
+					if err != nil {
+						recordEngineErr(fmt.Errorf("cosmos_to_l2 dest %q: %w", d.deps.IDs.CosmosOnEVM, err))
+					}
+				}(*l2Dest)
+			}
+			if l2Source != nil {
+				srcChain := cfg.L2ToCosmosConfig.AttestorSrcChain
+				wg.Add(1)
+				go func(module *relay.Module, cleanup func()) {
+					defer wg.Done()
+					err := runL2Engine(relayCtx, module, statusReg)
 					releaseOrHold(logger, cleanup, &workersStuck, err, "l2_to_cosmos", srcChain)
 					if err != nil {
-						loopErrCh <- fmt.Errorf("l2_to_cosmos source %q: %w", srcChain, err)
+						recordEngineErr(fmt.Errorf("l2_to_cosmos source %q: %w", srcChain, err))
 					}
-				}(s.module, s.cleanup, s.srcChain)
+				}(l2Source, l2SourceCleanup)
 			}
 
-			logger.Sugar().Infof("Relayer started: relaying %d Cosmos→ETH + %d Cosmos→L2 + %d L2→Cosmos source(s)", len(sources), len(l2Dests), len(l2Sources))
+			logger.Sugar().Infof("Relayer started: relaying %s", relayPathID(cfg))
 			done := make(chan struct{})
 			go func() {
 				wg.Wait()
@@ -372,11 +482,36 @@ func Start(logger *zap.Logger) *cobra.Command {
 			// already said it was extracted "so all three endings can be tested" --
 			// and then nothing called it, so Start kept the ending that drops a
 			// recorded failure and exits 0. Found in review.
-			return awaitRelayExit(runCtx, done, loopErrCh, stopAndCleanup, logger)
+			return awaitRelayExit(runCtx, done, engineErrs, stopAndCleanup, logger)
 		},
 	}
 	cmd.Flags().String(flagConfigPath, "config.json", "path to JSON config file")
 	cmd.Flags().Bool(flagGPUProve, false, "use the ICICLE GPU backend for proving (or set GPU_PROVE=1); requires an icicle-enabled build")
 	cmd.Flags().Bool(flagBenchmark, false, "enable detailed benchmark gas/timing logs (or set RELAYER_BENCHMARK=1)")
 	return cmd
+}
+
+// startupStateDir names the one state directory this process will use, or "" if
+// the config declares no path this build can resolve one for.
+//
+// It exists so validateStartupConfig can judge the directory that will really be
+// written rather than the retired RELAYER_RECOVERY_STATE_FILE location. The
+// derivation is the same relayStateDir the loops use, which is the point: a
+// check against a different directory would pass while the real one failed.
+func startupStateDir(configPath string, cfg *appConfig) string {
+	switch {
+	case cfg.HasCosmosToEth:
+		return relayStateDir(configPath, "cosmos-to-eth", effectiveRelayIDs(cfg.CosmosToEthConfig))
+	case cfg.HasCosmosToL2:
+		d := cfg.CosmosToL2Config
+		return relayStateDir(configPath, "cosmos-to-l2", relayClientIDs{
+			router: d.ICS26ClientID, wasm: d.CosmosWasmClientID,
+		})
+	case cfg.HasL2ToCosmos:
+		src := cfg.L2ToCosmosConfig
+		return relayStateDir(configPath, "l2-to-cosmos", relayClientIDs{
+			router: src.L2ICS26ClientID, wasm: src.L2WasmClientID,
+		})
+	}
+	return ""
 }

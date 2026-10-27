@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 
 	routerContract "relayer/bindings/ICS26Router"
 	spectreContract "relayer/bindings/SpectreClient"
@@ -25,9 +27,11 @@ import (
 //
 // It is also not enough to compare chain ids. A local devnet re-created by
 // run_cosmos_node.sh keeps its chain-id ("test-ibc-eth"), so a client pinned to
-// the previous incarnation looks correct by name while trusting a height and a
-// validator set from a chain that no longer exists. The trusted height being
-// above the live chain's head is what gives that away.
+// the previous incarnation looks correct by name while trusting a consensus
+// state from a chain that no longer exists. The trusted height being above the
+// live chain's head is a useful early signal, but a replacement chain can grow
+// past that height. reusableSpectreClientAt therefore also verifies the stored
+// consensus-state hash against one rebuilt from the live chain at that height.
 func spectreClientIsReusable(onChain relayerclient.ClientState, cosmosChainID string, cosmosHeight int64) error {
 	if onChain.ChainId == "" {
 		return fmt.Errorf(
@@ -55,6 +59,43 @@ func spectreClientIsReusable(onChain relayerclient.ClientState, cosmosChainID st
 	return nil
 }
 
+// consensusStateHashAt rebuilds the exact ABI-encoded consensus state that a
+// SpectreClient stores for a Cosmos height, then applies the same keccak256 hash
+// convention as the Solidity client.
+func consensusStateHashAt(ctx context.Context, cosmosClient *rpchttp.HTTP, height uint64) ([32]byte, error) {
+	if height > math.MaxInt64 {
+		return [32]byte{}, fmt.Errorf("trusted height %d exceeds CometBFT's int64 height range", height)
+	}
+
+	lightBlock, err := relayerclient.GetLightBlock(ctx, cosmosClient, int64(height))
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("get light block at height %d: %w", height, err)
+	}
+	consensusState, err := relayerclient.ConsensusStateFromLightBlock(lightBlock)
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("rebuild consensus state at height %d: %w", height, err)
+	}
+	encoded, err := relayerclient.EncodeConsensusState(consensusState)
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("encode consensus state at height %d: %w", height, err)
+	}
+	return crypto.Keccak256Hash(encoded), nil
+}
+
+// consensusStateHashIsReusable rejects a state which has the right chain id
+// and a reachable height but was committed by a different Cosmos history. That
+// is the case after a same-chain-id devnet reset has grown past the old client.
+func consensusStateHashIsReusable(storedHash, liveHash [32]byte, cosmosChainID string, height uint64) error {
+	if storedHash != liveHash {
+		return fmt.Errorf(
+			"it stores consensus state hash %x at trusted height %d, but %s now commits %x there; "+
+				"the chain was re-created or diverged, so the client cannot be updated safely",
+			storedHash, height, cosmosChainID, liveHash,
+		)
+	}
+	return nil
+}
+
 // reusableSpectreClientAt decides whether the configured spectre_client address
 // holds a light client this run can keep. It returns a reason string when the
 // address must not be reused, so the caller can log why it is deploying again.
@@ -73,11 +114,11 @@ func reusableSpectreClientAt(
 		return false, fmt.Sprintf("nothing is deployed at %s", addr.Hex())
 	}
 
-	ics07, err := spectreContract.NewContractSpectreClient(addr, evm.EthClient())
+	spectre, err := spectreContract.NewContractSpectreClient(addr, evm.EthClient())
 	if err != nil {
 		return false, fmt.Sprintf("could not bind a SpectreClient at %s: %v", addr.Hex(), err)
 	}
-	stateBytes, err := ics07.GetClientState(nil)
+	stateBytes, err := spectre.GetClientState(nil)
 	if err != nil {
 		return false, fmt.Sprintf(
 			"the contract at %s does not answer getClientState (%v), so it is not a SpectreClient", addr.Hex(), err)
@@ -96,6 +137,32 @@ func reusableSpectreClientAt(
 		onChain,
 		status.NodeInfo.Network,
 		status.SyncInfo.LatestBlockHeight,
+	); err != nil {
+		return false, err.Error()
+	}
+
+	storedConsensusStateHash, err := spectre.GetConsensusStateHash(nil, onChain.LatestHeight.RevisionHeight)
+	if err != nil {
+		return false, fmt.Sprintf(
+			"the SpectreClient at %s cannot reveal its stored consensus-state hash at trusted height %d (%v), "+
+				"so it cannot be safely verified for reuse",
+			addr.Hex(), onChain.LatestHeight.RevisionHeight, err,
+		)
+	}
+	liveConsensusStateHash, err := consensusStateHashAt(
+		context.Background(), cosmosClient, onChain.LatestHeight.RevisionHeight,
+	)
+	if err != nil {
+		return false, fmt.Sprintf(
+			"could not rebuild the live Cosmos consensus state at trusted height %d to verify the SpectreClient: %v",
+			onChain.LatestHeight.RevisionHeight, err,
+		)
+	}
+	if err := consensusStateHashIsReusable(
+		storedConsensusStateHash,
+		liveConsensusStateHash,
+		status.NodeInfo.Network,
+		onChain.LatestHeight.RevisionHeight,
 	); err != nil {
 		return false, err.Error()
 	}

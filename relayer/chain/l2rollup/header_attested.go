@@ -115,7 +115,7 @@ func (a *attestedHeaderBuilder) BuildHeader(ctx context.Context, request HeaderR
 		return nil, 0, fmt.Errorf("%s: router proof at L2 height %d: %w", a.name, request.Height, err)
 	}
 
-	return &AttestedL2Header{
+	return &SignedAttestedL2Header{
 		L2Header:          toCanonicalHeader(l2Header),
 		RouterProof:       EvmAccountProof{Proof: routerProof.AccountProof},
 		AttestorSignature: signatures,
@@ -166,19 +166,19 @@ func (a *attestedHeaderBuilder) bindToAttestation(ctx context.Context, height ui
 		case one = <-results:
 		}
 		if one.err != nil {
-			failures = append(failures, newAttestorFailure(a.name, one.index, one.err))
+			failures = append(failures, newAttestorFailure("Attest", one.index, one.err))
 			continue
 		}
 		if !one.verdict.Valid {
-			failures = append(failures, newAttestorFailure(a.name, one.index, fmt.Errorf("%w: did not recognise L2 block %d", ErrAttestorDivergence, height)))
+			failures = append(failures, newAttestorFailure("Attest", one.index, fmt.Errorf("%w: did not recognise L2 block %d", ErrAttestorDivergence, height)))
 			continue
 		}
 		if one.verdict.BlockNumber != height || string(one.verdict.BlockHash) != string(blockHash.Bytes()) || string(one.verdict.StateRoot) != string(stateRoot.Bytes()) {
-			failures = append(failures, newAttestorFailure(a.name, one.index, fmt.Errorf("%w: returned a different block identity", ErrAttestorDivergence)))
+			failures = append(failures, newAttestorFailure("Attest", one.index, fmt.Errorf("%w: returned a different block identity", ErrAttestorDivergence)))
 			continue
 		}
 		if len(one.verdict.Signature) != attestation.SignatureLength || !ed25519.Verify(ed25519.PublicKey(a.set.PublicKeys[one.index]), statement, one.verdict.Signature) {
-			failures = append(failures, newAttestorFailure(a.name, one.index, fmt.Errorf("%w: returned an invalid signature", ErrAttestorSignature)))
+			failures = append(failures, newAttestorFailure("Attest", one.index, fmt.Errorf("%w: returned an invalid signature", ErrAttestorSignature)))
 			continue
 		}
 		signatures = append(signatures, IndexedAttestorSignature{AttestorIndex: one.index, Signature: append([]byte(nil), one.verdict.Signature...)})

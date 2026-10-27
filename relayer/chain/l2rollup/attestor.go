@@ -163,7 +163,7 @@ func (q *quorumAttestationFrontier) AttestedUpTo(ctx context.Context, srcChain s
 		case one = <-results:
 		}
 		if one.err != nil {
-			failures = append(failures, newAttestorFailure("attestor-frontier", one.index, one.err))
+			failures = append(failures, newAttestorFailure("Frontier", one.index, one.err))
 			continue
 		}
 		if !one.found {
@@ -171,7 +171,7 @@ func (q *quorumAttestationFrontier) AttestedUpTo(ctx context.Context, srcChain s
 			continue
 		}
 		if one.root == nil {
-			failures = append(failures, newAttestorFailure("attestor-frontier", one.index, errors.New("returned found=true with a nil frontier")))
+			failures = append(failures, newAttestorFailure("Frontier", one.index, errors.New("returned found=true with a nil frontier")))
 			continue
 		}
 		frontiers = append(frontiers, one.root)
@@ -191,5 +191,5 @@ func (q *quorumAttestationFrontier) AttestedUpTo(ctx context.Context, srcChain s
 		// operational failure.
 		return nil, false, nil
 	}
-	return nil, false, quorumFailure("attestor-frontier", "attestor frontiers available", len(frontiers), waiting, q.threshold, failures)
+	return nil, false, quorumFailure("Frontier", "attestor frontiers available", len(frontiers), waiting, q.threshold, failures)
 }

@@ -8,63 +8,65 @@ import (
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 )
 
-func TestBytesToBytes32_Exact32Bytes(t *testing.T) {
-	input := make([]byte, 32)
-	for i := range input {
-		input[i] = byte(i)
-	}
-
-	result := BytesToBytes32(input)
-
-	if !bytes.Equal(result[:], input) {
-		t.Errorf("expected %v, got %v", input, result[:])
-	}
-}
-
-func TestBytesToBytes32_LessThan32Bytes(t *testing.T) {
-	input := []byte{0xAA, 0xBB, 0xCC}
-
-	result := BytesToBytes32(input)
-
-	if !bytes.Equal(result[:3], input) {
-		t.Errorf("first 3 bytes should match input, got %v", result[:3])
-	}
-	for i := 3; i < 32; i++ {
-		if result[i] != 0 {
-			t.Errorf("expected zero padding at index %d, got %d", i, result[i])
+func TestBytesToBytes32(t *testing.T) {
+	t.Run("exact 32 bytes", func(t *testing.T) {
+		input := make([]byte, 32)
+		for i := range input {
+			input[i] = byte(i)
 		}
-	}
+
+		result := BytesToBytes32(input)
+
+		if !bytes.Equal(result[:], input) {
+			t.Errorf("expected %v, got %v", input, result[:])
+		}
+	})
+
+	t.Run("less than 32 bytes", func(t *testing.T) {
+		input := []byte{0xAA, 0xBB, 0xCC}
+
+		result := BytesToBytes32(input)
+
+		if !bytes.Equal(result[:3], input) {
+			t.Errorf("first 3 bytes should match input, got %v", result[:3])
+		}
+		for i := 3; i < 32; i++ {
+			if result[i] != 0 {
+				t.Errorf("expected zero padding at index %d, got %d", i, result[i])
+			}
+		}
+	})
+
+	t.Run("empty", func(t *testing.T) {
+		result := BytesToBytes32([]byte{})
+
+		expected := [32]byte{}
+		if result != expected {
+			t.Errorf("expected all zeros, got %v", result)
+		}
+	})
+
+	t.Run("more than 32 bytes", func(t *testing.T) {
+		input := make([]byte, 64)
+		for i := range input {
+			input[i] = byte(i)
+		}
+
+		result := BytesToBytes32(input)
+
+		if !bytes.Equal(result[:], input[:32]) {
+			t.Errorf("expected first 32 bytes of input, got %v", result[:])
+		}
+	})
 }
 
-func TestBytesToBytes32_Empty(t *testing.T) {
-	result := BytesToBytes32([]byte{})
-
-	expected := [32]byte{}
-	if result != expected {
-		t.Errorf("expected all zeros, got %v", result)
-	}
-}
-
-func TestBytesToBytes32_MoreThan32Bytes(t *testing.T) {
-	input := make([]byte, 64)
-	for i := range input {
-		input[i] = byte(i)
-	}
-
-	result := BytesToBytes32(input)
-
-	if !bytes.Equal(result[:], input[:32]) {
-		t.Errorf("expected first 32 bytes of input, got %v", result[:])
-	}
-}
-
-func TestIbcCommitmentPath_NormalPacket(t *testing.T) {
+func TestIBCCommitmentPath_NormalPacket(t *testing.T) {
 	packet := channeltypesv2.Packet{
 		Sequence:     1,
 		SourceClient: "07-tendermint-0",
 	}
 
-	path := IbcCommitmentPath(packet, []byte{1})
+	path := IBCCommitmentPath(packet, []byte{1})
 
 	if len(path) != 2 {
 		t.Fatalf("expected 2 path elements, got %d", len(path))
@@ -86,7 +88,7 @@ func TestIbcCommitmentPath_NormalPacket(t *testing.T) {
 	}
 }
 
-func TestIbcCommitmentPath_HighSequence(t *testing.T) {
+func TestIBCCommitmentPath_HighSequence(t *testing.T) {
 	var seq uint64 = 999999999
 
 	packet := channeltypesv2.Packet{
@@ -94,7 +96,7 @@ func TestIbcCommitmentPath_HighSequence(t *testing.T) {
 		SourceClient: "07-tendermint-0",
 	}
 
-	path := IbcCommitmentPath(packet, []byte{1})
+	path := IBCCommitmentPath(packet, []byte{1})
 
 	if len(path) != 2 {
 		t.Fatalf("expected 2 path elements, got %d", len(path))

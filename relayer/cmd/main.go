@@ -7,14 +7,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"os"
 	"sync/atomic"
 	"time"
 
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 
+	"relayer/logbridge"
 	"relayer/prover"
+	"relayer/prover/gnark"
+	"relayer/prover/memqueue"
+	"relayer/prover/memstore"
 	workergroup "relayer/workers"
 )
 
@@ -99,50 +104,46 @@ func stopRelaysAndCleanup(cancel func(), wait func(), cleanups []func(), workers
 // be wrong is unreachable from a unit test while it lives inside the command
 // closure, and it was wrong for exactly that reason.
 //
-// loopErrCh is BUFFERED, which is what makes the reads below load-bearing: an
-// engine can record its failure and return without anyone ever selecting on the
-// channel.
+// engineErrs holds what the buffered channel used to: an engine can record its
+// failure and return without anyone selecting on anything, and recording cancels
+// the rest of the path so every engine returns and done closes.
+//
+// That is why there are two endings here and not three. The channel arm existed
+// to observe a failure WHILE siblings were still running; recording now cancels
+// them, and their drain is bounded (relay.Module.Run reports the workers that
+// overran rather than waiting on them), so the failure reaches the done branch
+// promptly instead of needing an arm of its own. The nested select inside done
+// goes with it: "all workers returned" and "one of them failed" are one question
+// now, and engineErrors.first is the answer.
 func awaitRelayExit(
 	runCtx context.Context,
 	done <-chan struct{},
-	loopErrCh <-chan error,
+	engineErrs *engineErrors,
 	stopAndCleanup func() error,
 	logger *zap.Logger,
 ) error {
 	select {
-	case err := <-loopErrCh:
-		// An engine failed while running. That error is the actionable one, so a
-		// shutdown that also overruns is logged rather than returned in its place.
-		logShutdownFailure(logger, stopAndCleanup())
-		return err
-
 	case <-done:
-		// A worker sends its error before its deferred wg.Done. If all workers
-		// have returned, prefer that buffered error over treating the coincident
-		// done signal as a clean shutdown.
-		select {
-		case err := <-loopErrCh:
+		if err := engineErrs.first(); err != nil {
+			// An engine failed while running. That error is the actionable one, so a
+			// shutdown that also overruns is logged rather than returned in its place.
+			logShutdownFailure(logger, stopAndCleanup())
 			return err
-		default:
-			return nil
 		}
+		return nil
 
 	case <-runCtx.Done():
 		// SIGTERM. A module that overran its drain reports which workers are still
-		// running (relay.Module.Run) and that error lands in the buffered channel.
+		// running (relay.Module.Run), and that error is recorded like any other.
 		// This branch did not read it, so a stuck worker produced exit code 0 with
 		// "Relayer clients stopped; exiting" as the last line -- the failure was
-		// recorded and then dropped, which is the worst of the three outcomes
-		// because it looks exactly like success. The read is the same non-blocking
-		// one the <-done branch above already does; the two must stay in step.
+		// recorded and then dropped, which is the worst of the endings because it
+		// looks exactly like success. It asks engineErrors the same question the
+		// done branch above asks; the two must stay in step.
 		logger.Sugar().Infof("Relayer shutdown requested: %v", runCtx.Err())
 		shutdownErr := stopAndCleanup()
-		select {
-		case err := <-loopErrCh:
-			if err != nil {
-				return err
-			}
-		default:
+		if err := engineErrs.first(); err != nil {
+			return err
 		}
 		if shutdownErr != nil {
 			return shutdownErr
@@ -152,20 +153,16 @@ func awaitRelayExit(
 	}
 }
 
-// stampRelayPathOnLogs prefixes every standard-library log line with the relay
-// path this process serves.
-//
-// It reaches every relay-path log line in one call because they all go through
-// the standard logger: services and subscriber take an injected *log.Logger, and
-// the composition root passes log.Default() (cmd/build_source.go,
-// cmd/build_cosmos_to_l2.go) -- there is no log.New anywhere in the tree. zap is
-// used only in cmd/ for startup and CLI messages, which already name the path.
-//
-// Lmsgprefix is not optional: without it the standard logger writes the prefix
-// BEFORE the timestamp, so every line would start with the path and the times
-// would no longer line up when read as a column.
 // stampRelayPath labels BOTH loggers with the relay path and returns the
 // path-scoped zap logger the caller must use from then on.
+//
+// The path is a field on every line from here on, standard-library lines
+// included: logbridge.Install points the standard logger at the scoped logger,
+// and services and subscriber take an injected *log.Logger that the composition
+// root fills with log.Default() (cmd/build_source.go, cmd/build_cosmos_to_l2.go),
+// so one call reaches every relay-path line. It used to be a text prefix on the
+// standard logger, held after the timestamp by Lmsgprefix. As a field it can be
+// filtered on, and a viewer no longer has to pick it out of the message.
 //
 // One function rather than two calls, because the first version stamped only
 // log.Default() and every line the injected *zap.Logger emitted after it stayed
@@ -175,13 +172,13 @@ func awaitRelayExit(
 // that returns the scoped logger cannot be half-used: the caller either takes
 // the return value or has nothing to log with.
 func stampRelayPath(logger *zap.Logger, pathID string) *zap.Logger {
-	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
-	log.SetPrefix("[" + pathID + "] ")
-	return logger.With(zap.String(relayPathLogField, pathID))
+	scoped := logger.With(zap.String(relayPathLogField, pathID))
+	logbridge.Install(scoped)
+	return scoped
 }
 
-// relayPathLogField is the structured key; the stdlib side has no fields and
-// carries the same value as a message prefix instead.
+// relayPathLogField is the key the path is logged under, on the zap lines and on
+// the standard-library lines bridged into them.
 const relayPathLogField = "relay_path"
 
 // logShutdownFailure reports a shutdown that overran its budget on a path whose
@@ -214,12 +211,32 @@ func runBounded(fn func(), budget time.Duration) error {
 	}
 }
 
+// buildProverService loads the gnark proof engine (backend resolved from
+// --gpu-prove / GPU_PROVE) and wraps it in the async proof service with the
+// in-memory queue and store adapters.
+func buildProverService(cmd *cobra.Command, binDir string) (*prover.Service, error) {
+	selectedBackend, hasBackendOverride, err := proofBackendFromFlags(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve proof backend: %w", err)
+	}
+	var engine *gnark.Engine
+	if hasBackendOverride {
+		engine, err = gnark.New(binDir, selectedBackend)
+	} else {
+		engine, err = gnark.NewFromEnv(binDir)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to load prover: %w", err)
+	}
+	return prover.New(engine, memqueue.New(0), memstore.New(0, 0), prover.Config{})
+}
+
 // proofBackendFromFlags resolves the GPU/CPU backend from --gpu-prove or the
 // GPU_PROVE env var. Returns (backend, true) when an explicit selection was
 // made, otherwise (nil, false) so the caller falls back to env-only defaults.
-func proofBackendFromFlags(cmd *cobra.Command) (prover.ProofBackend, bool, error) {
+func proofBackendFromFlags(cmd *cobra.Command) (gnark.ProofBackend, bool, error) {
 	flagSet := cmd.Flags().Changed(flagGPUProve)
-	envSet := prover.GPUProveEnvEnabled()
+	envSet := gnark.GPUProveEnvEnabled()
 	if !flagSet && !envSet {
 		return nil, false, nil
 	}
@@ -233,7 +250,7 @@ func proofBackendFromFlags(cmd *cobra.Command) (prover.ProofBackend, bool, error
 		useGPU = v
 	}
 
-	backend, err := prover.NewProofBackend(useGPU)
+	backend, err := gnark.NewProofBackend(useGPU)
 	if err != nil {
 		return nil, false, err
 	}
@@ -243,26 +260,38 @@ func proofBackendFromFlags(cmd *cobra.Command) (prover.ProofBackend, bool, error
 // --- Main ---
 
 func main() {
-	zLogger, _ := zap.NewProduction(zap.AddStacktrace(zap.DPanicLevel))
+	settings := resolveLogSettings(os.Args[1:], os.Getenv, stderrIsTerminal())
+	zLogger := newLogger(settings, zapcore.Lock(os.Stderr))
 	defer zLogger.Sync()
+	for _, msg := range settings.ignored {
+		zLogger.Warn(msg)
+	}
+	// One pipeline for the process. The engine logs through the standard logger,
+	// which has no levels; this gives every such line a level and the same format as
+	// the zap lines, so a viewer sees one stream. `start` re-points it at a
+	// path-scoped logger once it knows the path (stampRelayPath).
+	logbridge.Install(zLogger)
 
 	logger := zLogger.Sugar()
 
 	rootCmd := &cobra.Command{
 		Use:   "relayer [command]",
-		Short: "fast-ibc operator — relay IBC packets between Cosmos and Ethereum",
+		Short: "Spectre relayer — relay IBC packets between Cosmos and Ethereum",
 		Run: func(cmd *cobra.Command, args []string) {
 			cmd.Help()
 		},
 	}
+	registerLogFlags(rootCmd)
 
 	rootCmd.AddCommand(
 		Start(zLogger),
 		CreateClientsCosmos(zLogger),
 		CreateClientsEth(zLogger),
 		UpdateClient(zLogger),
+		UpdateEthClient(zLogger),
 		SubmitMisbehaviour(zLogger),
 		Genesis(zLogger),
+		Status(zLogger),
 	)
 
 	if err := rootCmd.Execute(); err != nil {

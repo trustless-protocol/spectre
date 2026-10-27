@@ -148,92 +148,94 @@ func TestAckDueLedger(t *testing.T) {
 	})
 }
 
-// The ack-watch tick is the only clock this bookkeeping has. Without it a debt
-// whose write failed is retried only when the next packet moves -- so a relayer
-// that goes idle while storage is down, and whose acknowledgement never comes
-// back, keeps the record in RAM and loses it at the next restart. That restart
-// is exactly what the record exists to survive.
-func TestAckDueRetriesOnTheWatchTickWhileIdle(t *testing.T) {
-	svc := ackDueServices(t)
-	restore := failWrites(t, svc)
+func TestRecordAckDue(t *testing.T) {
+	// The ack-watch tick is the only clock this bookkeeping has. Without it a debt
+	// whose write failed is retried only when the next packet moves -- so a relayer
+	// that goes idle while storage is down, and whose acknowledgement never comes
+	// back, keeps the record in RAM and loses it at the next restart. That restart
+	// is exactly what the record exists to survive.
+	t.Run("retries on the watch tick while idle", func(t *testing.T) {
+		svc := ackDueServices(t)
+		restore := failWrites(t, svc)
 
-	if svc.RecordAckDue(ackDuePacket(7)) {
-		t.Fatal("the write was supposed to fail")
-	}
-	restore() // storage comes back, and nothing else happens on this relayer
+		if svc.RecordAckDue(ackDuePacket(7)) {
+			t.Fatal("the write was supposed to fail")
+		}
+		restore() // storage comes back, and nothing else happens on this relayer
 
-	// The ack-watch loop calls OverdueAcks on its timer. That is the tick.
-	svc.OverdueAcks(time.Hour)
+		// The ack-watch loop calls OverdueAcks on its timer. That is the tick.
+		svc.OverdueAcks(time.Hour)
 
-	if got := svc.PendingAckDueWrites(); got != 0 {
-		t.Fatalf("ledger still holds %d after the watch tick; an idle relayer never writes it and a restart loses it", got)
-	}
-	if got := svc.OverdueAcks(0); len(got) != 1 || got[0] != "seq=7 src=source" {
-		t.Fatalf("overdue = %v, want the debt now recorded durably", got)
-	}
-}
+		if got := svc.PendingAckDueWrites(); got != 0 {
+			t.Fatalf("ledger still holds %d after the watch tick; an idle relayer never writes it and a restart loses it", got)
+		}
+		if got := svc.OverdueAcks(0); len(got) != 1 || got[0] != "seq=7 src=source" {
+			t.Fatalf("overdue = %v, want the debt now recorded durably", got)
+		}
+	})
 
-// A client migration keeps the client id and restarts sequences from 1, so one
-// (client, sequence) slot names two different packets over its life. The ledger
-// used to key on that slot alone: a queued write for the OLD packet was replayed
-// ahead of the ACK for the new one, RemovePacketIfCurrent then no-opped on the
-// identity mismatch -- returning nil, which reads as success -- and the old debt
-// was left durable with nothing queued to settle it, alerting forever.
-func TestAckDueDoesNotReplayAStaleIntentIntoAReusedSlot(t *testing.T) {
-	svc := ackDueServices(t)
+	// A client migration keeps the client id and restarts sequences from 1, so one
+	// (client, sequence) slot names two different packets over its life. The ledger
+	// used to key on that slot alone: a queued write for the OLD packet was replayed
+	// ahead of the ACK for the new one, RemovePacketIfCurrent then no-opped on the
+	// identity mismatch -- returning nil, which reads as success -- and the old debt
+	// was left durable with nothing queued to settle it, alerting forever.
+	t.Run("does not replay a stale intent into a reused slot", func(t *testing.T) {
+		svc := ackDueServices(t)
 
-	oldPacket := ackDuePacket(7)
-	oldPacket.TimeoutTimestamp = 1000
-	newPacket := ackDuePacket(7) // same client, same sequence, after a migration
-	newPacket.TimeoutTimestamp = 2000
+		oldPacket := ackDuePacket(7)
+		oldPacket.TimeoutTimestamp = 1000
+		newPacket := ackDuePacket(7) // same client, same sequence, after a migration
+		newPacket.TimeoutTimestamp = 2000
 
-	restore := failWrites(t, svc)
-	if svc.RecordAckDue(oldPacket) {
-		t.Fatal("the write was supposed to fail")
-	}
-	restore()
+		restore := failWrites(t, svc)
+		if svc.RecordAckDue(oldPacket) {
+			t.Fatal("the write was supposed to fail")
+		}
+		restore()
 
-	// The acknowledgement that comes back belongs to the NEW packet.
-	svc.ClearAckDue(newPacket)
+		// The acknowledgement that comes back belongs to the NEW packet.
+		svc.ClearAckDue(newPacket)
 
-	if got := svc.OverdueAcks(0); len(got) != 0 {
-		t.Fatalf("overdue = %v; the pre-migration debt was written by the retry and can never be settled", got)
-	}
-	if got := svc.PendingAckDueWrites(); got != 0 {
-		t.Fatalf("ledger holds %d, want the superseded intent dropped", got)
-	}
-}
+		if got := svc.OverdueAcks(0); len(got) != 0 {
+			t.Fatalf("overdue = %v; the pre-migration debt was written by the retry and can never be settled", got)
+		}
+		if got := svc.PendingAckDueWrites(); got != 0 {
+			t.Fatalf("ledger holds %d, want the superseded intent dropped", got)
+		}
+	})
 
-// The half of the migration case that ordering does not fix: the stale debt is
-// already ON DISK, written successfully before the client was recreated.
-//
-// RemovePacketIfCurrent no-ops when the slot holds a superseded identity, and it
-// returns nil -- which reads as success -- so the settlement of the packet that
-// replaced it left the old debt in awaiting-acks.json with nothing able to
-// remove it. No further acknowledgement can ever name it: the packet it belonged
-// to no longer exists on the source.
-func TestAckDueSettlementClearsASupersededDebtInTheSameSlot(t *testing.T) {
-	svc := ackDueServices(t)
+	// The half of the migration case that ordering does not fix: the stale debt is
+	// already ON DISK, written successfully before the client was recreated.
+	//
+	// RemovePacketIfCurrent no-ops when the slot holds a superseded identity, and it
+	// returns nil -- which reads as success -- so the settlement of the packet that
+	// replaced it left the old debt in awaiting-acks.json with nothing able to
+	// remove it. No further acknowledgement can ever name it: the packet it belonged
+	// to no longer exists on the source.
+	t.Run("settlement clears a superseded debt in the same slot", func(t *testing.T) {
+		svc := ackDueServices(t)
 
-	oldPacket := ackDuePacket(7)
-	oldPacket.TimeoutTimestamp = 1000
-	newPacket := ackDuePacket(7) // same client, same sequence, after a migration
-	newPacket.TimeoutTimestamp = 2000
+		oldPacket := ackDuePacket(7)
+		oldPacket.TimeoutTimestamp = 1000
+		newPacket := ackDuePacket(7) // same client, same sequence, after a migration
+		newPacket.TimeoutTimestamp = 2000
 
-	if !svc.RecordAckDue(oldPacket) {
-		t.Fatal("the pre-migration debt should persist")
-	}
-	if got := svc.OverdueAcks(0); len(got) != 1 {
-		t.Fatalf("overdue = %v, want the pre-migration debt on disk; the fixture is wrong otherwise", got)
-	}
+		if !svc.RecordAckDue(oldPacket) {
+			t.Fatal("the pre-migration debt should persist")
+		}
+		if got := svc.OverdueAcks(0); len(got) != 1 {
+			t.Fatalf("overdue = %v, want the pre-migration debt on disk; the fixture is wrong otherwise", got)
+		}
 
-	// Another relayer delivered the post-migration packet, so its acknowledgement
-	// arrives without this process ever having recorded a debt for it.
-	svc.ClearAckDue(newPacket)
+		// Another relayer delivered the post-migration packet, so its acknowledgement
+		// arrives without this process ever having recorded a debt for it.
+		svc.ClearAckDue(newPacket)
 
-	if got := svc.OverdueAcks(0); len(got) != 0 {
-		t.Fatalf("overdue = %v; the superseded debt outlived the settlement and is reported for the life of the state file", got)
-	}
+		if got := svc.OverdueAcks(0); len(got) != 0 {
+			t.Fatalf("overdue = %v; the superseded debt outlived the settlement and is reported for the life of the state file", got)
+		}
+	})
 }
 
 // The multi-relayer case, which is the ordinary one: this process delivers the
@@ -246,7 +248,7 @@ func TestAckDueSettlementClearsASupersededDebtInTheSameSlot(t *testing.T) {
 // for a packet already settled on-chain. It can never time out either, because
 // the receive left a receipt. A watcher that names settled packets is worse than
 // no watcher: the real overdue entry becomes indistinguishable from the noise.
-func TestSettleOwedAckClosesADebtAnotherRelayerAcknowledged(t *testing.T) {
+func TestSettleOwedAck_ClosesADebtAnotherRelayerAcknowledged(t *testing.T) {
 	svc := New(nil, nil, Config{})
 	pkt := channeltypesv2.Packet{SourceClient: "client-0", Sequence: 7, TimeoutTimestamp: 1}
 
@@ -272,7 +274,7 @@ func TestSettleOwedAckClosesADebtAnotherRelayerAcknowledged(t *testing.T) {
 // The hook has to be installed by the constructors, or every terminal path calls
 // a nil and settles nothing. This is the wiring half, and wiring is what the
 // suite does not otherwise hold.
-func TestServicesConstructorsInstallTheOwedAckSettler(t *testing.T) {
+func TestServices_ConstructorsInstallTheOwedAckSettler(t *testing.T) {
 	t.Run("New", func(t *testing.T) {
 		svc := New(nil, nil, Config{})
 		if svc.BatchBuilder.settleOwedAck == nil {

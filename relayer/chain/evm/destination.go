@@ -15,7 +15,6 @@ import (
 	"relayer/services"
 
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
-	"github.com/ethereum/go-ethereum/common"
 )
 
 // Destination is the EVM implementation of chain.Destination for a chain that
@@ -40,15 +39,7 @@ func (d *Destination) Chain() chain.ChainType { return chain.Ethereum }
 // submitter. Only that deployment shape can express the client update as an
 // inner router call in the same multicall as the packets.
 func (d *Destination) SupportsUpdatePacketFolding() bool {
-	roleManager := d.evm.RoleManagerAddress()
-	router := d.evm.RouterContract()
-	if roleManager == nil || router == nil {
-		return false
-	}
-	if *roleManager == (common.Address{}) || *router == (common.Address{}) {
-		return false
-	}
-	return *roleManager == *router
+	return d.evm.RouterManagesProofSubmission()
 }
 
 // UpdateClient decodes the Cosmos->ETH update payload back into the typed message
@@ -87,16 +78,21 @@ func decodeClientUpdate(update chain.ClientUpdate) (services.CosmosClientUpdateB
 // RelayPackets builds the concrete ICS26 messages (recv/ack/timeout) from the
 // given source packets + injected proofs and submits them via SendEthTxBatch.
 // The proofs are already built by the source (Membership/NonMembershipProof), so
-// unlike the legacy planCosmosPacketMsgs this does no proof generation.
-func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPacket) error {
+// this does no proof generation.
+// Every packet rides in one ICS26Router multicall, so this destination has no
+// partial state to report: committed is len(packets) or zero, never in between.
+func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPacket) (int, error) {
 	if err := ctx.Err(); err != nil {
-		return err // shutting down — do not start a packet tx
+		return 0, err // shutting down — do not start a packet tx
 	}
 	msgs, err := buildPacketMessages(packets)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	return d.sendPacketBatch(ctx, msgs)
+	if err := d.sendPacketBatch(ctx, msgs); err != nil {
+		return 0, err
+	}
+	return len(packets), nil
 }
 
 // RelayWithUpdate prepends the decoded Cosmos-client update to the packet calls
@@ -186,6 +182,20 @@ func (d *Destination) HasPacketReceipt(ctx context.Context, packet []byte) (bool
 		return false, fmt.Errorf("evm: decode packet: %w", err)
 	}
 	return services.HasEthPacketReceipt(ctx, d.evm, pkt)
+}
+
+// ClientActive reports whether the SpectreClient-of-Cosmos that the router
+// routes this client id to accepts messages: false once it is frozen, and false
+// when a migration has re-pointed the id away from the configured contract (see
+// services.CosmosClientStatus).
+var _ chain.ClientStatusChecker = (*Destination)(nil)
+
+func (d *Destination) ClientActive(ctx context.Context) (bool, string, error) {
+	status, err := services.CosmosClientStatus(ctx, d.evm, d.clientID)
+	if err != nil {
+		return false, "", fmt.Errorf("evm: client status: %w", err)
+	}
+	return status == "Active", status, nil
 }
 
 // ClientExpiresAt returns when the SpectreClient-of-Cosmos on this chain expires

@@ -132,7 +132,7 @@ mod test {
                 )
                 .unwrap(),
             },
-            execution: ExecutionPayloadHeader {
+            execution: Some(ExecutionPayloadHeader {
                 parent_hash: B256::from_hex(
                     "f55156c2b27326547193bcd2501c8300a0f3617a7d71f096fc992955f042ea50",
                 )
@@ -158,8 +158,9 @@ mod test {
                 withdrawals_root: B256::from_hex("0x28ba1834a3a7b657460ce79fa3a1d909ab8828fd557659d4d0554a9bdbc0ec30").unwrap(),
                 blob_gas_used: 0,
                 excess_blob_gas: 0,
-            },
-            execution_branch: [
+            }),
+            execution_block_hash: None,
+            execution_branch: vec![
                 B256::from_hex("0xd320d2b395e1065b0b2e3dbb7843c6d77cb7830ef340ffc968caa0f92e26f080")
                     .unwrap(),
                 B256::from_hex("0x6c6dd63656639d153a2e86a9cab291e7a26e957ad635fec872d2836e92340c23")
@@ -201,6 +202,10 @@ mod test {
                 version: FixedBytes([6, 0, 0, 1]),
                 epoch: u64::MAX,
             },
+            gloas: Fork {
+                version: FixedBytes([7, 0, 0, 1]),
+                epoch: u64::MAX,
+            },
         };
 
         // inputs
@@ -217,6 +222,6 @@ mod test {
         let index = get_subtree_index(EXECUTION_PAYLOAD_GINDEX);
         let root = header.beacon.body_root;
 
-        validate_merkle_branch(leaf, header.execution_branch.into(), depth, index, root).unwrap();
+        validate_merkle_branch(leaf, header.execution_branch, depth, index, root).unwrap();
     }
 }

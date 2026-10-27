@@ -2,7 +2,7 @@
 pragma solidity ^0.8.28;
 
 import { ISpectreClientMsgs } from "contracts/light-clients/spectre/messages/ISpectreClientMsgs.sol";
-import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { ISpectreTendermintMsgs } from "contracts/light-clients/spectre/messages/ISpectreTendermintMsgs.sol";
 import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
 import { IMisbehaviour } from "contracts/light-clients/spectre/interfaces/IMisbehaviour.sol";
 import { ISignatureVerifier } from "contracts/light-clients/spectre/interfaces/ISignatureVerifier.sol";
@@ -38,7 +38,7 @@ contract Misbehaviour is IMisbehaviour {
     /// @inheritdoc IMisbehaviour
     function verifyMisbehaviour(ISpectreClientMsgs.MsgSubmitMisbehaviour calldata msg_) external onlyDelegated {
         SpectreStore.Store storage $ = SpectreStore.load();
-        IICS07TendermintMsgs.ClientState storage clientState = $.clientState;
+        ISpectreTendermintMsgs.ClientState storage clientState = $.clientState;
 
         ISpectreClientMsgs.Misbehaviour calldata misbehaviour_ = msg_.misbehaviour;
         require(
@@ -54,12 +54,12 @@ contract Misbehaviour is IMisbehaviour {
         // threshold is hardcoded `>2/3` in `SpectreClient._verifyQuorum` (used for both
         // `_verifyMisbehaviourQuorum` calls in `SpectreClient.misbehaviour`). Currently
         // decoded-but-unused / reserved; see the field comment on `ClientState.trustLevel`.
-        IICS07TendermintMsgs.Options memory options = IICS07TendermintMsgs.Options({
+        ISpectreTendermintMsgs.Options memory options = ISpectreTendermintMsgs.Options({
             trustThreshold: clientState.trustLevel,
             trustingPeriod: clientState.trustingPeriod,
             clockDrift: clientState.clockDrift
         });
-        IICS07TendermintMsgs.ChainId memory chainId = IICS07TendermintMsgs.ChainId({
+        ISpectreTendermintMsgs.ChainId memory chainId = ISpectreTendermintMsgs.ChainId({
             id: clientState.chainId, revisionNumber: clientState.latestHeight.revisionNumber
         });
 
@@ -81,8 +81,8 @@ contract Misbehaviour is IMisbehaviour {
 
     function _requireTrustedConsensus(
         SpectreStore.Store storage $,
-        IICS07TendermintMsgs.Header calldata header,
-        IICS07TendermintMsgs.ConsensusState calldata trustedConsensusState
+        ISpectreTendermintMsgs.Header calldata header,
+        ISpectreTendermintMsgs.ConsensusState calldata trustedConsensusState
     )
         private
         view
@@ -121,8 +121,8 @@ contract Misbehaviour is IMisbehaviour {
         }
     }
 
-    function _validateHeaderBasic(IICS07TendermintMsgs.Header calldata header) private pure {
-        IICS07TendermintMsgs.ChainId memory chainId = ChainId.get(header.signedHeader.header.chainId);
+    function _validateHeaderBasic(ISpectreTendermintMsgs.Header calldata header) private pure {
+        ISpectreTendermintMsgs.ChainId memory chainId = ChainId.get(header.signedHeader.header.chainId);
         if (chainId.revisionNumber != header.trustedHeight.revisionNumber) {
             revert ISpectreClientErrors.MismatchedRevisionHeights(
                 chainId.revisionNumber, header.trustedHeight.revisionNumber
@@ -142,9 +142,9 @@ contract Misbehaviour is IMisbehaviour {
     }
 
     function _verifyMisbehaviourHeader(
-        IICS07TendermintMsgs.Header calldata header,
-        IICS07TendermintMsgs.ChainId memory chainId,
-        IICS07TendermintMsgs.Options memory options,
+        ISpectreTendermintMsgs.Header calldata header,
+        ISpectreTendermintMsgs.ChainId memory chainId,
+        ISpectreTendermintMsgs.Options memory options,
         uint128 trustedTime,
         uint128 currentTimestamp
     )
@@ -174,12 +174,12 @@ contract Misbehaviour is IMisbehaviour {
     }
 
     function _verifyBatchProof(
-        IICS07TendermintMsgs.Header calldata header,
+        ISpectreTendermintMsgs.Header calldata header,
         ISpectreClientMsgs.BatchProof calldata proof_
     )
         private
     {
-        IICS07TendermintMsgs.BlockCommit calldata commit = header.signedHeader.commit;
+        ISpectreTendermintMsgs.BlockCommit calldata commit = header.signedHeader.commit;
         require(
             commit.height == header.signedHeader.header.height, ISpectreClientErrors.InvalidHeaderHeight(commit.height)
         );

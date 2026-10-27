@@ -19,7 +19,7 @@ import (
 	"math/big"
 	spectreContract "relayer/bindings/SpectreClient"
 	relayerclient "relayer/client"
-	"relayer/prover"
+	"relayer/prover/witness"
 	"sort"
 	"time"
 
@@ -50,11 +50,11 @@ func (s pinnedCosmosValidatorSet) powerByPubkey() map[[32]byte]int64 {
 }
 
 func getPinnedCosmosValidatorSet(stdCtx context.Context, ctx EVMEndpoint) (pinnedCosmosValidatorSet, error) {
-	ics07, err := spectreContract.NewContractSpectreClient(*ctx.SpectreClientContract(), ctx.EthClient())
+	spectre, err := spectreContract.NewContractSpectreClient(*ctx.SpectreClientContract(), ctx.EthClient())
 	if err != nil {
-		return pinnedCosmosValidatorSet{}, fmt.Errorf("failed to create ICS07 instance: %w", err)
+		return pinnedCosmosValidatorSet{}, fmt.Errorf("failed to bind SpectreClient: %w", err)
 	}
-	out, err := ics07.GetPinnedValidatorSet(&bind.CallOpts{Context: stdCtx})
+	out, err := spectre.GetPinnedValidatorSet(&bind.CallOpts{Context: stdCtx})
 	if err != nil {
 		return pinnedCosmosValidatorSet{}, fmt.Errorf("getPinnedValidatorSet: %w", err)
 	}
@@ -82,7 +82,7 @@ func getPinnedCosmosValidatorSet(stdCtx context.Context, ctx EVMEndpoint) (pinne
 // set. Signers outside the pinned set contribute zero. The measurement is
 // per-commit: a pinned validator that merely missed this one block counts as
 // zero, which makes the rotation trigger conservative (fires early, not late).
-func pinnedOverlapPower(candidates []prover.ValidatorSignature, pinnedSet pinnedCosmosValidatorSet) int64 {
+func pinnedOverlapPower(candidates []witness.ValidatorSignature, pinnedSet pinnedCosmosValidatorSet) int64 {
 	powerByPubkey := pinnedSet.powerByPubkey()
 	var overlap int64
 	for _, candidate := range candidates {
@@ -91,9 +91,31 @@ func pinnedOverlapPower(candidates []prover.ValidatorSignature, pinnedSet pinned
 	return overlap
 }
 
-// shouldRotatePinnedSet decides whether an update whose target
-// nextValidatorsHash differs from the on-chain pinned hash rotates the pinned
-// set (updateConsensusState) or defers and stays on updateApplicationState.
+// rotationCandidate reports whether an update is considered for the
+// updateConsensusState path at all. A changed nextValidatorsHash always is.
+// forceRotation (the periodic rotation cadence) is too, even when the hash is
+// unchanged: SpectreClient checks the trusting period against the pinned
+// snapshot's timestamp, and only updateConsensusState refreshes it. On a chain
+// whose validator set never changes, gating rotation on a hash difference
+// leaves the snapshot frozen at client creation, and the client expires after
+// one trusting period no matter how many updateApplicationState calls land
+// (#541).
+func rotationCandidate(forceRotation bool, targetNextValHash, pinnedHash [32]byte) bool {
+	return forceRotation || targetNextValHash != pinnedHash
+}
+
+// forcedRotationBlockedAtHeight reports whether a forced rotation cannot be
+// built because the client is already at the target height. Without a forced
+// rotation, an up-to-date client simply needs no update; with one, the re-pin is
+// still owed. The builder anchors the proof at the latest trusted height, so it
+// needs a newer source block and must retry rather than report success (#541).
+func forcedRotationBlockedAtHeight(forceRotation bool, trustedHeight, targetHeight int64) bool {
+	return forceRotation && trustedHeight == targetHeight
+}
+
+// shouldRotatePinnedSet decides whether a rotationCandidate update rotates the
+// pinned set (updateConsensusState) or defers and stays on
+// updateApplicationState.
 // forceRotation (the refresh-routine cadence path) always rotates; otherwise
 // rotate once overlap/total ≤ threshold. With threshold "1/1" this rotates on
 // any pinned-set change.
@@ -121,14 +143,15 @@ func ethLatestHeaderTimestampNanos(stdCtx context.Context, ctx EVMEndpoint, fetc
 }
 
 func selectSignaturesForPinnedSet(
-	candidates []prover.ValidatorSignature,
+	candidates []witness.ValidatorSignature,
 	pinnedSet pinnedCosmosValidatorSet,
-) ([]prover.ValidatorSignature, error) {
+	maxBucket int,
+) ([]witness.ValidatorSignature, error) {
 	powerByPubkey := pinnedSet.powerByPubkey()
-	selected := make([]prover.ValidatorSignature, 0, len(candidates))
+	selected := make([]witness.ValidatorSignature, 0, len(candidates))
 	var pinnedAccum int64
 
-	pinnedCandidates := make([]prover.ValidatorSignature, 0, len(candidates))
+	pinnedCandidates := make([]witness.ValidatorSignature, 0, len(candidates))
 	for _, candidate := range candidates {
 		if powerByPubkey[bytesToBytes32(candidate.PublicKey)] == 0 {
 			continue
@@ -160,8 +183,8 @@ func selectSignaturesForPinnedSet(
 	if accum.Cmp(total) <= 0 {
 		return nil, fmt.Errorf("insufficient pinned-set quorum in proof candidates: have %d of %d", pinnedAccum, pinnedSet.totalPower)
 	}
-	if len(selected) > prover.MaxBucket() {
-		return nil, fmt.Errorf("pinned-set proof requires %d signers but largest bucket is %d", len(selected), prover.MaxBucket())
+	if len(selected) > maxBucket {
+		return nil, fmt.Errorf("pinned-set proof requires %d signers but largest bucket is %d", len(selected), maxBucket)
 	}
 
 	sort.Slice(selected, func(i, j int) bool {
@@ -214,6 +237,7 @@ func findHighestFeasibleHop(
 	trusted, latest int64,
 	chainId string,
 	pinnedSet pinnedCosmosValidatorSet,
+	maxBucket int,
 	directQuorumErr error,
 ) (hopCandidate, error) {
 	probed := make(map[int64]struct{})
@@ -231,11 +255,11 @@ func findHighestFeasibleHop(
 		if err != nil {
 			return hopProbeResult{}, fmt.Errorf("fetch light block at height %d: %w", height, err)
 		}
-		extracted, err := prover.ExtractValidatorSignatures(lb, chainId, nil)
+		extracted, err := ExtractValidatorSignatures(lb, chainId, maxBucket, nil)
 		if err != nil {
 			return hopProbeResult{}, fmt.Errorf("extract signatures at height %d: %w", height, err)
 		}
-		selected, err := selectSignaturesForPinnedSet(extracted.Candidates, pinnedSet)
+		selected, err := selectSignaturesForPinnedSet(extracted.Candidates, pinnedSet, maxBucket)
 		if err != nil {
 			return hopProbeResult{
 				lightBlock: lb,
@@ -278,7 +302,7 @@ func findHighestFeasibleHop(
 				return hopCandidate{}, fmt.Errorf("hop search sample height %d: %w", h, err)
 			}
 			if result.selected != nil {
-				log.Printf("RLY01_HOP_NON_MONOTONIC_SAMPLE trusted=%d target=%d hop=%d",
+				log.Printf("WARN RLY01_HOP_NON_MONOTONIC_SAMPLE trusted=%d target=%d hop=%d",
 					trusted, latest, h)
 				return hopCandidate{
 					lightBlock: result.lightBlock,

@@ -5,14 +5,13 @@ import (
 	"encoding/json"
 	"io"
 	"log"
+	"relayer/rpcmock"
+	"relayer/services"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	coretypes "github.com/cometbft/cometbft/rpc/core/types"
-
-	"relayer/rpcmock"
-	"relayer/services"
 )
 
 // TestRecoveryTick is the point of the change: one exposure target must produce
@@ -64,8 +63,6 @@ func TestRecoveryTick(t *testing.T) {
 // TestBlockRate covers the sampling: it must refuse to report a rate it has not
 // observed rather than invent one, because an invented rate resizes the tick.
 func TestBlockRate(t *testing.T) {
-	t.Parallel()
-
 	start := time.Unix(1_700_000_000, 0)
 
 	t.Run("says nothing before a block has passed", func(t *testing.T) {
@@ -149,133 +146,133 @@ func TestBlockRate(t *testing.T) {
 			t.Fatalf("blockTime after the restart = %s (ok=%v), want 6s measured from the reorg", got, ok)
 		}
 	})
-}
 
-// TestCosmosRecoveryFeedsTheBlockRate covers the WIRING, not the type. Every
-// test above drives blockRate directly, so all of them stayed green while the
-// Cosmos recovery loop passed its *blockRate around without ever calling
-// observe on a successful head read -- the tick stayed at its fixed fallback
-// forever. The ETH mirror (recoverEthGapToLatest) observes right after its head
-// fetch; this asserts the Cosmos path does the same.
-func TestCosmosRecoveryFeedsTheBlockRate(t *testing.T) {
-	t.Parallel()
+	// TestBlockRate/cosmos recovery feeds the block rate covers the WIRING, not the type. Every
+	// test above drives blockRate directly, so all of them stayed green while the
+	// Cosmos recovery loop passed its *blockRate around without ever calling
+	// observe on a successful head read -- the tick stayed at its fixed fallback
+	// forever. The ETH mirror (recoverEthGapToLatest) observes right after its head
+	// fetch; this asserts the Cosmos path does the same.
+	t.Run("cosmos recovery feeds the block rate", func(t *testing.T) {
+		t.Parallel()
 
-	var height atomic.Int64
-	height.Store(100)
-	node := rpcmock.NewCosmosNode(t)
-	node.Handle("status", func(json.RawMessage) (any, error) {
-		return &coretypes.ResultStatus{
-			SyncInfo: coretypes.SyncInfo{LatestBlockHeight: height.Load()},
-		}, nil
-	})
+		var height atomic.Int64
+		height.Store(100)
+		node := rpcmock.NewCosmosNode(t)
+		node.Handle("status", func(json.RawMessage) (any, error) {
+			return &coretypes.ResultStatus{
+				SyncInfo: coretypes.SyncInfo{LatestBlockHeight: height.Load()},
+			}, nil
+		})
 
-	deps := cosmosDeps{
-		Cosmos: services.CosmosEndpoint{Client: node.Client(t)},
-		Logger: log.New(io.Discard, "", 0),
-	}
-	var (
-		s          Subscriber
-		rate       blockRate
-		quietScans uint64
-		liveHealth cosmosLiveHealth
-		// Far above any head the stub reports, so cosmosScanRange finds nothing to
-		// scan and the pass ends right after the head read -- the only part under test.
-		cursor = uint64(1_000_000)
-	)
-	recover := func() {
-		t.Helper()
-		if _, err := s.recoverCosmosGapToLatest(context.Background(), deps, services.NewBatchBuilder(),
-			&cursor, map[cosmosEventKey]struct{}{}, &quietScans, &liveHealth, &rate); err != nil {
-			t.Fatalf("recovery pass: %v", err)
+		deps := cosmosDeps{
+			Cosmos: services.CosmosEndpoint{Client: node.Client(t)},
+			Logger: log.New(io.Discard, "", 0),
 		}
-	}
-
-	recover()
-	if _, ok := rate.blockTime(); ok {
-		t.Fatal("one head read is not a rate; blockTime must not claim to know one yet")
-	}
-
-	height.Store(110)
-	recover()
-
-	if _, ok := rate.blockTime(); !ok {
-		t.Fatal("two recovery passes over an advancing chain taught the rate nothing: " +
-			"the head read is not reaching rate.observe, so recoveryTick never leaves its fallback")
-	}
-}
-
-// Reported by @DongLieu on #451, and it is the sibling of the idle-then-burst
-// case above rather than a repeat of it. That one is a head that did not move;
-// this one is a head that DID move, just not while anyone was watching.
-//
-// observe cannot tell them apart: height > lastHeight only says the chain
-// advanced, never whether the subscriber was connected while it did. So a window
-// carried across a reconnect reports the size of the outage rather than the rate
-// of the chain -- and it does so at the worst moment, when the cursor is furthest
-// behind and the recovery tick most needs to be tight.
-//
-// The fix is structural rather than a call: SubscribeCosmos and SubscribeEth now
-// declare their blockRate INSIDE the reconnect loop, so each subscription gets a
-// fresh window and there is no reset anyone can forget. These two subtests are
-// what that structure buys and what it avoids.
-func TestBlockRateAcrossAReconnect(t *testing.T) {
-	// One subscription's window, then the next subscription's own.
-	t.Run("a fresh window per subscription measures the chain", func(t *testing.T) {
-		start := time.Now()
-
-		var first blockRate
-		first.observe(100, start)
-		first.observe(110, start.Add(10*time.Second))
-		if got, ok := first.blockTime(); !ok || got != time.Second {
-			t.Fatalf("blockTime before the outage = %v (ok=%v), want 1s", got, ok)
+		var (
+			s          Subscriber
+			rate       blockRate
+			quietScans uint64
+			liveHealth cosmosLiveHealth
+			// Far above any head the stub reports, so cosmosScanRange finds nothing to
+			// scan and the pass ends right after the head read -- the only part under test.
+			cursor = uint64(1_000_000)
+		)
+		recover := func() {
+			t.Helper()
+			if _, err := s.recoverCosmosGapToLatest(context.Background(), deps, services.NewBatchBuilder(),
+				&cursor, map[cosmosEventKey]struct{}{}, &quietScans, &liveHealth, &rate); err != nil {
+				t.Fatalf("recovery pass: %v", err)
+			}
 		}
 
-		// The subscription drops for ten minutes. The chain is demand-driven and
-		// quiet, so it produces two blocks the whole time. The loop then starts a
-		// new iteration, which is a new blockRate.
-		var second blockRate
-		reconnected := start.Add(10 * time.Minute)
-		second.observe(112, reconnected)
-		if _, ok := second.blockTime(); ok {
-			t.Fatal("a single reading reported a block time; one sample is a baseline, not a rate")
+		recover()
+		if _, ok := rate.blockTime(); ok {
+			t.Fatal("one head read is not a rate; blockTime must not claim to know one yet")
 		}
 
-		second.observe(122, reconnected.Add(10*time.Second))
-		got, ok := second.blockTime()
-		if !ok {
-			t.Fatal("no block time after two post-reconnect readings")
-		}
-		if got != time.Second {
-			t.Fatalf("blockTime = %v, want 1s", got)
-		}
-		if tick := recoveryTick(got); tick != minRecoveryTick {
-			t.Fatalf("recoveryTick = %v, want the %v floor for a one-second chain", tick, minRecoveryTick)
+		height.Store(110)
+		recover()
+
+		if _, ok := rate.blockTime(); !ok {
+			t.Fatal("two recovery passes over an advancing chain taught the rate nothing: " +
+				"the head read is not reaching rate.observe, so recoveryTick never leaves its fallback")
 		}
 	})
 
-	// The harm the structure avoids, kept as a measurement rather than a claim:
-	// one window spanning the outage sees 22 blocks across 10m10s, ~27s a block,
-	// which pins the tick to its ceiling.
-	t.Run("one window spanning the outage measures the outage", func(t *testing.T) {
-		start := time.Now()
-		var rate blockRate
-		rate.observe(100, start)
-		rate.observe(110, start.Add(10*time.Second))
-		reconnected := start.Add(10 * time.Minute)
-		rate.observe(112, reconnected)
-		rate.observe(122, reconnected.Add(10*time.Second))
+	// Reported by @DongLieu on #451, and it is the sibling of the idle-then-burst
+	// case above rather than a repeat of it. That one is a head that did not move;
+	// this one is a head that DID move, just not while anyone was watching.
+	//
+	// observe cannot tell them apart: height > lastHeight only says the chain
+	// advanced, never whether the subscriber was connected while it did. So a window
+	// carried across a reconnect reports the size of the outage rather than the rate
+	// of the chain -- and it does so at the worst moment, when the cursor is furthest
+	// behind and the recovery tick most needs to be tight.
+	//
+	// The fix is structural rather than a call: SubscribeCosmos and SubscribeEth now
+	// declare their blockRate INSIDE the reconnect loop, so each subscription gets a
+	// fresh window and there is no reset anyone can forget. These two subtests are
+	// what that structure buys and what it avoids.
+	t.Run("across a reconnect", func(t *testing.T) {
+		// One subscription's window, then the next subscription's own.
+		t.Run("a fresh window per subscription measures the chain", func(t *testing.T) {
+			start := time.Now()
 
-		got, ok := rate.blockTime()
-		if !ok {
-			t.Fatal("no block time")
-		}
-		if got < 20*time.Second {
-			t.Fatalf("blockTime = %v; this subtest exists to show the un-reset behaviour is badly "+
-				"inflated, so the per-subscription window above is measuring something real", got)
-		}
-		if recoveryTick(got) != maxRecoveryTick {
-			t.Fatalf("recoveryTick = %v, want the ceiling: that is what a shared window costs",
-				recoveryTick(got))
-		}
+			var first blockRate
+			first.observe(100, start)
+			first.observe(110, start.Add(10*time.Second))
+			if got, ok := first.blockTime(); !ok || got != time.Second {
+				t.Fatalf("blockTime before the outage = %v (ok=%v), want 1s", got, ok)
+			}
+
+			// The subscription drops for ten minutes. The chain is demand-driven and
+			// quiet, so it produces two blocks the whole time. The loop then starts a
+			// new iteration, which is a new blockRate.
+			var second blockRate
+			reconnected := start.Add(10 * time.Minute)
+			second.observe(112, reconnected)
+			if _, ok := second.blockTime(); ok {
+				t.Fatal("a single reading reported a block time; one sample is a baseline, not a rate")
+			}
+
+			second.observe(122, reconnected.Add(10*time.Second))
+			got, ok := second.blockTime()
+			if !ok {
+				t.Fatal("no block time after two post-reconnect readings")
+			}
+			if got != time.Second {
+				t.Fatalf("blockTime = %v, want 1s", got)
+			}
+			if tick := recoveryTick(got); tick != minRecoveryTick {
+				t.Fatalf("recoveryTick = %v, want the %v floor for a one-second chain", tick, minRecoveryTick)
+			}
+		})
+
+		// The harm the structure avoids, kept as a measurement rather than a claim:
+		// one window spanning the outage sees 22 blocks across 10m10s, ~27s a block,
+		// which pins the tick to its ceiling.
+		t.Run("one window spanning the outage measures the outage", func(t *testing.T) {
+			start := time.Now()
+			var rate blockRate
+			rate.observe(100, start)
+			rate.observe(110, start.Add(10*time.Second))
+			reconnected := start.Add(10 * time.Minute)
+			rate.observe(112, reconnected)
+			rate.observe(122, reconnected.Add(10*time.Second))
+
+			got, ok := rate.blockTime()
+			if !ok {
+				t.Fatal("no block time")
+			}
+			if got < 20*time.Second {
+				t.Fatalf("blockTime = %v; this subtest exists to show the un-reset behaviour is badly "+
+					"inflated, so the per-subscription window above is measuring something real", got)
+			}
+			if recoveryTick(got) != maxRecoveryTick {
+				t.Fatalf("recoveryTick = %v, want the ceiling: that is what a shared window costs",
+					recoveryTick(got))
+			}
+		})
 	})
 }

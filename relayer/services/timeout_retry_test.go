@@ -1,9 +1,12 @@
 package services
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
+	client "relayer/client"
+	relayerclient "relayer/client"
 	"strings"
 	"testing"
 	"time"
@@ -15,10 +18,10 @@ func trackedPacket(seq uint64) channeltypesv2.Packet {
 	return channeltypesv2.Packet{SourceClient: "client-0", Sequence: seq}
 }
 
-// TestNextTimeoutBackoffGrowsAndCaps pins the schedule: 1m, 2m, 4m … capped at
+// TestNextTimeoutBackoff_GrowsAndCaps pins the schedule: 1m, 2m, 4m … capped at
 // 30m. Without it a deterministically-failing timeout was re-attempted on the raw
 // 30s scan cadence, and every attempt costs a Groth16 proof and a transaction.
-func TestNextTimeoutBackoffGrowsAndCaps(t *testing.T) {
+func TestNextTimeoutBackoff_GrowsAndCaps(t *testing.T) {
 	want := []time.Duration{
 		1 * time.Minute, 2 * time.Minute, 4 * time.Minute, 8 * time.Minute,
 		16 * time.Minute, 30 * time.Minute, 30 * time.Minute,
@@ -34,67 +37,9 @@ func TestNextTimeoutBackoffGrowsAndCaps(t *testing.T) {
 	}
 }
 
-// A failed timeout submission must hold the packet out of the next scans, so the
-// scanner stops re-proving it every 30 seconds.
-func TestRecordTimeoutFailureHoldsPacketOutOfScan(t *testing.T) {
-	tr := NewPendingPacketTracker()
-	tr.Add(trackedPacket(1), 100)
-
-	now := time.Now()
-	if got := len(tr.GetDue(now)); got != 1 {
-		t.Fatalf("a fresh packet must be due, got %d", got)
-	}
-
-	if dead := tr.recordTimeoutFailureForTest("client-0", 1, now); dead {
-		t.Fatal("one failure must not dead-letter")
-	}
-	if got := len(tr.GetDue(now)); got != 0 {
-		t.Fatalf("packet under backoff must not be re-scanned, got %d due", got)
-	}
-	// It comes back once the backoff elapses.
-	if got := len(tr.GetDue(now.Add(2 * time.Minute))); got != 1 {
-		t.Fatalf("packet must be due again after its backoff, got %d", got)
-	}
-}
-
-// After maxTimeoutAttempts the packet stops being retried and is kept for an
-// operator. It must leave the scan set — otherwise the cap achieves nothing.
-func TestRecordTimeoutFailureDeadLettersAtCap(t *testing.T) {
-	tr := NewPendingPacketTracker()
-	tr.Add(trackedPacket(1), 100)
-
-	now := time.Now()
-	for i := 1; i <= maxTimeoutAttempts; i++ {
-		if dead := tr.recordTimeoutFailureForTest("client-0", 1, now); dead {
-			t.Fatalf("attempt %d dead-lettered early (cap is %d)", i, maxTimeoutAttempts)
-		}
-	}
-	if dead := tr.recordTimeoutFailureForTest("client-0", 1, now); !dead {
-		t.Fatalf("attempt %d must dead-letter", maxTimeoutAttempts+1)
-	}
-	if tr.Len() != 0 {
-		t.Fatalf("a dead-lettered packet must leave the scan set, %d still tracked", tr.Len())
-	}
-	if got := tr.DeadLetteredTimeouts(); got != 1 {
-		t.Fatalf("DeadLetteredTimeouts = %d, want 1 — escrowed funds must stay visible", got)
-	}
-}
-
-// Recording against a packet that is no longer tracked (it succeeded, or was
-// purged) must be a no-op rather than resurrecting it.
-func TestRecordTimeoutFailureIgnoresUnknownPacket(t *testing.T) {
-	tr := NewPendingPacketTracker()
-	if dead := tr.recordTimeoutFailureForTest("client-0", 99, time.Now()); dead {
-		t.Fatal("unknown packet must not be reported as dead-lettered")
-	}
-	if tr.Len() != 0 || tr.DeadLetteredTimeouts() != 0 {
-		t.Fatal("unknown packet must not be added to any set")
-	}
-}
-
-// TestDeadLettersRemainVisibleUntilRetryRetentionExpires ensures a read-only
+// TestDeadLetteredTimeouts_LettersRemainVisibleUntilRetryRetentionExpires ensures a read-only
 // inspection does not clear the gauge while the timeout remains suppressed.
-func TestDeadLettersRemainVisibleUntilRetryRetentionExpires(t *testing.T) {
+func TestDeadLetteredTimeouts_LettersRemainVisibleUntilRetryRetentionExpires(t *testing.T) {
 	tracker, packet := trackerWith(t, 1)
 	deadAt := time.Now()
 	for i := 0; i <= maxTimeoutAttempts; i++ {
@@ -118,7 +63,7 @@ func TestDeadLettersRemainVisibleUntilRetryRetentionExpires(t *testing.T) {
 // OldestDeadLetteredTimeout reports zero with nothing dead-lettered and a real
 // age once something is — a count alone cannot distinguish a failure nobody has
 // looked at from one that just happened.
-func TestOldestDeadLetterReportsAge(t *testing.T) {
+func TestOldestDeadLetteredTimeout_LetterReportsAge(t *testing.T) {
 	tracker := NewPendingPacketTracker()
 	if age := tracker.OldestDeadLetteredTimeout(time.Now()); age != 0 {
 		t.Fatalf("empty queue must report zero age, got %s", age)
@@ -193,5 +138,153 @@ func TestTimeoutScanTagsAreChainNamesNotWorkNames(t *testing.T) {
 					i+1, m[1], m[1])
 			}
 		}
+	}
+}
+
+// TestTimeoutOutcomeForError_DefersTransientFailures is the second half of the
+// "only charge what the packet caused" rule, on the per-packet send path rather
+// than the shared client-update one.
+//
+// SendEthTx returns untyped errors for everything before a transaction exists
+// (nonce lookup, fee estimation, broadcast) and for a receipt wait that timed
+// out after the transaction may already have been accepted. Charging those let
+// an RPC outage burn all maxTimeoutAttempts and dead-letter an escrowed packet
+// whose timeout transaction was never confirmed — the property this change set
+// out to remove, reappearing one layer down.
+func TestTimeoutOutcomeForError_DefersTransientFailures(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		err  error
+		want timeoutSendOutcome
+	}{
+		{"nonce lookup failed", errors.New("failed to get pending nonce"), timeoutDeferred},
+		{"broadcast failed", errors.New("dial tcp: connection refused"), timeoutDeferred},
+		{"receipt wait timed out", errors.New("transaction wait mined timed out after 5 attempts"), timeoutDeferred},
+		{"rate limited", errors.New("429 Too Many Requests"), timeoutDeferred},
+
+		{"on-chain revert is attributable", ErrPermanentRelayFailure, timeoutFailed},
+		{"wrapped permanent failure", fmt.Errorf("tx reverted: %w", ErrPermanentRelayFailure), timeoutFailed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := timeoutOutcomeForError(tc.err); got != tc.want {
+				t.Fatalf("timeoutOutcomeForError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// A proof build fails in several ways, and only one of them is evidence about
+// the packet. Getting this split wrong is expensive in both directions: charge
+// an endpoint's failure and an escrowed packet is dead-lettered for someone
+// else's downtime; defer a packet that was already received and the scanner
+// rebuilds a proof that can never succeed, forever, at the 30-minute cap.
+func TestTimeoutOutcomeForError_ChargesOnlyPacketAttributableProofFailures(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		err  error
+		want timeoutSendOutcome
+	}{
+		{
+			"receipt slot already holds a value",
+			fmt.Errorf("failed to get ETH non-membership proof: storage slot not empty at key 0xabc: value=0x1: %w",
+				relayerclient.ErrPacketAlreadyReceived),
+			// Delivered, not failed: it leaves the tracker without charging.
+			timeoutAlreadyReceived,
+		},
+		{"eth_getProof transport error", errors.New("eth_getProof failed: connection refused"), timeoutDeferred},
+		{"answer carried no storage proof", errors.New("eth_getProof returned no storage proofs"), timeoutDeferred},
+		{"proof answered at the wrong height", errors.New("proof height mismatch"), timeoutDeferred},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := timeoutOutcomeForError(tc.err); got != tc.want {
+				t.Fatalf("timeoutOutcomeForError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// The ETH direction's mirror of TestPendingPacketTracker/received packet is dropped not dead lettered.
+//
+// scanForEthTimeouts checks the ETH commitment, then builds a Cosmos
+// non-membership proof. When the receipt landed between those two steps the
+// proof cannot be built -- and that is not a failure, it is delivery. Reading it
+// as a generic proof error defers the packet at the backoff cap forever and ends
+// in a STUCK alert about a packet whose funds moved normally.
+//
+// This was a one-sided fix: the Cosmos scanner recognised the sentinel and the
+// ETH scanner did not.
+func TestPacketIsDone_EthTimeoutTreatsAReceivedPacketAsDone(t *testing.T) {
+	t.Parallel()
+
+	received := fmt.Errorf("build non-membership proof: %w", relayerclient.ErrPacketAlreadyReceived)
+
+	// Built by the production path, not hand-assembled: this is what catches the
+	// sentinel being dropped from cosmosNonMembership's receipt check.
+	if !errors.Is(cosmosReceiptPresentError(1234, 32), relayerclient.ErrPacketAlreadyReceived) {
+		t.Fatal("a Cosmos receipt at the non-membership path must carry ErrPacketAlreadyReceived; " +
+			"without it the packet is deferred forever and raises a false STUCK alert")
+	}
+
+	got := timeoutOutcomeForError(received)
+	if got != timeoutAlreadyReceived {
+		t.Fatalf("timeoutOutcomeForError(already-received) = %v, want timeoutAlreadyReceived", got)
+	}
+	if !got.packetIsDone() {
+		t.Fatal("an already-received packet must leave the tracker, not be retried")
+	}
+	if got == timeoutFailed {
+		t.Fatal("an already-received packet must not charge the retry budget")
+	}
+
+	// The outcomes that are genuinely unfinished must not claim to be done.
+	for _, o := range []timeoutSendOutcome{timeoutNotDue, timeoutDeferred, timeoutFailed} {
+		if o.packetIsDone() {
+			t.Fatalf("outcome %v reported done; the packet still needs timeout work", o)
+		}
+	}
+	if !timeoutSent.packetIsDone() {
+		t.Fatal("a landed timeout must be done")
+	}
+}
+
+func TestApplyTimeoutOutcome_DistinguishesDeferralFailureAndCompletion(t *testing.T) {
+	tracker := NewPendingPacketTracker()
+	now := time.Now()
+	packet := timeoutRetryPacket(2)
+	tracker.Add(packet, 10)
+	info := tracker.GetAll()[0]
+
+	applyTimeoutOutcome(tracker, info, timeoutDeferred, now, "test")
+	if due := tracker.GetDue(now); len(due) != 0 {
+		t.Fatalf("deferred packet remained due: %d", len(due))
+	}
+	applyTimeoutOutcome(tracker, info, timeoutNotDue, now, "test")
+	if got := tracker.GetAll()[0].Deferrals; got != 2 {
+		t.Fatalf("not-due packet deferrals = %d, want 2", got)
+	}
+	if due := tracker.GetDue(now); len(due) != 0 {
+		t.Fatalf("not-due packet remained immediately eligible: %d", len(due))
+	}
+	applyTimeoutOutcome(tracker, info, timeoutAlreadyReceived, now, "test")
+	if tracker.Len() != 0 {
+		t.Fatal("already-received packet remained in timeout tracker")
+	}
+
+	if got := timeoutOutcomeForError(client.ErrPacketAlreadyReceived); got != timeoutAlreadyReceived {
+		t.Fatalf("already received outcome = %d", got)
+	}
+	if got := timeoutOutcomeForError(ErrPermanentRelayFailure); got != timeoutFailed {
+		t.Fatalf("permanent failure outcome = %d", got)
+	}
+	if got := timeoutOutcomeForError(errors.New("rpc unavailable")); got != timeoutDeferred {
+		t.Fatalf("transient failure outcome = %d", got)
 	}
 }

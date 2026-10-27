@@ -1,21 +1,22 @@
 package main
 
 import (
+	attestorpb "attestor/types/attestor"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"sort"
-	"strings"
-	"testing"
-
-	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
-
 	"relayer/chain"
 	"relayer/chain/l2rollup"
 	"relayer/services"
+	"strings"
+	"testing"
+	"time"
+
+	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
+	"github.com/ethereum/go-ethereum/common"
 )
 
 func validL2Config() l2ToCosmosConfig {
@@ -33,13 +34,14 @@ func validL2Config() l2ToCosmosConfig {
 	}
 }
 
-func TestL2Config_Validate(t *testing.T) {
+func TestL2ToCosmosConfig_Validate(t *testing.T) {
 	if err := validL2Config().validate(); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
 	}
 
 	cases := map[string]func(*l2ToCosmosConfig){
 		"missing l2_rpc_url":        func(c *l2ToCosmosConfig) { c.L2RpcUrl = "" },
+		"blank attestor source":     func(c *l2ToCosmosConfig) { c.AttestorSrcChain = " \t" },
 		"missing attestor endpoint": func(c *l2ToCosmosConfig) { c.AttestorEndpoints = nil },
 		"missing wasm client id":    func(c *l2ToCosmosConfig) { c.L2WasmClientID = "" },
 		"empty profile":             func(c *l2ToCosmosConfig) { c.RollupProfile = nil },
@@ -55,12 +57,12 @@ func TestL2Config_Validate(t *testing.T) {
 	}
 }
 
-// TestL2Config_ValidateForClientCreation covers #309: create-clients-cosmos is the
+// TestL2ToCosmosConfig_ValidateForClientCreation covers #309: create-clients-cosmos is the
 // command that CREATES the L2 wasm client and writes its id back into the config,
 // so requiring that id to already be present made a fresh config unusable — the
 // operator had to invent a plausible one, which the command then overwrote. Only
 // that id is exempt; everything else is still needed to reach the chain at all.
-func TestL2Config_ValidateForClientCreation(t *testing.T) {
+func TestL2ToCosmosConfig_ValidateForClientCreation(t *testing.T) {
 	c := validL2Config()
 	c.L2WasmClientID = ""
 	if err := c.validateForClientCreation(); err != nil {
@@ -74,6 +76,7 @@ func TestL2Config_ValidateForClientCreation(t *testing.T) {
 		"missing l2_ics26_client":   func(c *l2ToCosmosConfig) { c.L2ICS26ClientID = "" },
 		"missing tm_rpc_url":        func(c *l2ToCosmosConfig) { c.TmRpcUrl = "" },
 		"missing attestor_src":      func(c *l2ToCosmosConfig) { c.AttestorSrcChain = "" },
+		"blank attestor_src":        func(c *l2ToCosmosConfig) { c.AttestorSrcChain = " \t" },
 		"empty profile":             func(c *l2ToCosmosConfig) { c.RollupProfile = nil },
 		"bad head_kind":             func(c *l2ToCosmosConfig) { c.HeadKind = "nonsense" },
 	} {
@@ -121,10 +124,10 @@ func TestLoadConfigForClientCreation_AcceptsUncreatedWasmClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadConfigForClientCreation rejected a pre-creation config: %v", err)
 	}
-	if len(cfg.L2ToCosmosConfigs) != 1 {
-		t.Fatalf("L2ToCosmosConfigs = %d, want 1", len(cfg.L2ToCosmosConfigs))
+	if !cfg.HasL2ToCosmos {
+		t.Fatal("HasL2ToCosmos = false, want the module recorded")
 	}
-	if got := cfg.L2ToCosmosConfigs[0].L2ICS26ClientID; got != "arb-client-0" {
+	if got := cfg.L2ToCosmosConfig.L2ICS26ClientID; got != "arb-client-0" {
 		t.Errorf("l2_ics26_client_id = %q, want arb-client-0", got)
 	}
 
@@ -138,7 +141,7 @@ func TestLoadConfigForClientCreation_AcceptsUncreatedWasmClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadConfig after write-back: %v", err)
 	}
-	if got := reloaded.L2ToCosmosConfigs[0].L2WasmClientID; got != "08-wasm-0" {
+	if got := reloaded.L2ToCosmosConfig.L2WasmClientID; got != "08-wasm-0" {
 		t.Errorf("l2_wasm_client_id = %q, want 08-wasm-0", got)
 	}
 }
@@ -164,6 +167,86 @@ func TestParseHeadKind(t *testing.T) {
 	}
 }
 
+func TestResolveIncludeProvisional(t *testing.T) {
+	trueValue, falseValue := true, false
+	cases := []struct {
+		name        string
+		headKind    l2rollup.HeadKind
+		override    *bool
+		wantInclude bool
+		wantWarning string
+	}{
+		{name: "unsafe default", headKind: l2rollup.Unsafe, wantInclude: true},
+		{name: "safe default", headKind: l2rollup.Safe, wantInclude: true},
+		{name: "finalized default", headKind: l2rollup.Finalized, wantInclude: false},
+		{name: "finalized explicit false", headKind: l2rollup.Finalized, override: &falseValue, wantInclude: false},
+		{
+			name:        "finalized explicit true warns that the height gate accepts provisional roots",
+			headKind:    l2rollup.Finalized,
+			override:    &trueValue,
+			wantInclude: true,
+			wantWarning: "l2->cosmos finalized head_kind with include_provisional=true accepts provisional attestor roots for relayability; state-root verification remains finalized",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotInclude, gotWarning := resolveIncludeProvisional(tc.headKind, tc.override)
+			if gotInclude != tc.wantInclude || gotWarning != tc.wantWarning {
+				t.Fatalf("resolveIncludeProvisional() = (%v, %q), want (%v, %q)", gotInclude, gotWarning, tc.wantInclude, tc.wantWarning)
+			}
+		})
+	}
+}
+
+type timeoutRecoveryFrontier struct {
+	root       *attestorpb.AttestedRoot
+	gotChain   string
+	gotInclude bool
+}
+
+func (f *timeoutRecoveryFrontier) AttestedUpTo(_ context.Context, srcChain string, includeProvisional bool) (*attestorpb.AttestedRoot, bool, error) {
+	f.gotChain = srcChain
+	f.gotInclude = includeProvisional
+	return f.root, true, nil
+}
+
+type timeoutRecoveryMessage struct{ at time.Time }
+
+func (m timeoutRecoveryMessage) EncodeClientMessage() ([]byte, error) {
+	return []byte(`{"type":"header"}`), nil
+}
+func (m timeoutRecoveryMessage) TrustedAt() time.Time { return m.at }
+
+type timeoutRecoveryHeaderBuilder struct{ requested uint64 }
+
+func (b *timeoutRecoveryHeaderBuilder) Name() string { return "test-attestor" }
+func (b *timeoutRecoveryHeaderBuilder) BuildHeader(_ context.Context, request l2rollup.HeaderRequest) (l2rollup.ClientMessage, uint64, error) {
+	b.requested = request.Height
+	return timeoutRecoveryMessage{at: time.Unix(1_700_000_000, 0)}, request.Height, nil
+}
+
+func TestNewL2TimeoutRecovery_UsesAttestedFrontier(t *testing.T) {
+	cfg := validL2Config()
+	frontier := &timeoutRecoveryFrontier{root: &attestorpb.AttestedRoot{L2BlockNumber: 88}}
+	builder := &timeoutRecoveryHeaderBuilder{}
+	recovery := newL2TimeoutRecovery(cfg, builder, frontier, nil, common.Address{}, false)
+
+	update, err := recovery.BuildUpdate(context.Background())
+	if err != nil {
+		t.Fatalf("build timeout update: %v", err)
+	}
+	if frontier.gotChain != cfg.AttestorSrcChain || frontier.gotInclude {
+		t.Fatalf("frontier query = chain=%q include_provisional=%t, want %q false", frontier.gotChain, frontier.gotInclude, cfg.AttestorSrcChain)
+	}
+	if builder.requested != 88 || update.Height != 88 || update.Timestamp != 1_700_000_000 {
+		t.Fatalf("attested update = requested=%d height=%d timestamp=%d, want 88/88/1700000000", builder.requested, update.Height, update.Timestamp)
+	}
+	if recovery.ClientID != cfg.L2WasmClientID || string(update.Payload) != `{"type":"header"}` || recovery.BuildNonMembershipProof == nil {
+		t.Fatalf("recovery = %+v, want paired wasm client, header payload, and L2 proof callback", recovery)
+	}
+}
+
 func TestL2RouterFromProfile(t *testing.T) {
 	addr, err := l2RouterFromProfile(json.RawMessage(`{"common":{"l2_router":"0xAbC1111111111111111111111111111111111111"}}`))
 	if err != nil {
@@ -179,101 +262,66 @@ func TestL2RouterFromProfile(t *testing.T) {
 			t.Fatalf("expected error for %q", bad)
 		}
 	}
-}
 
-// TestLoadConfig_L2Source confirms an l2_to_cosmos module parses into
-// appConfig.L2ToCosmosConfigs (no longer the fail-loud "not wired" error).
-func TestLoadConfig_L2Source(t *testing.T) {
-	raw := `{"modules":[{"name":"op","src_chain":"opstack","dst_chain":"cosmos","config":{
-		"l1_rpc_url":"http://l1","l2_rpc_url":"http://l2","tm_rpc_url":"http://tm",
-		"attestor_endpoints":[{"address":"127.0.0.1:3001","attestor_index":0}],"attestor_src_chain":"op-sepolia",
-		"attestors":{"public_keys":["gojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="],"threshold":1},
-		"eth_beacon_api_url":"http://beacon",
-		"l2_wasm_client_id":"08-wasm-1","l2_ics26_client_id":"client-0","head_kind":"safe",
-		"rollup_profile":{"common":{"l2_chain_id":10,"l2_router":"0x1111111111111111111111111111111111111111"}}}}]}`
-	var jc jsonConfig
-	if err := json.Unmarshal([]byte(raw), &jc); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	m := jc.Modules[0]
-	dir, _, err := classifyModule(m)
-	if err != nil || dir != dirL2ToCosmos {
-		t.Fatalf("classify = %v, %v; want dirL2ToCosmos", dir, err)
-	}
-	var one l2ToCosmosConfig
-	if err := json.Unmarshal(m.Config, &one); err != nil {
-		t.Fatalf("parse l2 config: %v", err)
-	}
-	one.kind = chain.ChainType(m.SrcChain)
-	if err := one.validate(); err != nil {
-		t.Fatalf("validate parsed l2 config: %v", err)
-	}
-	if one.kind != chain.OPStack || one.AttestorSrcChain != "op-sepolia" {
-		t.Fatalf("parsed config mismatch: %+v", one)
-	}
-}
+	// TestL2RouterFromProfile/example L2 router matches pair pins the one cross-module invariant the example
+	// has to demonstrate: a return module's rollup_profile.common.l2_router is the
+	// SAME contract as its forward pair's ics26_address. deploy_l2_contracts.sh
+	// writes both from one deploy, so an example where they disagree teaches the
+	// mistake that used to break the return direction silently.
+	t.Run("example L2 router matches pair", func(t *testing.T) {
+		t.Parallel()
 
-func TestLoadConfig_RejectsAttestorKeyReuseAcrossFinalityTiers(t *testing.T) {
-	module := func(name, head string, attestors [][]byte) configModule {
-		cfg := validL2Config()
-		cfg.HeadKind = head
-		cfg.Attestors.PublicKeys = attestors
-		raw, err := json.Marshal(cfg)
+		raw, err := os.ReadFile(filepath.Join("..", "config.example.json"))
 		if err != nil {
-			t.Fatalf("marshal L2 config: %v", err)
+			t.Fatalf("read catalogue: %v", err)
 		}
-		return configModule{
-			Name: name, SrcChain: string(chain.OPStack), DstChain: string(chain.Cosmos), Config: raw,
+		var parsed struct {
+			Modules []struct {
+				Name   string `json:"name"`
+				Config struct {
+					ICS26Address    string `json:"ics26_address"`
+					ICS26ClientID   string `json:"ics26_client_id"`
+					L2ICS26ClientID string `json:"l2_ics26_client_id"`
+					RollupProfile   *struct {
+						Common struct {
+							L2Router string `json:"l2_router"`
+						} `json:"common"`
+					} `json:"rollup_profile"`
+				} `json:"config"`
+			} `json:"modules"`
 		}
-	}
-	writeConfig := func(modules []configModule) string {
-		t.Helper()
-		raw, err := json.Marshal(jsonConfig{Modules: modules})
-		if err != nil {
-			t.Fatalf("marshal config: %v", err)
+		if err := json.Unmarshal(raw, &parsed); err != nil {
+			t.Fatalf("parse catalogue: %v", err)
 		}
-		path := filepath.Join(t.TempDir(), "config.json")
-		if err := os.WriteFile(path, raw, 0o600); err != nil {
-			t.Fatalf("write config: %v", err)
+
+		routerByClientID := map[string]string{}
+		for _, m := range parsed.Modules {
+			if m.Config.ICS26ClientID != "" && m.Config.ICS26Address != "" {
+				routerByClientID[m.Config.ICS26ClientID] = m.Config.ICS26Address
+			}
 		}
-		return path
-	}
 
-	shared := validL2Attestors().PublicKeys
-	_, err := loadConfig(writeConfig([]configModule{
-		module("op-safe", "safe", shared),
-		module("op-finalized", "finalized", shared),
-	}))
-	if err == nil || !strings.Contains(err.Error(), "reuse attestor public key") || !strings.Contains(err.Error(), "disjoint keys per finality tier") {
-		t.Fatalf("cross-tier key reuse error = %v", err)
-	}
-
-	distinct := make([]byte, len(shared[0]))
-	copy(distinct, shared[0])
-	distinct[0]--
-	overlapping := [][]byte{shared[0], distinct}
-	sort.Slice(overlapping, func(i, j int) bool { return string(overlapping[i]) < string(overlapping[j]) })
-	_, err = loadConfig(writeConfig([]configModule{
-		module("op-safe", "safe", shared),
-		module("op-finalized", "finalized", overlapping),
-	}))
-	if err == nil || !strings.Contains(err.Error(), "reuse attestor public key") {
-		t.Fatalf("partially overlapping cross-tier keys error = %v", err)
-	}
-
-	if _, err := loadConfig(writeConfig([]configModule{
-		module("op-safe-a", "safe", shared),
-		module("op-safe-b", "", shared),
-	})); err != nil {
-		t.Fatalf("same-tier key reuse rejected: %v", err)
-	}
-
-	if _, err := loadConfig(writeConfig([]configModule{
-		module("op-safe", "safe", shared),
-		module("op-finalized", "finalized", [][]byte{distinct}),
-	})); err != nil {
-		t.Fatalf("separate finality-tier key sets rejected: %v", err)
-	}
+		checked := 0
+		for _, m := range parsed.Modules {
+			if m.Config.RollupProfile == nil {
+				continue
+			}
+			want, ok := routerByClientID[m.Config.L2ICS26ClientID]
+			if !ok {
+				t.Errorf("module %q has l2_ics26_client_id %q with no forward pair",
+					m.Name, m.Config.L2ICS26ClientID)
+				continue
+			}
+			if got := m.Config.RollupProfile.Common.L2Router; got != want {
+				t.Errorf("module %q l2_router = %s, want its pair's ics26_address %s",
+					m.Name, got, want)
+			}
+			checked++
+		}
+		if checked == 0 {
+			t.Fatal("no l2_to_cosmos modules were checked; the catalogue lost its L2 pairs")
+		}
+	})
 }
 
 func newChainIDRPCServer(t *testing.T, chainIDHex string) *httptest.Server {

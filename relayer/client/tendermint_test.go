@@ -2,59 +2,22 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"math/big"
-	"testing"
-
+	"reflect"
 	misbehaviourContract "relayer/bindings/Misbehaviour"
 	spectreContract "relayer/bindings/SpectreClient"
 	updateClientContract "relayer/bindings/UpdateClient"
+	"testing"
+	"time"
 
-	ics23 "github.com/cosmos/ics23/go"
+	cmted25519 "github.com/cometbft/cometbft/crypto/ed25519"
+	coretypes "github.com/cometbft/cometbft/rpc/core/types"
+	commettypes "github.com/cometbft/cometbft/types"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 )
-
-func TestParseTrustThreshold(t *testing.T) {
-	tests := []struct {
-		name    string
-		input   string
-		wantNum uint8
-		wantDen uint8
-		wantErr bool
-	}{
-		{name: "valid 2/3", input: "2/3", wantNum: 2, wantDen: 3},
-		{name: "valid 1/3", input: "1/3", wantNum: 1, wantDen: 3},
-		{name: "invalid format dash", input: "2-3", wantErr: true},
-		{name: "invalid format no separator", input: "abc", wantErr: true},
-		{name: "invalid numerator", input: "abc/3", wantErr: true},
-		{name: "invalid denominator", input: "2/abc", wantErr: true},
-		{name: "zero denominator", input: "2/0", wantErr: true},
-		{name: "numerator exceeds uint8", input: "300/6", wantErr: true},
-		{name: "denominator exceeds uint8", input: "2/256", wantErr: true},
-		{name: "uint8 max accepted", input: "255/255", wantNum: 255, wantDen: 255},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := ParseTrustThreshold(tc.input)
-			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected error for input %q, got nil", tc.input)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error for input %q: %v", tc.input, err)
-			}
-			if got.Numerator != tc.wantNum {
-				t.Errorf("numerator: got %d, want %d", got.Numerator, tc.wantNum)
-			}
-			if got.Denominator != tc.wantDen {
-				t.Errorf("denominator: got %d, want %d", got.Denominator, tc.wantDen)
-			}
-		})
-	}
-}
 
 func TestEncodeMisbehaviourContractMsg(t *testing.T) {
 	proof := misbehaviourContract.ISpectreClientMsgsBatchProof{}
@@ -65,15 +28,15 @@ func TestEncodeMisbehaviourContractMsg(t *testing.T) {
 		proof.Commitments[i] = big.NewInt(0)
 		proof.CommitmentPok[i] = big.NewInt(0)
 	}
-	header := misbehaviourContract.IICS07TendermintMsgsHeader{}
+	header := misbehaviourContract.ISpectreTendermintMsgsHeader{}
 	header.SignedHeader.Header.Time = big.NewInt(0)
 	msg := misbehaviourContract.ISpectreClientMsgsMsgSubmitMisbehaviour{
 		Misbehaviour: misbehaviourContract.ISpectreClientMsgsMisbehaviour{
 			Header1: header,
 			Header2: header,
 		},
-		TrustedConsensusState1: misbehaviourContract.IICS07TendermintMsgsConsensusState{Timestamp: big.NewInt(1)},
-		TrustedConsensusState2: misbehaviourContract.IICS07TendermintMsgsConsensusState{Timestamp: big.NewInt(2)},
+		TrustedConsensusState1: misbehaviourContract.ISpectreTendermintMsgsConsensusState{Timestamp: big.NewInt(1)},
+		TrustedConsensusState2: misbehaviourContract.ISpectreTendermintMsgsConsensusState{Timestamp: big.NewInt(2)},
 		Time:                   big.NewInt(3),
 		Proof1:                 proof,
 		Proof2:                 proof,
@@ -84,288 +47,6 @@ func TestEncodeMisbehaviourContractMsg(t *testing.T) {
 	}
 	if len(encoded) == 0 {
 		t.Fatal("expected non-empty ABI payload")
-	}
-}
-
-func TestParseLeafOp(t *testing.T) {
-	t.Run("nil input returns zero value", func(t *testing.T) {
-		result := ParseLeafOp(nil)
-		if result.HashOp != 0 {
-			t.Errorf("HashOp: got %d, want 0", result.HashOp)
-		}
-		if result.PrehashKey != 0 {
-			t.Errorf("PrehashKey: got %d, want 0", result.PrehashKey)
-		}
-		if result.PrehashValue != 0 {
-			t.Errorf("PrehashValue: got %d, want 0", result.PrehashValue)
-		}
-		if result.Prefix != nil {
-			t.Errorf("Prefix: got %v, want nil", result.Prefix)
-		}
-	})
-
-	t.Run("valid leaf op", func(t *testing.T) {
-		leafOp := &ics23.LeafOp{
-			Hash:         ics23.HashOp_SHA256,
-			PrehashKey:   ics23.HashOp_NO_HASH,
-			PrehashValue: ics23.HashOp_SHA256,
-			Prefix:       []byte{0x00},
-		}
-		result := ParseLeafOp(leafOp)
-		if result.HashOp != uint8(ics23.HashOp_SHA256) {
-			t.Errorf("HashOp: got %d, want %d", result.HashOp, uint8(ics23.HashOp_SHA256))
-		}
-		if result.PrehashKey != uint8(ics23.HashOp_NO_HASH) {
-			t.Errorf("PrehashKey: got %d, want %d", result.PrehashKey, uint8(ics23.HashOp_NO_HASH))
-		}
-		if result.PrehashValue != uint8(ics23.HashOp_SHA256) {
-			t.Errorf("PrehashValue: got %d, want %d", result.PrehashValue, uint8(ics23.HashOp_SHA256))
-		}
-		if len(result.Prefix) != 1 || result.Prefix[0] != 0x00 {
-			t.Errorf("Prefix: got %v, want [0x00]", result.Prefix)
-		}
-	})
-}
-
-func TestParseInnerOp(t *testing.T) {
-	t.Run("nil input returns zero value", func(t *testing.T) {
-		result := ParseInnerOp(nil)
-		if result.HashOp != 0 {
-			t.Errorf("HashOp: got %d, want 0", result.HashOp)
-		}
-		if result.Prefix != nil {
-			t.Errorf("Prefix: got %v, want nil", result.Prefix)
-		}
-		if result.Suffix != nil {
-			t.Errorf("Suffix: got %v, want nil", result.Suffix)
-		}
-	})
-
-	t.Run("valid inner op", func(t *testing.T) {
-		innerOp := &ics23.InnerOp{
-			Hash:   ics23.HashOp_SHA256,
-			Prefix: []byte{0x01},
-			Suffix: []byte{0x02},
-		}
-		result := ParseInnerOp(innerOp)
-		if result.HashOp != uint8(ics23.HashOp_SHA256) {
-			t.Errorf("HashOp: got %d, want %d", result.HashOp, uint8(ics23.HashOp_SHA256))
-		}
-		if len(result.Prefix) != 1 || result.Prefix[0] != 0x01 {
-			t.Errorf("Prefix: got %v, want [0x01]", result.Prefix)
-		}
-		if len(result.Suffix) != 1 || result.Suffix[0] != 0x02 {
-			t.Errorf("Suffix: got %v, want [0x02]", result.Suffix)
-		}
-	})
-}
-
-func TestEncodeClientState(t *testing.T) {
-	t.Run("valid client state encodes without error", func(t *testing.T) {
-		clientState := ClientState{
-			ChainId: "cosmoshub-4",
-			TrustLevel: TrustThreshold{
-				Numerator:   2,
-				Denominator: 3,
-			},
-			LatestHeight: updateClientContract.IICS02ClientMsgsHeight{
-				RevisionNumber: 4,
-				RevisionHeight: 100,
-			},
-			TrustingPeriod:  1209600,
-			UnbondingPeriod: 1814400,
-			IsFrozen:        false,
-			ClockDrift:      15,
-		}
-		encoded, err := EncodeClientState(clientState)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if len(encoded) == 0 {
-			t.Fatal("encoded result should not be empty")
-		}
-	})
-}
-
-func TestDecodeClientState(t *testing.T) {
-	original := ClientState{
-		ChainId: "cosmoshub-4",
-		TrustLevel: TrustThreshold{
-			Numerator:   2,
-			Denominator: 3,
-		},
-		LatestHeight: updateClientContract.IICS02ClientMsgsHeight{
-			RevisionNumber: 4,
-			RevisionHeight: 100,
-		},
-		TrustingPeriod:  1209600,
-		UnbondingPeriod: 1814400,
-		IsFrozen:        false,
-		ClockDrift:      15,
-	}
-
-	encoded, err := EncodeClientState(original)
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
-
-	decoded, err := DecodeClientState(encoded)
-	if err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-
-	if decoded.ChainId != original.ChainId {
-		t.Errorf("ChainId: got %q, want %q", decoded.ChainId, original.ChainId)
-	}
-	if decoded.TrustLevel.Numerator != original.TrustLevel.Numerator {
-		t.Errorf("TrustLevel.Numerator: got %d, want %d", decoded.TrustLevel.Numerator, original.TrustLevel.Numerator)
-	}
-	if decoded.TrustLevel.Denominator != original.TrustLevel.Denominator {
-		t.Errorf("TrustLevel.Denominator: got %d, want %d", decoded.TrustLevel.Denominator, original.TrustLevel.Denominator)
-	}
-	if decoded.LatestHeight.RevisionNumber != original.LatestHeight.RevisionNumber {
-		t.Errorf("LatestHeight.RevisionNumber: got %d, want %d", decoded.LatestHeight.RevisionNumber, original.LatestHeight.RevisionNumber)
-	}
-	if decoded.LatestHeight.RevisionHeight != original.LatestHeight.RevisionHeight {
-		t.Errorf("LatestHeight.RevisionHeight: got %d, want %d", decoded.LatestHeight.RevisionHeight, original.LatestHeight.RevisionHeight)
-	}
-	if decoded.TrustingPeriod != original.TrustingPeriod {
-		t.Errorf("TrustingPeriod: got %d, want %d", decoded.TrustingPeriod, original.TrustingPeriod)
-	}
-	if decoded.UnbondingPeriod != original.UnbondingPeriod {
-		t.Errorf("UnbondingPeriod: got %d, want %d", decoded.UnbondingPeriod, original.UnbondingPeriod)
-	}
-	if decoded.IsFrozen != original.IsFrozen {
-		t.Errorf("IsFrozen: got %v, want %v", decoded.IsFrozen, original.IsFrozen)
-	}
-	if decoded.ClockDrift != original.ClockDrift {
-		t.Errorf("ClockDrift: got %d, want %d", decoded.ClockDrift, original.ClockDrift)
-	}
-}
-
-func TestEncodeConsensusState(t *testing.T) {
-	t.Run("valid consensus state encodes without error", func(t *testing.T) {
-		consensusState := updateClientContract.IICS07TendermintMsgsConsensusState{
-			Timestamp:          big.NewInt(1700000000000),
-			Root:               [32]byte{0x01, 0x02, 0x03},
-			NextValidatorsHash: [32]byte{0x04, 0x05, 0x06},
-		}
-		encoded, err := EncodeConsensusState(consensusState)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if len(encoded) == 0 {
-			t.Fatal("encoded result should not be empty")
-		}
-	})
-}
-
-// TestEncodeUpdateApplicationStateMsgMatchesGeneratedABI checks that the manual
-// ABI tuple (updateApplicationStateMsgType) produces bytes that the abigen-
-// generated UpdateClient.verifyHeader input tuple can round-trip — i.e. the
-// hand-built encoding matches the generated ABI exactly.
-// fullyPopulatedApplicationStateMsg is the fixture both update encoders share.
-// Shared on purpose: two copies drift, and the field a copy forgets to set is
-// exactly the field that then goes unchecked -- CommitSigs was left empty here
-// once, and the validatorAddress bug rode through green tests to chain.
-func fullyPopulatedApplicationStateMsg() updateClientContract.ISpectreClientMsgsMsgUpdateApplicationState {
-	var validatorsHash [32]byte
-	validatorsHash[0] = 0x88
-	validatorsHash[1] = 0xbe
-
-	zero8 := [8]*big.Int{}
-	for i := range zero8 {
-		zero8[i] = big.NewInt(0)
-	}
-	zero2 := [2]*big.Int{big.NewInt(0), big.NewInt(0)}
-
-	msg := updateClientContract.ISpectreClientMsgsMsgUpdateApplicationState{
-		TrustedConsensusState: updateClientContract.IICS07TendermintMsgsConsensusState{
-			Timestamp:          big.NewInt(1700000000000000000),
-			NextValidatorsHash: validatorsHash,
-		},
-		ProposedHeader: updateClientContract.IICS07TendermintMsgsHeader{
-			SignedHeader: updateClientContract.IICS07TendermintMsgsSignedHeader{
-				Header: updateClientContract.IICS07TendermintMsgsBlockHeader{
-					ChainId:            "test-0",
-					Time:               big.NewInt(1700000001000000000),
-					ValidatorsHash:     validatorsHash,
-					NextValidatorsHash: validatorsHash,
-				},
-				Commit: updateClientContract.IICS07TendermintMsgsBlockCommit{
-					Height: 58,
-					CommitSigs: []updateClientContract.IICS07TendermintMsgsCommitSig{{
-						Flag:             2,
-						ValidatorAddress: [20]byte{0x12, 0x34, 0x56, 0x78},
-					}},
-				},
-			},
-			TrustedHeight: updateClientContract.IICS02ClientMsgsHeight{
-				RevisionNumber: 0,
-				RevisionHeight: 19,
-			},
-		},
-		Time: big.NewInt(1700000002000000000),
-		Proof: updateClientContract.ISpectreClientMsgsBatchProof{
-			Proof:                  zero8,
-			Commitments:            zero2,
-			CommitmentPok:          zero2,
-			Bucket:                 16,
-			SignerIndices:          []uint32{0, 1},
-			PinnedValidatorIndices: []uint32{7, 8},
-			SignerPubkeys:          [][32]byte{{0x01}, {0x02}},
-			Active:                 []bool{true, true},
-		},
-	}
-	return msg
-}
-
-func TestEncodeUpdateApplicationStateMsgMatchesGeneratedABI(t *testing.T) {
-	var validatorsHash [32]byte
-	validatorsHash[0] = 0x88
-	validatorsHash[1] = 0xbe
-	msg := fullyPopulatedApplicationStateMsg()
-
-	encoded, err := EncodeUpdateApplicationStateMsg(msg)
-	if err != nil {
-		t.Fatalf("encode update application state msg: %v", err)
-	}
-
-	contractABI, err := updateClientContract.ContractUpdateClientMetaData.GetAbi()
-	if err != nil {
-		t.Fatalf("parse generated ABI: %v", err)
-	}
-	if got, want := updateApplicationStateMsgType.String(), contractABI.Methods["verifyHeader"].Inputs[0].Type.String(); got != want {
-		t.Fatalf("manual ABI tuple diverged from the generated contract ABI\n got=%s\nwant=%s", got, want)
-	}
-	unpacked, err := contractABI.Methods["verifyHeader"].Inputs.Unpack(encoded)
-	if err != nil {
-		t.Fatalf("generated ABI failed to unpack encoded msg: %v", err)
-	}
-	if len(unpacked) != 1 {
-		t.Fatalf("unpacked %d values, want 1", len(unpacked))
-	}
-
-	jsonBytes, err := json.Marshal(unpacked[0])
-	if err != nil {
-		t.Fatalf("marshal unpacked tuple: %v", err)
-	}
-	var decoded updateClientContract.ISpectreClientMsgsMsgUpdateApplicationState
-	if err := json.Unmarshal(jsonBytes, &decoded); err != nil {
-		t.Fatalf("unmarshal decoded update msg: %v", err)
-	}
-	if decoded.ProposedHeader.SignedHeader.Header.ValidatorsHash != validatorsHash {
-		t.Fatalf(
-			"validatorsHash decoded incorrectly: got %x want %x",
-			decoded.ProposedHeader.SignedHeader.Header.ValidatorsHash,
-			validatorsHash,
-		)
-	}
-	if len(decoded.Proof.PinnedValidatorIndices) != 2 || decoded.Proof.PinnedValidatorIndices[0] != 7 || decoded.Proof.PinnedValidatorIndices[1] != 8 {
-		t.Fatalf("pinned validator indices decoded incorrectly: %+v", decoded.Proof.PinnedValidatorIndices)
-	}
-	if got := decoded.ProposedHeader.SignedHeader.Commit.CommitSigs; len(got) != 1 || got[0].Flag != 2 || got[0].ValidatorAddress != ([20]byte{0x12, 0x34, 0x56, 0x78}) {
-		t.Fatalf("commit signatures decoded incorrectly: %+v", got)
 	}
 }
 
@@ -471,13 +152,13 @@ func TestEncodeUpdateConsensusStateMsg(t *testing.T) {
 		// exactly how the validatorAddress bug stayed green in the sibling test
 		// while the relayer reverted every packet on chain.
 		msg := fullyPopulatedApplicationStateMsg()
-		valSet := spectreContract.IICS07TendermintMsgsValidatorSet{
-			Validators: []spectreContract.IICS07TendermintMsgsValidatorInfo{
+		valSet := spectreContract.ISpectreTendermintMsgsValidatorSet{
+			Validators: []spectreContract.ISpectreTendermintMsgsValidatorInfo{
 				{ValAddress: []byte{0xa1, 0xa2}, PubKey: [32]byte{0x11}, VotingPower: 300, ProposerPriority: -7},
 				{ValAddress: []byte{0xb1, 0xb2}, PubKey: [32]byte{0x22}, VotingPower: 200, ProposerPriority: 5},
 			},
 			HasProposer:      true,
-			Proposer:         spectreContract.IICS07TendermintMsgsValidatorInfo{ValAddress: []byte{0xc1}, PubKey: [32]byte{0x33}, VotingPower: 300, ProposerPriority: -7},
+			Proposer:         spectreContract.ISpectreTendermintMsgsValidatorInfo{ValAddress: []byte{0xc1}, PubKey: [32]byte{0x33}, VotingPower: 300, ProposerPriority: -7},
 			TotalVotingPower: 500,
 		}
 
@@ -547,4 +228,150 @@ func TestEncodeUpdateConsensusStateMsg(t *testing.T) {
 			t.Errorf("commit sig validator address = %x, want %x", got, want)
 		}
 	})
+}
+
+func TestSpectreClientGenesis_PinsNextValidatorSet(t *testing.T) {
+	currentValSet := genesisTestValSet("current", 10, 20, 30)
+	nextValSet := genesisTestValSet("next", 10, 20, 30)
+	if bytes.Equal(currentValSet.Hash(), nextValSet.Hash()) {
+		t.Fatal("test setup requires different current and next validator-set hashes")
+	}
+
+	trustedLightBlock := &LightBlock{
+		SignedHeader: commettypes.SignedHeader{
+			Header: &commettypes.Header{
+				ChainID:            "test-chain-1",
+				Height:             123,
+				Time:               time.Unix(1_700_000_000, 0),
+				ValidatorsHash:     currentValSet.Hash(),
+				NextValidatorsHash: nextValSet.Hash(),
+				AppHash:            []byte("app-hash"),
+			},
+		},
+		ValSet:      currentValSet,
+		NextValSet:  nextValSet,
+		BlockHeight: 123,
+	}
+
+	genesis, err := spectreClientGenesisFromLightBlock(trustedLightBlock, 1_814_400, 0, "2/3", 0)
+	if err != nil {
+		t.Fatalf("unexpected genesis error: %v", err)
+	}
+
+	currentPinned, err := ValidatorSetToContract(currentValSet, "current")
+	if err != nil {
+		t.Fatalf("current ValidatorSetToContract: %v", err)
+	}
+	nextPinned, err := ValidatorSetToContract(nextValSet, "next")
+	if err != nil {
+		t.Fatalf("next ValidatorSetToContract: %v", err)
+	}
+
+	if got, want := genesis.TrustedConsensusState.NextValidatorsHash, bytesToBytes32(nextValSet.Hash()); got != want {
+		t.Fatalf("next validators hash: got %X, want %X", got, want)
+	}
+	if got, want := genesis.TrustedConsensusState.Timestamp, big.NewInt(trustedLightBlock.SignedHeader.Header.Time.UnixNano()); got.Cmp(want) != 0 {
+		t.Fatalf("consensus timestamp: got %s, want %s", got, want)
+	}
+	if got, want := genesis.TrustedConsensusState.Root, bytesToBytes32(trustedLightBlock.SignedHeader.Header.AppHash); got != want {
+		t.Fatalf("consensus root: got %X, want %X", got, want)
+	}
+	if !reflect.DeepEqual(genesis.InitialPinnedValidatorSet, nextPinned) {
+		t.Fatal("initial pinned validator set should come from the trusted light block's next validator set")
+	}
+	if reflect.DeepEqual(genesis.InitialPinnedValidatorSet, currentPinned) {
+		t.Fatal("initial pinned validator set must not come from the current validator set")
+	}
+}
+
+func genesisTestValSet(name string, powers ...int64) commettypes.ValidatorSet {
+	validators := make([]*commettypes.Validator, len(powers))
+	for i, power := range powers {
+		secret := []byte(fmt.Sprintf("%s-%d", name, i))
+		validators[i] = commettypes.NewValidator(cmted25519.GenPrivKeyFromSecret(secret).PubKey(), power)
+	}
+	return *commettypes.NewValidatorSet(validators)
+}
+
+// fakePager is a test double for the CometBFT validators RPC. It paginates a
+// backing slice and records the perPage values it was asked for, so tests can
+// assert we never fall back to the nil/default-30 behavior (issue #105).
+type fakePager struct {
+	all         []*commettypes.Validator
+	perPageSeen []int
+	failOnPage  int // 0 = never fail
+}
+
+func (f *fakePager) Validators(_ context.Context, _ *int64, page, perPage *int) (*coretypes.ResultValidators, error) {
+	if perPage == nil {
+		return nil, fmt.Errorf("perPage must not be nil (would trigger default-30 truncation)")
+	}
+	f.perPageSeen = append(f.perPageSeen, *perPage)
+	if f.failOnPage != 0 && *page == f.failOnPage {
+		return nil, fmt.Errorf("simulated RPC failure on page %d", *page)
+	}
+	pp := *perPage
+	start := min((*page-1)*pp, len(f.all))
+	end := min(start+pp, len(f.all))
+	return &coretypes.ResultValidators{
+		Validators: f.all[start:end],
+		Count:      end - start,
+		Total:      len(f.all),
+	}, nil
+}
+
+func makeVals(n int) []*commettypes.Validator {
+	vals := make([]*commettypes.Validator, n)
+	for i := range vals {
+		vals[i] = &commettypes.Validator{
+			Address:     fmt.Appendf(nil, "addr-%04d", i),
+			VotingPower: int64(i + 1),
+		}
+	}
+	return vals
+}
+
+func TestFetchAllValidators_PagesFullSet(t *testing.T) {
+	cases := []struct {
+		name      string
+		total     int
+		wantPages int
+	}{
+		{"empty", 0, 1},
+		{"under one page", 17, 1},
+		{"exactly 30 (old default boundary)", 30, 1},
+		{"just over old default", 31, 1},
+		{"exactly one max page", 100, 1},
+		{"just over one page", 101, 2},
+		{"large set (180 validators)", 180, 2},
+		{"multi page (250)", 250, 3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakePager{all: makeVals(tc.total)}
+			got, err := fetchAllValidators(context.Background(), f, 42)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(got) != tc.total {
+				t.Fatalf("got %d validators, want full set of %d (truncation regression)", len(got), tc.total)
+			}
+			if len(f.perPageSeen) != tc.wantPages {
+				t.Fatalf("made %d RPC pages, want %d", len(f.perPageSeen), tc.wantPages)
+			}
+			for i, pp := range f.perPageSeen {
+				if pp != cometBFTMaxPerPage {
+					t.Fatalf("page %d requested perPage=%d, want explicit %d (nil would default to 30)", i+1, pp, cometBFTMaxPerPage)
+				}
+			}
+		})
+	}
+}
+
+func TestFetchAllValidators_PropagatesError(t *testing.T) {
+	f := &fakePager{all: makeVals(150), failOnPage: 2}
+	_, err := fetchAllValidators(context.Background(), f, 42)
+	if err == nil {
+		t.Fatal("expected error when a page fetch fails, got nil")
+	}
 }

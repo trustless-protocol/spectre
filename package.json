@@ -1,5 +1,5 @@
 {
-  "name": "@decentrio/fast-ibc",
+  "name": "@decentrio/spectre",
   "description": "IBC v2 Solidity implementation with gnark Groth16 light client verification.",
   "version": "1.0.0",
   "dependencies": {

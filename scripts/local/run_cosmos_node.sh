@@ -36,6 +36,38 @@ USER_BALANCES=(
     "200000000000${DENOM}"
 )
 
+# Extra test tokens funded in genesis next to the staking denom, so one devnet can
+# exercise several denoms over IBC.
+#
+# Native non-staking denom, sent as-is.
+EXTRA_NATIVE_DENOMS=(uatom)
+# IBC vouchers, as "<port>/<client-or-channel>/<base>" traces. ibc-go's transfer
+# keeper only resolves "ibc/<hash>" through its denom-trace store, and a bank
+# balance alone does not populate it: a transfer of an unregistered hash fails with
+# "denomination trace not found". Each trace is therefore also written to the
+# transfer genesis `denoms`, and the hash below is sha256(<trace path>) in upper
+# hex (the full 64 hex chars ibc-go derives), e.g. transfer/channel-536/uusdc ->
+# ibc/F663521B...2509013.
+IBC_DENOM_TRACES=(
+    "transfer/channel-536/uusdc"
+    "transfer/channel-141/uosmo"
+    "transfer/channel-0/uusdt"
+)
+EXTRA_AMOUNT="1000000000000"
+
+ibc_denom_hash() {
+    printf 'ibc/%s' "$(printf '%s' "$1" | shasum -a 256 | awk '{print toupper($1)}')"
+}
+
+# Comma-separated coin list appended to every user balance.
+EXTRA_COINS=""
+for d in "${EXTRA_NATIVE_DENOMS[@]}"; do
+    EXTRA_COINS+="${EXTRA_COINS:+,}${EXTRA_AMOUNT}${d}"
+done
+for trace in "${IBC_DENOM_TRACES[@]}"; do
+    EXTRA_COINS+="${EXTRA_COINS:+,}${EXTRA_AMOUNT}$(ibc_denom_hash "$trace")"
+done
+
 P2P_PORTS=(26656 26756 26856 26956)
 RPC_PORTS=(26657 26757 26857 26957)
 PROXY_PORTS=(26658 26758 26858 26958)
@@ -86,15 +118,31 @@ for i in "${!USER_KEYS[@]}"; do
     "$GAIAD" keys add "${USER_KEYS[$i]}" --keyring-backend "$KEYRING" --home "$PRIMARY_HOME"
 done
 
-jq '.app_state["gov"]["params"]["voting_period"]="30s"' "$PRIMARY_HOME/config/genesis.json" > "$PRIMARY_HOME/config/tmp_genesis.json"
+# The four-validator local network can take roughly one consensus block per
+# 30 seconds on a loaded dev host. Give the automated validator votes one full
+# block to land before the proposal expires.
+jq '.app_state["gov"]["params"]["voting_period"]="60s"' "$PRIMARY_HOME/config/genesis.json" > "$PRIMARY_HOME/config/tmp_genesis.json"
 mv "$PRIMARY_HOME/config/tmp_genesis.json" "$PRIMARY_HOME/config/genesis.json"
 jq '.app_state["gov"]["params"]["expedited_voting_period"]="20s"' "$PRIMARY_HOME/config/genesis.json" > "$PRIMARY_HOME/config/tmp_genesis.json"
 mv "$PRIMARY_HOME/config/tmp_genesis.json" "$PRIMARY_HOME/config/genesis.json"
 jq '.app_state["feemarket"]["params"]["max_block_utilization"]="300000000"' "$PRIMARY_HOME/config/genesis.json" > "$PRIMARY_HOME/config/tmp_genesis.json"
 mv "$PRIMARY_HOME/config/tmp_genesis.json" "$PRIMARY_HOME/config/genesis.json"
 
+# Register each IBC voucher's denom trace so the transfer module can resolve "ibc/<hash>".
+for trace in "${IBC_DENOM_TRACES[@]}"; do
+    jq --arg trace "$trace" '
+        ($trace | split("/")) as $parts
+        | ($parts[-1]) as $base
+        | ($parts[:-1]) as $hops
+        | .app_state.transfer.denoms += [{
+            base: $base,
+            trace: [range(0; ($hops | length); 2) | {port_id: $hops[.], channel_id: $hops[. + 1]}]
+        }]' "$PRIMARY_HOME/config/genesis.json" > "$PRIMARY_HOME/config/tmp_genesis.json"
+    mv "$PRIMARY_HOME/config/tmp_genesis.json" "$PRIMARY_HOME/config/genesis.json"
+done
+
 for i in "${!USER_KEYS[@]}"; do
-    "$GAIAD" genesis add-genesis-account "${USER_KEYS[$i]}" "${USER_BALANCES[$i]}" --keyring-backend "$KEYRING" --home "$PRIMARY_HOME"
+    "$GAIAD" genesis add-genesis-account "${USER_KEYS[$i]}" "${USER_BALANCES[$i]},${EXTRA_COINS}" --keyring-backend "$KEYRING" --home "$PRIMARY_HOME"
 done
 
 for i in "${!VAL_KEYS[@]}"; do

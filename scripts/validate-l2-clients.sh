@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export LC_ALL=C
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
@@ -26,7 +27,8 @@ ibc_go_max_wasm_size=$((3 * 1024 * 1024))
 approved_upload_limit=$((ibc_go_max_wasm_size * 9 / 10))
 validate_optimized="${VALIDATE_OPTIMIZED:-0}"
 go_cache="${GOCACHE:-/tmp/spectre-wasm-go-cache}"
-go_library_path="$root/third_party/ecip-gnark${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+go_library_path="$root/.artifacts/native${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export CGO_LDFLAGS="-L$root/.artifacts/native${CGO_LDFLAGS:+ $CGO_LDFLAGS}"
 optimizer_cargo_cache="${OPTIMIZER_CARGO_CACHE:-${CARGO_HOME:-${HOME}/.cargo}}"
 
 case "$validate_optimized" in

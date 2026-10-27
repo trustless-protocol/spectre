@@ -12,9 +12,11 @@ import (
 	"relayer/chain/wasmclient"
 	relayerclient "relayer/client"
 	"relayer/services"
+	"relayer/subscriber"
 
 	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
+	ibcexported "github.com/cosmos/ibc-go/v10/modules/core/exported"
 )
 
 // Destination is the Cosmos implementation of chain.Destination for the ETH->Cosmos
@@ -153,30 +155,33 @@ func highestBeaconFinalizedSlot(payloads [][]byte) (uint64, error) {
 // and the resulting failure surfaces as an opaque trie error from inside CosmWasm.
 //
 // ETH-origin timeouts are handled by the async scanner, not this path.
-func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPacket) error {
+// buildPacketMessages emits exactly one message per packet, in order, and
+// SendCosmosTxBatch commits sub-batches front to back, so the message count it
+// reports as committed is also the packet prefix that was delivered.
+func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPacket) (int, error) {
 	if len(packets) == 0 {
-		return nil
+		return 0, nil
 	}
 	if err := ctx.Err(); err != nil {
-		return err // shutting down — do not start a packet tx
+		return 0, err // shutting down — do not start a packet tx
 	}
 	signerAddr, err := d.worker.TxHandler.CosmosSignerAddress()
 	if err != nil {
-		return fmt.Errorf("cosmos dest: signer address: %w", err)
+		return 0, fmt.Errorf("cosmos dest: signer address: %w", err)
 	}
 	readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	ethClientState, err := relayerclient.GetEthereumClientState(readCtx, d.cosmos.CosmosClient(), d.clientID)
 	if err != nil {
-		return fmt.Errorf("cosmos dest: eth client state: %w", err)
+		return 0, fmt.Errorf("cosmos dest: eth client state: %w", err)
 	}
 	if err := requireProofsBuiltAt(packets, ethClientState.LatestExecutionBlockNumber); err != nil {
-		return err
+		return 0, err
 	}
 	proofHeight := clienttypes.Height{RevisionNumber: 0, RevisionHeight: ethClientState.LatestSlot}
 	msgs, err := buildPacketMessages(signerAddr, proofHeight, packets)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	return d.sendPacketBatch(ctx, msgs)
 }
@@ -303,30 +308,42 @@ func buildPacketMessages(signer string, proofHeight clienttypes.Height, packets 
 	return msgs, nil
 }
 
-func (d *Destination) sendPacketBatch(ctx context.Context, msgs []any) error {
+// sendPacketBatch returns how many of msgs are on chain. A split batch can
+// commit its leading sub-batches and then fail, and SendCosmosTxBatch reports
+// that count in BatchPartialError; dropping it here is what made the caller
+// re-queue -- and re-submit -- packets that were already delivered.
+func (d *Destination) sendPacketBatch(ctx context.Context, msgs []any) (int, error) {
 	if len(msgs) == 0 {
-		return nil
+		return 0, nil
 	}
 	// A deterministic Cosmos DeliverTx revert cannot succeed on retry — surface it
 	// as chain.Permanent so the module DROPS the batch rather than re-queueing it
 	// forever (each retry re-runs the beacon client update and drains gas). CheckTx/
 	// broadcast/RPC errors stay transient and are re-queued.
 	if err := d.worker.TxHandler.SendCosmosTxBatch(ctx, d.cosmos, msgs); err != nil {
+		committed := services.CommittedBeforeFailure(err)
 		if errors.Is(err, services.ErrPermanentRelayFailure) {
-			return chain.Permanent(err)
+			return committed, chain.Permanent(err)
 		}
-		return err
+		return committed, err
 	}
-	return nil
+	return len(msgs), nil
 }
 
 // HasPacketReceipt reports whether an ETH-origin packet was already delivered on
-// Cosmos. NOTE: not used by the current RelayModule flow (it drives timeout
-// scanning, which is not yet wired into the module). A correct implementation
-// needs a verified Cosmos-side packet-receipt ABCI query; left explicit rather
-// than guessed.
-func (d *Destination) HasPacketReceipt(_ context.Context, _ []byte) (bool, error) {
-	return false, fmt.Errorf("cosmos dest: HasPacketReceipt not wired (timeout-scan, unused by module)")
+// Cosmos, via the same receipt ABCI query the ETH recovery path and the L2
+// destination use. It used to be a "not wired" stub because nothing in the
+// module read it; the enumeration backstop does (dropSettled), so an answer
+// that is always an error would have relayed every enumerated receive twice.
+func (d *Destination) HasPacketReceipt(ctx context.Context, packet []byte) (bool, error) {
+	if d.cosmos.CosmosClient() == nil {
+		return false, fmt.Errorf("cosmos dest: no Cosmos client to query receipts on")
+	}
+	var pkt channeltypesv2.Packet
+	if err := pkt.Unmarshal(packet); err != nil {
+		return false, fmt.Errorf("cosmos dest: decode packet: %w", err)
+	}
+	return subscriber.HasCosmosPacketReceipt(ctx, d.cosmos, pkt)
 }
 
 // ClientExpiresAt returns a conservative expiry for the 08-wasm ETH light client
@@ -370,4 +387,21 @@ func ethClientExpiry(cs *relayerclient.EthereumClientState) (time.Time, time.Dur
 	// is measured from.
 	return time.Unix(int64(cs.ComputeTimestampAtSlot(cs.LatestSlot)+periodSecs), 0),
 		time.Duration(periodSecs) * time.Second
+}
+
+// ClientActive asks ibc-go for the client's status. Anything but Active --
+// Frozen or Expired -- is a client that rejects every packet message.
+var _ chain.ClientStatusChecker = (*Destination)(nil)
+
+func (d *Destination) ClientActive(ctx context.Context) (bool, string, error) {
+	if d.cosmos.CosmosClient() == nil {
+		return false, "", fmt.Errorf("cosmos dest: no Cosmos client to query client status on")
+	}
+	readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	status, err := relayerclient.GetClientStatus(readCtx, d.cosmos.CosmosClient(), d.clientID)
+	if err != nil {
+		return false, "", fmt.Errorf("cosmos dest: client status: %w", err)
+	}
+	return status == ibcexported.Active.String(), status, nil
 }

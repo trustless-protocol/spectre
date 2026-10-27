@@ -8,7 +8,6 @@ import (
 
 	contractICS26Router "relayer/bindings/ICS26Router"
 	spectreContract "relayer/bindings/SpectreClient"
-	"relayer/prover"
 	"relayer/services"
 	"relayer/transaction"
 
@@ -57,7 +56,7 @@ func buildMisbehaviourCalldata(
 	prepared services.PreparedCosmosMisbehaviour,
 ) (common.Address, string, []byte, error) {
 	router := evm.RouterContract()
-	if transaction.RouterManagesProofSubmission(evm) {
+	if evm.RouterManagesProofSubmission() {
 		parsed, err := contractICS26Router.ContractICS26RouterMetaData.GetAbi()
 		if err != nil {
 			return common.Address{}, "", nil, fmt.Errorf("load ICS26Router ABI: %w", err)
@@ -114,13 +113,6 @@ func writeMisbehaviourDryRun(
 	return encoder.Encode(out)
 }
 
-// allowMisbehaviourEnvOverride preserves the legacy single-source environment
-// overrides without letting stale process state replace an explicit --source
-// selection from a multi-source config.
-func allowMisbehaviourEnvOverride(cfg *appConfig) bool {
-	return len(cfg.CosmosToEthConfigs)+len(cfg.CosmosToL2Configs) == 1
-}
-
 // SubmitMisbehaviour creates the explicit incident-response path for bringing
 // independently observed conflicting Cosmos branches to SpectreClient.
 func SubmitMisbehaviour(logger *zap.Logger) *cobra.Command {
@@ -136,10 +128,6 @@ func SubmitMisbehaviour(logger *zap.Logger) *cobra.Command {
 			evidencePath, err := cmd.Flags().GetString(flagEvidence)
 			if err != nil {
 				return fmt.Errorf("get evidence flag: %w", err)
-			}
-			source, err := cmd.Flags().GetString(flagSource)
-			if err != nil {
-				return fmt.Errorf("get source flag: %w", err)
 			}
 			dryRun, err := cmd.Flags().GetBool(flagDryRun)
 			if err != nil {
@@ -159,30 +147,21 @@ func SubmitMisbehaviour(logger *zap.Logger) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
 			}
-			allowEnvOverride := allowMisbehaviourEnvOverride(cfg)
-			cfg, err = selectSource(cfg, source)
-			if err != nil {
-				return err
-			}
+			cfg = selectCosmosSource(cfg)
+			// After selectCosmosSource, matching create-clients: the line must name
+			// the source this run acts on.
+			logConfigTarget(logger, "submit-misbehaviour", configPath, cfg)
 			evidence, err := loadMisbehaviourEvidence(evidencePath)
 			if err != nil {
 				return err
 			}
 
 			binDir := envOrDefault("PROVER_BIN_DIR", "./bin")
-			selectedBackend, hasBackendOverride, err := proofBackendFromFlags(cmd)
+			proverEngine, err := buildProverService(cmd, binDir)
 			if err != nil {
-				return fmt.Errorf("resolve proof backend: %w", err)
+				return err
 			}
-			var proverEngine *prover.EcipProver
-			if hasBackendOverride {
-				proverEngine, err = prover.NewProverWithBackend(binDir, selectedBackend)
-			} else {
-				proverEngine, err = prover.NewProver(binDir)
-			}
-			if err != nil {
-				return fmt.Errorf("load prover: %w", err)
-			}
+			defer proverEngine.Stop()
 
 			txHandler := &transaction.Handler{}
 			svc, evidenceDeps, cleanup, err := buildCosmosToEthSource(
@@ -192,7 +171,10 @@ func SubmitMisbehaviour(logger *zap.Logger) *cobra.Command {
 				cfg.BatchConfig,
 				proverEngine,
 				txHandler,
-				buildCosmosToEthSourceOptions{allowEnvOverride: allowEnvOverride},
+				buildCosmosToEthSourceOptions{
+					ids:         effectiveRelayIDs(cfg.CosmosToEthConfig),
+					roleManager: effectiveRoleManager(cfg.CosmosToEthConfig),
+				},
 			)
 			if err != nil {
 				return fmt.Errorf("build evidence context: %w", err)
@@ -222,7 +204,6 @@ func SubmitMisbehaviour(logger *zap.Logger) *cobra.Command {
 	}
 	cmd.Flags().String(flagConfigPath, "config.json", "path to JSON config file")
 	cmd.Flags().String(flagEvidence, "", "path to ibc.lightclients.tendermint.v1.Misbehaviour JSON evidence")
-	cmd.Flags().String(flagSource, "", "ics26_client_id of the Cosmos source to target (required when several are configured)")
 	cmd.Flags().Bool(flagDryRun, false, "generate proofs and print transaction calldata without submitting")
 	cmd.Flags().Bool(flagGPUProve, false, "use the ICICLE GPU proof backend")
 	_ = cmd.MarkFlagRequired(flagEvidence)

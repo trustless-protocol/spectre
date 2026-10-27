@@ -39,7 +39,7 @@ var updateConsensusStateMsgType abi.Type
 // binding for this nested tuple.
 var misbehaviourMsgType abi.Type
 
-// ClientState mirrors IICS07TendermintMsgs.ClientState. It is defined locally
+// ClientState mirrors ISpectreTendermintMsgs.ClientState. It is defined locally
 // because the on-chain client no longer exposes this struct in any ABI (client
 // state is passed/returned as opaque `bytes`), so abigen emits no Go type for it.
 // Field order/types must match clientStateComponents below.
@@ -53,7 +53,7 @@ type ClientState struct {
 	ClockDrift      uint32
 }
 
-// TrustThreshold mirrors IICS07TendermintMsgs.TrustThreshold (a Fraction).
+// TrustThreshold mirrors ISpectreTendermintMsgs.TrustThreshold (a Fraction).
 type TrustThreshold struct {
 	Numerator   uint8
 	Denominator uint8
@@ -169,7 +169,7 @@ func init() {
 	}
 	updateApplicationStateMsgType, _ = abi.NewType("tuple", "", applicationStateComponents)
 
-	// ValidatorSet sub-tuple (matches IICS07TendermintMsgs.ValidatorSet).
+	// ValidatorSet sub-tuple (matches ISpectreTendermintMsgs.ValidatorSet).
 	validatorInfoComponents := []abi.ArgumentMarshaling{
 		{Name: "valAddress", Type: "bytes"},
 		{Name: "pubKey", Type: "bytes32"},
@@ -219,15 +219,15 @@ func votingPowerToUint64(name string, value int64) (uint64, error) {
 	return uint64(value), nil
 }
 
-func validatorInfoToContract(name string, val *commettypes.Validator) (spectreContract.IICS07TendermintMsgsValidatorInfo, error) {
+func validatorInfoToContract(name string, val *commettypes.Validator) (spectreContract.ISpectreTendermintMsgsValidatorInfo, error) {
 	if val == nil {
-		return spectreContract.IICS07TendermintMsgsValidatorInfo{}, nil
+		return spectreContract.ISpectreTendermintMsgsValidatorInfo{}, nil
 	}
 	votingPower, err := votingPowerToUint64(name+" voting power", val.VotingPower)
 	if err != nil {
-		return spectreContract.IICS07TendermintMsgsValidatorInfo{}, err
+		return spectreContract.ISpectreTendermintMsgsValidatorInfo{}, err
 	}
-	return spectreContract.IICS07TendermintMsgsValidatorInfo{
+	return spectreContract.ISpectreTendermintMsgsValidatorInfo{
 		ValAddress:       val.Address,
 		PubKey:           bytesToBytes32(val.PubKey.Bytes()),
 		VotingPower:      votingPower,
@@ -235,24 +235,24 @@ func validatorInfoToContract(name string, val *commettypes.Validator) (spectreCo
 	}, nil
 }
 
-func ValidatorSetToContract(valSet commettypes.ValidatorSet, name string) (spectreContract.IICS07TendermintMsgsValidatorSet, error) {
-	vals := []spectreContract.IICS07TendermintMsgsValidatorInfo{}
+func ValidatorSetToContract(valSet commettypes.ValidatorSet, name string) (spectreContract.ISpectreTendermintMsgsValidatorSet, error) {
+	vals := []spectreContract.ISpectreTendermintMsgsValidatorInfo{}
 	for i, val := range valSet.Validators {
 		info, err := validatorInfoToContract(fmt.Sprintf("%s validator[%d]", name, i), val)
 		if err != nil {
-			return spectreContract.IICS07TendermintMsgsValidatorSet{}, err
+			return spectreContract.ISpectreTendermintMsgsValidatorSet{}, err
 		}
 		vals = append(vals, info)
 	}
 	proposer, err := validatorInfoToContract(name+" proposer", valSet.Proposer)
 	if err != nil {
-		return spectreContract.IICS07TendermintMsgsValidatorSet{}, err
+		return spectreContract.ISpectreTendermintMsgsValidatorSet{}, err
 	}
 	totalVotingPower, err := votingPowerToUint64(name+" total voting power", valSet.TotalVotingPower())
 	if err != nil {
-		return spectreContract.IICS07TendermintMsgsValidatorSet{}, err
+		return spectreContract.ISpectreTendermintMsgsValidatorSet{}, err
 	}
-	return spectreContract.IICS07TendermintMsgsValidatorSet{
+	return spectreContract.ISpectreTendermintMsgsValidatorSet{
 		Validators:       vals,
 		HasProposer:      valSet.Proposer != nil,
 		Proposer:         proposer,
@@ -260,7 +260,7 @@ func ValidatorSetToContract(valSet commettypes.ValidatorSet, name string) (spect
 	}, nil
 }
 
-type ContractValidatorSet = spectreContract.IICS07TendermintMsgsValidatorSet
+type ContractValidatorSet = spectreContract.ISpectreTendermintMsgsValidatorSet
 
 // parseTrustThreshold parses a trust threshold fraction string like "2/3"
 func ParseTrustThreshold(value string) (TrustThreshold, error) {
@@ -484,7 +484,7 @@ func DecodeClientState(data []byte) (ClientState, error) {
 	return clientState, nil
 }
 
-func EncodeConsensusState(consensusState updateClientContract.IICS07TendermintMsgsConsensusState) ([]byte, error) {
+func EncodeConsensusState(consensusState updateClientContract.ISpectreTendermintMsgsConsensusState) ([]byte, error) {
 	args := abi.Arguments{
 		{Type: consensusStateType},
 	}
@@ -507,5 +507,5 @@ func EncodeUpdateApplicationStateMsg(msg updateClientContract.ISpectreClientMsgs
 // param), so it is hand-defined and packed against updateConsensusStateMsgType.
 type MsgUpdateConsensusState struct {
 	Update          updateClientContract.ISpectreClientMsgsMsgUpdateApplicationState
-	NewValidatorSet spectreContract.IICS07TendermintMsgsValidatorSet
+	NewValidatorSet spectreContract.ISpectreTendermintMsgsValidatorSet
 }

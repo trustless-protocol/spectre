@@ -20,13 +20,13 @@ Use the doc-side names consistently in prose; verify claims against the code sid
 
 | Doc term | Code |
 |---|---|
-| SpectreClient | `contracts/light-clients/Groth16ICS07Tendermint.sol` — owns ALL client state |
-| UpdateClient (program) | `contracts/programs/UpdateClient.sol` — pure header checks |
-| Membership | `contracts/programs/Membership.sol` — ICS-23, no ZK |
-| Misbehaviour | `contracts/programs/Misbehaviour.sol` |
-| SignatureVerifier | `contracts/utils/WrapperVerifier.sol` + generated `Groth16Verifier_N{N}.sol` — NOT stateless: holds the owner-set bucket registry (`setBucket`); that is config state, not trust state |
-| UpdateConsensusState | `reAnchorPinnedSet` — 24h valset rotation; checks `hashValSet(newValSet) == header.nextValidatorsHash`, re-pins |
-| UpdateApplicationState | `updateClient` — per-packet appHash advance vs pinned set; still verifies the signature proof, skips re-storing the set |
+| SpectreClient | `contracts/light-clients/spectre/SpectreClient.sol` — owns ALL client state |
+| UpdateClient (module) | `contracts/light-clients/spectre/modules/UpdateClient.sol` — pure header checks |
+| Membership | `contracts/light-clients/spectre/modules/Membership.sol` — ICS-23, no ZK |
+| Misbehaviour | `contracts/light-clients/spectre/modules/Misbehaviour.sol` |
+| SignatureVerifier | `contracts/light-clients/spectre/SignatureVerifier.sol` + generated `Groth16Verifier_N{N}.sol` — NOT stateless: holds the owner-set bucket registry (`setBucket`); that is config state, not trust state |
+| UpdateConsensusState | `SpectreClient.updateConsensusState` — 24h valset rotation; checks the new valset hash against `header.nextValidatorsHash`, re-pins |
+| UpdateApplicationState | `SpectreClient.updateApplicationState` — per-packet appHash advance vs pinned set; still verifies the signature proof, skips re-storing the set |
 | Store | consensus-state hash mapping + SSTORE2 pinned valset (≤180 validators) + per-height snapshots (binary-searched) |
 | Pinned validator set | the shipped design (PR #198) — never "cache", never "planned" |
 
@@ -34,12 +34,12 @@ Quorum accounting (Σ voting power > ⅔ against the pinned set) happens in **Sp
 
 ## Claim verification
 
-Every technical statement gets checked against the repo (`/Users/ducnt/Decentrio/fast-ibc`) before it survives review:
+Every technical statement gets checked against this repo (the `spectre` checkout this skill file lives in) before it survives review:
 
-- Witness/field tables ↔ `relayer/prover/hash_witness.go` (layout, `MaxMsgLen = 192`, which fields are hashed and why).
-- Flow descriptions ↔ `Groth16ICS07Tendermint.sol` (`updateClient`, `reAnchorPinnedSet`, `_verifyPinnedBatchAndQuorum`).
-- Intervals/constants ↔ relayer source (e.g. the 24h `routineInterval` in `relayer/services/main.go`).
-- Misbehaviour rules ↔ `contracts/programs/Misbehaviour.sol`.
+- Witness/field tables ↔ `relayer/prover/witness/witness.go` (layout, `MaxMsgLen = 175`, which fields are hashed and why).
+- Flow descriptions ↔ `SpectreClient.sol` (`updateApplicationState`, `updateConsensusState`, `_verifyPinnedQuorum`).
+- Intervals/constants ↔ relayer source (e.g. the 24h `defaultPeriodicUpdateInterval` in `relayer/relay/module.go`).
+- Misbehaviour rules ↔ `contracts/light-clients/spectre/modules/Misbehaviour.sol`.
 - Report each verified claim with `file:line` in your findings. Claims you cannot ground: flag as unverified, don't rewrite them into confident prose.
 
 **Benchmark policy**: performance statements stay qualitative ("proves an update in seconds on commodity hardware where SP1 takes minutes"); exact numbers only if produced by a run made this session, quoted with its hardware and sample count. Credit the optimized circuit + gnark stack, not merely "Groth16 instead of zkVM".

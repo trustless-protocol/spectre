@@ -135,6 +135,36 @@ func TestRuntimeStateRejectsInconsistentHeadOrdering(t *testing.T) {
 	}
 }
 
+func TestRuntimeStateMarksFinalizedHeadRegression(t *testing.T) {
+	reader := newRuntimeTestReader()
+	for height := uint64(1); height <= 5; height++ {
+		reader.setHeader(testHeader(height, byte(height)))
+	}
+	reader.setHeads(5, 5, 4)
+	state, err := NewRuntimeState(reader)
+	if err != nil {
+		t.Fatalf("create runtime state: %v", err)
+	}
+	if _, err := state.Refresh(context.Background()); err != nil {
+		t.Fatalf("initial refresh: %v", err)
+	}
+
+	reader.setHeads(5, 5, 3)
+	checks, err := state.Refresh(context.Background())
+	if err != nil {
+		t.Fatalf("refresh after finalized-head regression: %v", err)
+	}
+	if len(checks) != 1 || !checks[0].FinalizedReorg ||
+		checks[0].Finalized.BlockNumber != 3 || checks[0].PreviousFinalized.BlockNumber != 4 {
+		t.Fatalf("regression checks = %+v", checks)
+	}
+	snapshot := state.Snapshot()
+	if !snapshot.FinalizedSeen || snapshot.Finalized.BlockNumber != 3 ||
+		!snapshot.LastFinalizedCheck.FinalizedReorg {
+		t.Fatalf("snapshot after finalized-head regression = %+v", snapshot)
+	}
+}
+
 func TestResolveCanonicalBlockHashHonorsConfirmationMode(t *testing.T) {
 	reader := newRuntimeTestReader()
 	for height := uint64(1); height <= 5; height++ {

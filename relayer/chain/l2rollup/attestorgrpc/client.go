@@ -7,6 +7,7 @@ package attestorgrpc
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	attestorpb "attestor/types/attestor"
 	"relayer/chain/l2rollup"
@@ -59,8 +60,23 @@ func Dial(addr string) (*Client, error) {
 // Close releases the gRPC connection.
 func (c *Client) Close() error { return c.conn.Close() }
 
+// Info returns every chain the attestor is configured to serve, with the head
+// each feed gates on. It is the one call that answers "is this the right
+// attestor for this L2, and does it sign at the head this relayer will ask
+// for" before any header is built; startup validation reads it once.
+func (c *Client) Info(ctx context.Context) ([]*attestorpb.ChainInfo, error) {
+	resp, err := c.rpc.Info(ctx, &attestorpb.InfoRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("attestorgrpc: Info: %w", mapStatus(err))
+	}
+	return resp.GetChains(), nil
+}
+
 // AttestedUpTo returns the attestor's highest independently-re-derived frontier.
 func (c *Client) AttestedUpTo(ctx context.Context, srcChain string, includeProvisional bool) (*attestorpb.AttestedRoot, bool, error) {
+	if err := requireSrcChain(srcChain); err != nil {
+		return nil, false, err
+	}
 	resp, err := c.rpc.AttestedUpTo(ctx, &attestorpb.AttestedUpToRequest{
 		SrcChain:           srcChain,
 		IncludeProvisional: includeProvisional,
@@ -79,6 +95,9 @@ func (c *Client) AttestedUpTo(ctx context.Context, srcChain string, includeProvi
 
 // AttestedRootAtOrBelow returns the best attested root at or below l2BlockNumber.
 func (c *Client) AttestedRootAtOrBelow(ctx context.Context, srcChain string, l2BlockNumber uint64, includeProvisional bool) (*attestorpb.AttestedRoot, bool, error) {
+	if err := requireSrcChain(srcChain); err != nil {
+		return nil, false, err
+	}
 	resp, err := c.rpc.AttestedRootAtOrBelow(ctx, &attestorpb.AttestedRootAtOrBelowRequest{
 		SrcChain:           srcChain,
 		L2BlockNumber:      l2BlockNumber,
@@ -98,6 +117,9 @@ func (c *Client) AttestedRootAtOrBelow(ctx context.Context, srcChain string, l2B
 
 // VerifyStateRoot compares one block identity against the attestor's replica.
 func (c *Client) VerifyStateRoot(ctx context.Context, request l2rollup.VerificationRequest) (l2rollup.SignedVerdict, error) {
+	if err := requireSrcChain(request.SrcChain); err != nil {
+		return l2rollup.SignedVerdict{}, err
+	}
 	resp, err := c.rpc.VerifyStateRoot(ctx, &attestorpb.VerifyStateRootRequest{
 		SrcChain:          request.SrcChain,
 		BlockNumber:       request.BlockNumber,
@@ -120,4 +142,11 @@ func (c *Client) VerifyStateRoot(ctx context.Context, request l2rollup.Verificat
 		StateRoot:   append([]byte(nil), resp.GetStateRoot()...),
 		Signature:   append([]byte(nil), resp.GetAttestationSignature()...),
 	}, nil
+}
+
+func requireSrcChain(srcChain string) error {
+	if strings.TrimSpace(srcChain) == "" {
+		return fmt.Errorf("%w: attestorgrpc: src_chain is required", l2rollup.ErrAttestorBadRequest)
+	}
+	return nil
 }

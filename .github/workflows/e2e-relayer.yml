@@ -1,9 +1,10 @@
 name: E2E — Relayer
 
-# Manually-triggered matrix run of TestWithRelayerTestSuite (recv/ack/timeout
-# relaying both directions, batched & filtered packets, multi-period & historical
-# client updates). Delegates to the reusable e2e-suite.yml. Heavy — trigger from
-# the Actions tab.
+# Manually-triggered matrix run of TestWithRelayerTestSuite (daemon-driven recv and
+# batched-ack flows in both directions: Test_{5,10}_RecvPacketToEth,
+# Test_{5,10}_BatchedAckPacketToEth, Test_10_RecvPacketToCosmos and
+# Test_10_BatchedAckPacketToCosmos). Delegates to the reusable e2e-suite.yml.
+# Heavy — trigger from the Actions tab.
 on:
   workflow_dispatch:
     inputs:
@@ -25,5 +26,5 @@ jobs:
       ref: ${{ inputs.ref }}
       filter: ${{ inputs.filter }}
       max_parallel: 6
-      # Historical / multi-period client-update tests need extra block history.
+      # Per-test timeout in minutes; the reusable workflow's default is 60.
       timeout_minutes: 75

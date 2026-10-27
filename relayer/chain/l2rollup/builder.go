@@ -43,18 +43,24 @@ type HeaderRequest struct {
 	Height uint64
 }
 
-// Builder is the chain.ClientUpdateBuilder for the L2->Cosmos path. It decodes the
+// AttestedBuilder is the chain.Builder for the L2->Cosmos path. It decodes the
 // target L2 height (from the L2 Source.QueryHeader), delegates header assembly to a
 // HeaderBuilder, and packages the JSON as the wasm ClientMessage data the Cosmos
 // Destination submits.
-type Builder struct {
+//
+// Named for its strategy, like Groth16Builder and BeaconBuilder. It was `Builder`,
+// which collided with the interface this satisfies once that was renamed, and said
+// nothing next to the HeaderBuilder it wraps in the same file.
+type AttestedBuilder struct {
 	headerBuilder HeaderBuilder
 }
 
-// NewBuilder wires the generic builder to a per-L2 HeaderBuilder.
-func NewBuilder(headerBuilder HeaderBuilder) *Builder { return &Builder{headerBuilder: headerBuilder} }
+// NewAttestedBuilder wires the generic builder to a per-L2 HeaderBuilder.
+func NewAttestedBuilder(headerBuilder HeaderBuilder) *AttestedBuilder {
+	return &AttestedBuilder{headerBuilder: headerBuilder}
+}
 
-func (b *Builder) Name() string { return b.headerBuilder.Name() }
+func (b *AttestedBuilder) Name() string { return b.headerBuilder.Name() }
 
 // Build assembles the trustless client message for the L2 height in header. A
 // proof-assembly failure (L1/L2 RPC down, height not yet available on L1) is
@@ -65,7 +71,7 @@ func (b *Builder) Name() string { return b.headerBuilder.Name() }
 // re-labelled everything the header builder had already classified — an attestor
 // answering "that source chain does not exist" arrived at the engine looking like
 // an RPC blip, and no amount of reading the engine would show why.
-func (b *Builder) Build(ctx context.Context, header []byte) (chain.ClientUpdate, error) {
+func (b *AttestedBuilder) Build(ctx context.Context, header []byte) (chain.ClientUpdate, error) {
 	request, err := decodeHeaderRequest(header)
 	if err != nil {
 		return chain.ClientUpdate{}, chain.Transient(err)
@@ -90,7 +96,14 @@ func (b *Builder) Build(ctx context.Context, header []byte) (chain.ClientUpdate,
 	}
 	// Advance by the height the header commits (may be < requested), so the module's
 	// lastHeight never overstates what the client can actually prove.
-	return chain.ClientUpdate{Height: committedHeight, Payloads: [][]byte{payload}}, nil
+	update := chain.ClientUpdate{Height: committedHeight, Payloads: [][]byte{payload}}
+	// Carry the header's block time so the client-update observer can report
+	// this client's age like the other two paths' -- without it the L2 process
+	// never logged a "last client update" line at all.
+	if stamped, ok := msg.(interface{ TrustedAt() time.Time }); ok {
+		update.TrustedAt = stamped.TrustedAt()
+	}
+	return update, nil
 }
 
 // decodeHeaderRequest reads the big-endian L2 height emitted by Source.QueryHeader.

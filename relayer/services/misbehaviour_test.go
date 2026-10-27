@@ -13,6 +13,7 @@ import (
 	updateclientContract "relayer/bindings/UpdateClient"
 	relayerclient "relayer/client"
 	"relayer/prover"
+	"relayer/prover/witness"
 
 	cmted25519 "github.com/cometbft/cometbft/crypto/ed25519"
 	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
@@ -20,10 +21,10 @@ import (
 	tenderminttypes "github.com/cosmos/ibc-go/v10/modules/light-clients/07-tendermint"
 )
 
-func TestUpdateCommitToMisbehaviourPreservesValidatorAddress(t *testing.T) {
+func TestUpdateCommitToMisbehaviour_PreservesValidatorAddress(t *testing.T) {
 	wantAddress := [20]byte{0x01, 0x23, 0x45, 0x67, 0x89}
-	converted := updateCommitToMisbehaviour(updateclientContract.IICS07TendermintMsgsBlockCommit{
-		CommitSigs: []updateclientContract.IICS07TendermintMsgsCommitSig{{
+	converted := updateCommitToMisbehaviour(updateclientContract.ISpectreTendermintMsgsBlockCommit{
+		CommitSigs: []updateclientContract.ISpectreTendermintMsgsCommitSig{{
 			Flag:             2,
 			ValidatorAddress: wantAddress,
 		}},
@@ -37,7 +38,7 @@ func TestUpdateCommitToMisbehaviourPreservesValidatorAddress(t *testing.T) {
 	}
 }
 
-func TestMisbehaviourEvidenceDetectsPinnedSetEquivocation(t *testing.T) {
+func TestMisbehaviourEvidenceFromCandidates_DetectsPinnedSetEquivocation(t *testing.T) {
 	pubkey0 := [32]byte{0x01}
 	pubkey1 := [32]byte{0x02}
 	pubkey2 := [32]byte{0x03}
@@ -51,7 +52,7 @@ func TestMisbehaviourEvidenceDetectsPinnedSetEquivocation(t *testing.T) {
 	header1 := misbehaviourHeaderCandidate{
 		height:    42,
 		blockHash: [32]byte{0xAA},
-		candidates: []prover.ValidatorSignature{
+		candidates: []witness.ValidatorSignature{
 			{Index: 0, PublicKey: pubkey0[:], Power: 40, Active: true},
 			{Index: 1, PublicKey: pubkey1[:], Power: 35, Active: true},
 		},
@@ -59,14 +60,14 @@ func TestMisbehaviourEvidenceDetectsPinnedSetEquivocation(t *testing.T) {
 	header2 := misbehaviourHeaderCandidate{
 		height:    42,
 		blockHash: [32]byte{0xBB},
-		candidates: []prover.ValidatorSignature{
+		candidates: []witness.ValidatorSignature{
 			{Index: 0, PublicKey: pubkey0[:], Power: 40, Active: true},
 			{Index: 2, PublicKey: pubkey2[:], Power: 25, Active: true},
 			{Index: 1, PublicKey: pubkey1[:], Power: 35, Active: true},
 		},
 	}
 
-	evidence, err := misbehaviourEvidenceFromCandidates(header1, header2, pinned, pinned)
+	evidence, err := misbehaviourEvidenceFromCandidates(header1, header2, pinned, pinned, 4)
 	if err != nil {
 		t.Fatalf("build evidence: %v", err)
 	}
@@ -76,12 +77,12 @@ func TestMisbehaviourEvidenceDetectsPinnedSetEquivocation(t *testing.T) {
 	if len(evidence.sigs1) != 2 || len(evidence.sigs2) != 2 {
 		t.Fatalf("selected signatures = %d/%d, want 2/2", len(evidence.sigs1), len(evidence.sigs2))
 	}
-	if _, err := misbehaviourEvidenceFromCandidates(header1, header1, pinned, pinned); err == nil {
+	if _, err := misbehaviourEvidenceFromCandidates(header1, header1, pinned, pinned, 4); err == nil {
 		t.Fatal("same block hash at the same height must be rejected")
 	}
 }
 
-func TestMisbehaviourEvidenceIgnoresConflictsWithoutPinnedQuorum(t *testing.T) {
+func TestMisbehaviourEvidenceFromCandidates_IgnoresConflictsWithoutPinnedQuorum(t *testing.T) {
 	pubkey0 := [32]byte{0x01}
 	pubkey1 := [32]byte{0x02}
 	pubkey2 := [32]byte{0x03}
@@ -95,7 +96,7 @@ func TestMisbehaviourEvidenceIgnoresConflictsWithoutPinnedQuorum(t *testing.T) {
 	header1 := misbehaviourHeaderCandidate{
 		height:    99,
 		blockHash: [32]byte{0xAA},
-		candidates: []prover.ValidatorSignature{
+		candidates: []witness.ValidatorSignature{
 			{Index: 0, PublicKey: pubkey0[:], Power: 40, Active: true},
 			{Index: 1, PublicKey: pubkey1[:], Power: 35, Active: true},
 		},
@@ -103,17 +104,17 @@ func TestMisbehaviourEvidenceIgnoresConflictsWithoutPinnedQuorum(t *testing.T) {
 	header2 := misbehaviourHeaderCandidate{
 		height:    99,
 		blockHash: [32]byte{0xBB},
-		candidates: []prover.ValidatorSignature{
+		candidates: []witness.ValidatorSignature{
 			{Index: 0, PublicKey: pubkey0[:], Power: 40, Active: true},
 		},
 	}
 
-	if _, err := misbehaviourEvidenceFromCandidates(header1, header2, pinned, pinned); err == nil {
+	if _, err := misbehaviourEvidenceFromCandidates(header1, header2, pinned, pinned, 4); err == nil {
 		t.Fatal("conflicting headers without pinned quorum must be rejected")
 	}
 }
 
-func TestMisbehaviourBatchProofBuildsPinnedMetadata(t *testing.T) {
+func TestMisbehaviourBatchProof_BuildsPinnedMetadata(t *testing.T) {
 	pubkey0 := [32]byte{0x01}
 	pubkey1 := [32]byte{0x02}
 	pinned := pinnedCosmosValidatorSet{
@@ -122,9 +123,9 @@ func TestMisbehaviourBatchProofBuildsPinnedMetadata(t *testing.T) {
 		votingPowers: []uint64{50, 50},
 		totalPower:   100,
 	}
-	headerProof := prover.HeaderBatchProof{
+	headerProof := prover.ProofResult{
 		Bucket: 2,
-		PaddedSigs: []prover.ValidatorSignature{
+		PaddedSigs: []witness.ValidatorSignature{
 			{Index: 7, PublicKey: pubkey1[:], Active: true},
 			{Index: 0, PublicKey: make([]byte, 32), Active: false},
 		},
@@ -169,7 +170,7 @@ func TestMisbehaviourBatchProofBuildsPinnedMetadata(t *testing.T) {
 // zero. Add a field to the Solidity struct and forget the assignment, and this
 // fails without anyone having to remember to extend the test.
 func TestUpdateBlockHeaderToMisbehaviour_CarriesEveryField(t *testing.T) {
-	var src updateclientContract.IICS07TendermintMsgsBlockHeader
+	var src updateclientContract.ISpectreTendermintMsgsBlockHeader
 	fillNonZero(t, reflect.ValueOf(&src).Elem(), "BlockHeader")
 	// Guard the fixture before trusting the comparison: equal values make a swap
 	// undetectable no matter how the comparison is written.
@@ -182,7 +183,7 @@ func TestUpdateBlockHeaderToMisbehaviour_CarriesEveryField(t *testing.T) {
 // Same argument one level up: the outer header carries the signed header, the
 // commit and the trusted height.
 func TestUpdateHeaderToMisbehaviourHeader_CarriesEveryField(t *testing.T) {
-	var src updateclientContract.IICS07TendermintMsgsHeader
+	var src updateclientContract.ISpectreTendermintMsgsHeader
 	fillNonZero(t, reflect.ValueOf(&src).Elem(), "Header")
 	// Guard the fixture before trusting the comparison: equal values make a swap
 	// undetectable no matter how the comparison is written.
@@ -593,7 +594,7 @@ func TestMisbehaviourCandidateFromLightBlock_RejectsMalformedInput(t *testing.T)
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := misbehaviourCandidateFromLightBlock(tt.block(), "chain-a")
+			_, err := misbehaviourCandidateFromLightBlock(tt.block(), "chain-a", 4)
 			if err == nil {
 				t.Fatal("accepted a light block it cannot build a candidate from")
 			}

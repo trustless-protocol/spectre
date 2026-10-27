@@ -1,5 +1,5 @@
 # Resolve the Gaia binary for local E2E scripts. Source this after cd'ing to
-# the fast-ibc repository root.
+# the repository root.
 #
 # Priority:
 #   1. GAIAD=/path/to/gaiad

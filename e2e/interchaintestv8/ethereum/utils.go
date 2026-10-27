@@ -67,7 +67,7 @@ func GetEthContractsFromDeployOutput(stdout string) (DeployedContracts, error) {
 		return DeployedContracts{}, fmt.Errorf("one or more required contracts missing: %+v", embeddedContracts)
 	}
 
-	// VerifierPlonk/Groth16/Mock are upstream (SP1) artifacts. fast-ibc's E2ETestDeploy
+	// VerifierPlonk/Groth16/Mock are upstream (SP1) artifacts. Spectre's E2ETestDeploy
 	// script doesn't emit them — the equivalent verifiers live behind SignatureVerifier as
 	// per-bucket Groth16Verifier_N{N} contracts (see scripts/E2ETestDeploy.s.sol setBucket
 	// calls). SignatureVerifier presence is enforced above; that's sufficient.

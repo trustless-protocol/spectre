@@ -52,7 +52,7 @@ func (s *Subscriber) SubscribeCosmos(stdCtx context.Context, cosmos services.Cos
 		if nextRecoveryStartHeight == 0 {
 			latestHeight, err := latestCosmosHeight(stdCtx, ctx)
 			if err != nil {
-				ctx.Logger.Printf("[SubscribeCosmos] Failed to get latest Cosmos height before subscription: %v", err)
+				ctx.Logger.Printf("WARN [SubscribeCosmos] Failed to get latest Cosmos height before subscription: %v", err)
 				if !sleepOrDone(stdCtx, cosmosSubscriptionReconnectDelay) {
 					return
 				}
@@ -70,7 +70,13 @@ func (s *Subscriber) SubscribeCosmos(stdCtx context.Context, cosmos services.Cos
 		var rate blockRate
 
 		err := s.subscribeCosmosOnce(stdCtx, ctx, batchBuilder, &nextRecoveryStartHeight, seenEvents, &quietScans, &liveHealth, &rate)
-		ctx.Logger.Printf("[SubscribeCosmos] Subscription loop ended: %v", err)
+		// A stop the process asked for ends the loop too, and nothing went wrong
+		// there: only a subscription that dropped is worth a warning.
+		if stdCtx.Err() != nil {
+			ctx.Logger.Printf("[SubscribeCosmos] Subscription loop ended: %v", err)
+		} else {
+			ctx.Logger.Printf("WARN [SubscribeCosmos] Subscription loop ended: %v", err)
+		}
 		s.persistCosmosCursor(ctx, batchBuilder, nextRecoveryStartHeight)
 		if !sleepOrDone(stdCtx, cosmosSubscriptionReconnectDelay) {
 			return
@@ -83,15 +89,15 @@ func (s *Subscriber) resumeCosmosCursor(ctx cosmosDeps, latestHeight, lookback u
 	if s.recovery == nil {
 		return lookbackStart
 	}
-	cursors, ok := s.recovery.Get(recoverySourceID(ctx.IDs))
+	cursors, ok := s.recovery.Get()
 	if !ok {
 		return lookbackStart
 	}
-	start, resumed, behind := services.ResumeCursor(cursors.CosmosHeight, lookbackStart, latestHeight)
+	start, resumed, behind := services.ResumeCursor(cursors[cursorCosmos], lookbackStart, latestHeight)
 	if resumed && behind > 0 {
 		ctx.Logger.Printf("[SubscribeCosmos] resuming from persisted height %d, %d block(s) behind head %d", start, behind, latestHeight)
 	} else if resumed {
-		ctx.Logger.Printf("[SubscribeCosmos] persisted cursor %d is inside the lookback window; rescanning from %d", cursors.CosmosHeight, start)
+		ctx.Logger.Printf("[SubscribeCosmos] persisted cursor %d is inside the lookback window; rescanning from %d", cursors[cursorCosmos], start)
 	}
 	return start
 }
@@ -106,8 +112,8 @@ func (s *Subscriber) persistCosmosCursor(ctx cosmosDeps, batchBuilder *services.
 	if height == 0 {
 		return
 	}
-	if err := s.recovery.SaveCheckpoint(recoverySourceID(ctx.IDs), services.RecoveryCursors{CosmosHeight: height}); err != nil {
-		ctx.Logger.Printf("[SubscribeCosmos] failed to persist recovery cursor (height %d): %v", height, err)
+	if err := s.recovery.SaveCheckpoint(services.RecoveryCursors{cursorCosmos: height}); err != nil {
+		ctx.Logger.Printf("WARN [SubscribeCosmos] failed to persist recovery cursor (height %d): %v", height, err)
 	}
 }
 
@@ -124,11 +130,44 @@ func (s *Subscriber) persistCosmosCursor(ctx cosmosDeps, batchBuilder *services.
 type cosmosLiveHealth struct {
 	events   uint64
 	lastSeen time.Time // last live event, or the last successful subscribe
-	// chainHeight is the head observed at the previous recovery pass. Silence is
-	// only evidence of a problem when the chain is producing blocks -- an idle
-	// chain delivers nothing because there is nothing to deliver, and treating
-	// that as a dead subscription would reconnect a healthy one every few minutes.
-	chainHeight uint64
+	// sawTraffic records whether the PREVIOUS recovery pass found any IBC event
+	// AT ALL -- delivered live (skipped) or missed (recovered).
+	//
+	// SCOPE: this watchdog measures the SUBSCRIPTION, not one relay path, and
+	// sawTraffic and lastSeen are deliberately scoped the same way. The live
+	// subscriptions carry no client filter ("send_packet.encoded_packet_hex
+	// EXISTS"), recordEvent runs before enqueueCosmosPackets does any filtering,
+	// and the three recovery TxSearch queries use the same three predicates. So
+	// an event for an unrelated client counts on BOTH sides: it inflates skipped
+	// here and it refreshes lastSeen there. That symmetry is what makes the guard
+	// correct -- narrowing one side to this relayer's client without narrowing
+	// the other would arm the check with traffic that can never clear it.
+	//
+	// Silence is only evidence of a problem when there was something to deliver.
+	// This used to ask whether the CHAIN advanced instead, which is the wrong
+	// question on Cosmos: CometBFT produces blocks whether or not any IBC packet
+	// moves, so the guard was true on every pass and a healthy subscription over
+	// a quiet chain was torn down every cosmosLivePathStaleAfter. Measured on
+	// Sepolia<->cosmoshub 2026-09-02: 4 live events in 6h13m, 181 resubscribes,
+	// one every 2m04s.
+	sawTraffic bool
+	// armFromHeight is the chain head observed when this subscription came up.
+	// Only heights ABOVE it are the subscription's responsibility, so only
+	// evidence from above it may arm sawTraffic. Zero means "not established
+	// yet", and nothing arms until it is.
+	//
+	// This is a HEIGHT rather than a flag on the caller because the two are not
+	// the same question. The previous version passed armsWatchdog=false from the
+	// startup call and true from every tick, justified by "the startup pass has
+	// consumed the lookback and moved the cursor to the head". That is untrue
+	// whenever the startup pass errors: subscribeCosmosOnce logs the failure and
+	// starts the loop anyway, so the cursor stays inside the pre-subscription
+	// lookback and the first tick rescans it WITH arming on. One old event there
+	// then arms the watchdog against a subscription that has carried nothing, and
+	// two minutes of legitimate quiet tears it down -- the exact false positive
+	// this file exists to remove. A boundary cannot be wrong about that, because
+	// it describes the heights themselves rather than who is asking.
+	armFromHeight uint64
 	// staleSince is when the CURRENT outage was first judged stale; zero when the
 	// live path is healthy. It survives a reconnect on purpose: the question the
 	// ladder answers is "how long has this been broken", not "how long since the
@@ -144,8 +183,33 @@ type cosmosLiveHealth struct {
 // NEVER delivers -- the exact case worth catching -- has nothing to measure and
 // is never reported. It does not clear staleSince: subscribing is an attempt to
 // fix the outage, not evidence that it is over. Only a delivered event is that.
+//
+// It DOES clear sawTraffic. Evidence gathered before this subscription existed
+// cannot be evidence about it: the startup lookback and the gap after a
+// reconnect both cover events this subscription was never running to deliver.
+// Counting them would arm the stale check against a subscription that has had
+// nothing to do yet, and the teardown that follows re-seeds the same gap.
 func (h *cosmosLiveHealth) recordSubscribed(now time.Time) {
 	h.lastSeen = now
+	h.sawTraffic = false
+	// The previous subscription's boundary says nothing about this one. The next
+	// successful height read establishes a new one; until then nothing arms.
+	h.armFromHeight = 0
+}
+
+// establishArmFrom records the chain head observed just after subscribing, once
+// per subscription. Later passes must not move it: the boundary is where THIS
+// subscription began, not where the most recent scan happened to reach.
+func (h *cosmosLiveHealth) establishArmFrom(latestHeight uint64) {
+	if h.armFromHeight == 0 {
+		h.armFromHeight = latestHeight
+	}
+}
+
+// armsFromHeight reports whether a scan reaching up to chunkEnd covers heights
+// this subscription was running to deliver.
+func (h *cosmosLiveHealth) armsFromHeight(chunkEnd uint64) bool {
+	return h.armFromHeight != 0 && chunkEnd > h.armFromHeight
 }
 
 func (h *cosmosLiveHealth) recordEvent() {
@@ -155,14 +219,24 @@ func (h *cosmosLiveHealth) recordEvent() {
 	h.reported = 0
 }
 
-// observeChainHeight records the head seen this pass and reports whether the
-// chain advanced since the previous one. The first call establishes the baseline
-// and reports false -- with nothing to compare against, silence means nothing.
-func (h *cosmosLiveHealth) observeChainHeight(height uint64) bool {
-	advanced := h.chainHeight != 0 && height > h.chainHeight
-	h.chainHeight = height
-	return advanced
+// recordRecoveryPass records what the recovery scan found, so the NEXT pass can
+// tell "nothing to deliver" from "not delivering".
+//
+// recovered counts events the live path never delivered; skipped counts events
+// it had already delivered, plus ones dropped as unrelated, malformed or already
+// settled. Every one of them came from a real IBC event in the window, and the
+// unfiltered live subscription would have received all of them -- which is the
+// only property this signal needs. Both zero proves there was nothing to deliver.
+func (h *cosmosLiveHealth) recordRecoveryPass(recovered, skipped uint64) {
+	h.sawTraffic = recovered > 0 || skipped > 0
 }
+
+// hadTrafficToDeliver reports whether the previous pass saw any IBC event.
+//
+// It is deliberately the PREVIOUS pass rather than this one: the judgement runs
+// before the scan, so that a dead subscription is caught without first waiting
+// for recovery to relay a packet the live path already lost.
+func (h *cosmosLiveHealth) hadTrafficToDeliver() bool { return h.sawTraffic }
 
 // livePathStale reports whether the live subscription should be treated as dead,
 // how long it has been silent, and whether this pass crosses a new reporting
@@ -174,8 +248,8 @@ func (h *cosmosLiveHealth) observeChainHeight(height uint64) bool {
 // cleared by a live event -- so a subscription that died for good produced
 // exactly one warning line for the process's lifetime, and the log then read as
 // though it had recovered.
-func (h *cosmosLiveHealth) livePathStale(chainAdvanced bool, now time.Time) (stale bool, silence time.Duration, report bool) {
-	if !chainAdvanced {
+func (h *cosmosLiveHealth) livePathStale(hadTraffic bool, now time.Time) (stale bool, silence time.Duration, report bool) {
+	if !hadTraffic {
 		return false, 0, false
 	}
 	silence = now.Sub(h.lastSeen)
@@ -259,8 +333,13 @@ func (s *Subscriber) subscribeCosmosOnce(
 	// never delivers anything is the case this watchdog exists for.
 	liveHealth.recordSubscribed(time.Now())
 
+	// This pass reads the historical lookback. It arms nothing, and does not need
+	// to be told so: it establishes the boundary from the head it reads, and its
+	// whole range sits at or below that. A later tick retrying the same range --
+	// which happens whenever this pass fails, since the failure is non-fatal
+	// below -- is held off by the same boundary rather than by its caller.
 	if _, err := s.recoverCosmosGapToLatest(stdCtx, ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, quietScans, liveHealth, rate); err != nil {
-		ctx.Logger.Printf("[SubscribeCosmos] startup recovery failed: %v", err)
+		ctx.Logger.Printf("WARN [SubscribeCosmos] startup recovery failed: %v", err)
 	}
 
 	// Starts at the ceiling and narrows once the chain's rate is observable.
@@ -294,7 +373,7 @@ func (s *Subscriber) subscribeCosmosOnce(
 		case <-gapRecoveryTicker.C:
 			stale, err := s.recoverCosmosGapToLatest(stdCtx, ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, quietScans, liveHealth, rate)
 			if err != nil {
-				ctx.Logger.Printf("[SubscribeCosmos] periodic recovery failed: %v", err)
+				ctx.Logger.Printf("WARN [SubscribeCosmos] periodic recovery failed: %v", err)
 			}
 			if blockTime, ok := rate.blockTime(); ok {
 				gapRecoveryTicker.Reset(recoveryTick(blockTime))
@@ -325,7 +404,7 @@ func (s *Subscriber) processLiveCosmosEvent(
 	if height > 0 && *nextRecoveryStartHeight > 0 && height > *nextRecoveryStartHeight {
 		stats, err := recoverCosmosEvents(stdCtx, ctx, batchBuilder, *nextRecoveryStartHeight, height-1, seenEvents)
 		if err != nil {
-			ctx.Logger.Printf("[SubscribeCosmos] gap recovery before live height %d failed: %v", height, err)
+			ctx.Logger.Printf("WARN [SubscribeCosmos] gap recovery before live height %d failed: %v", height, err)
 		} else {
 			ctx.Logger.Printf("[SubscribeCosmos] gap recovery complete before live height %d: recovered=%d skipped=%d",
 				height, stats.recovered, stats.skipped)
@@ -339,7 +418,7 @@ func (s *Subscriber) processLiveCosmosEvent(
 	packets := decodeCosmosPacketsFromEvents(ctx.Logger, e.Data, e.Events, "SubscribeCosmos", "")
 	stats, err := enqueueCosmosPackets(stdCtx, ctx, batchBuilder, packets, seenEvents, false)
 	if err != nil {
-		ctx.Logger.Printf("[SubscribeCosmos] live enqueue failed: %v", err)
+		ctx.Logger.Printf("WARN [SubscribeCosmos] live enqueue failed: %v", err)
 	}
 	if stats.skipped > 0 {
 		ctx.Logger.Printf("[SubscribeCosmos] skipped %d live Cosmos event(s)", stats.skipped)
@@ -443,35 +522,88 @@ func (s *Subscriber) recoverCosmosGapToLatest(
 	// The head this pass already read is the block-rate sample; see blockRate.
 	rate.observe(latestHeight, time.Now())
 
+	// The first head this subscription manages to read is its boundary: heights
+	// above it are the ones the live path was running to deliver. Establishing it
+	// here rather than in recordSubscribed keeps it to one RPC -- this pass runs
+	// immediately after subscribing -- and a read that fails simply leaves the
+	// boundary unset, which arms nothing. That is the safe direction: a delayed
+	// watchdog beats one armed by history.
+	liveHealth.establishArmFrom(latestHeight)
+
+	// A pass with no newly indexable range is a pass with nothing to deliver, and
+	// it must SAY so rather than leave the previous pass's answer standing.
+	//
+	// The range is empty only when the chain produced no new block the indexer has
+	// caught up on, and no new block means no new IBC event in one. Recording (0,0)
+	// is therefore a measurement, not a guess. Leaving the old answer latched is
+	// what would be the guess: a chain that stops producing would keep the last
+	// "there was traffic" verdict alive, and two minutes later tear down a live
+	// subscription that is healthy and simply has nothing to carry -- the exact
+	// false positive this change exists to remove.
+	//
+	// Traffic can still exist in the newest cosmosIndexerLagBlocks, which recovery
+	// never scans. That is not lost: as the chain advances those heights enter the
+	// scannable range and show up as `recovered` if the live path missed them. The
+	// watchdog is delayed by the lag window, which it always was.
+	scanFrom, scanTo, ok := cosmosScanRange(*nextRecoveryStartHeight, latestHeight)
+	if !ok {
+		liveHealth.recordRecoveryPass(0, 0)
+		return false, nil
+	}
+	passStart := scanFrom
+
 	// Judge the live path before the scan, not after it. The previous version
 	// only asked when recovery had already relayed something -- i.e. after the
 	// live path had missed a packet. Recovery stops cosmosIndexerLagBlocks short
 	// of the head, so waiting for that evidence means waiting for a window in
-	// which a packet can be lost outright.
-	stale, silence, report := liveHealth.livePathStale(liveHealth.observeChainHeight(latestHeight), time.Now())
+	// which a packet can be lost outright. The evidence is still the PREVIOUS
+	// pass's, so nothing here waits on the scan below.
+	stale, silence, report := liveHealth.livePathStale(liveHealth.hadTrafficToDeliver(), time.Now())
 	if report {
-		ctx.Logger.Printf("[SubscribeCosmos] ATTENTION: live subscription has delivered nothing for %s "+
+		ctx.Logger.Printf("WARN [SubscribeCosmos] ATTENTION: live subscription has delivered nothing for %s "+
 			"while the chain advanced to height %d (%d live event(s) this run). Gap recovery is the "+
 			"BACKSTOP, not the delivery path -- it stops short of the head, so a packet in the newest "+
 			"blocks can still be missed. Reconnecting.",
 			silence.Round(time.Second), latestHeight, liveHealth.events)
 	}
 
-	scanFrom, scanTo, ok := cosmosScanRange(*nextRecoveryStartHeight, latestHeight)
-	if !ok {
-		return stale, nil
-	}
-	passStart := scanFrom
-
-	var stats cosmosRecoveryStats
+	var stats, arming cosmosRecoveryStats
 	chunkSize := recoveryChunkSize(cosmosRecoveryChunkEnv, defaultCosmosRecoveryChunkHeights)
 	for scanFrom <= scanTo {
 		chunkEnd := scanFrom + chunkSize - 1
 		if chunkEnd < scanFrom || chunkEnd > scanTo {
 			chunkEnd = scanTo
 		}
+		// Never let one chunk straddle the boundary. recoverCosmosEvents reports
+		// per-chunk totals with no heights attached, so a straddling chunk would
+		// force a choice between arming on its historical half and discarding its
+		// live half. Cutting at the boundary keeps every chunk unambiguously one
+		// or the other; it happens at most once per subscription.
+		if boundary := liveHealth.armFromHeight; boundary >= scanFrom && boundary < chunkEnd {
+			chunkEnd = boundary
+		}
 		chunkStats, err := recoverCosmosEvents(stdCtx, ctx, batchBuilder, scanFrom, chunkEnd, seenEvents)
+		if liveHealth.armsFromHeight(chunkEnd) {
+			// recoverCosmosEvents accumulates across its three queries BEFORE
+			// returning the first error, so a failing chunk still reports what it
+			// managed to see. That is real evidence about real heights.
+			arming.recovered += chunkStats.recovered
+			arming.skipped += chunkStats.skipped
+		}
 		if err != nil {
+			// Evidence from the chunks that already completed must not die with
+			// this error. The cursor has advanced past them and been persisted, so
+			// no later pass will scan those heights again -- this is the only
+			// moment that evidence exists. Dropping it leaves a live subscription
+			// recovery just proved dead sitting UNARMED, so the watchdog never
+			// fires and the subscription is never reconnected.
+			//
+			// Only ever arm here, never clear: a pass that stopped early has not
+			// finished looking, so (0,0) would assert "nothing to deliver" on the
+			// strength of a range it never read.
+			if arming.recovered > 0 || arming.skipped > 0 {
+				liveHealth.recordRecoveryPass(arming.recovered, arming.skipped)
+			}
 			return stale, err
 		}
 		stats.recovered += chunkStats.recovered
@@ -486,6 +618,8 @@ func (s *Subscriber) recoverCosmosGapToLatest(
 	// common outcome is recovered=0 skipped=0 — two lines a tick, ~5.8k lines a day
 	// per direction, burying the events worth reading. The heartbeat keeps "gap
 	// recovery is alive and current" observable without the repetition.
+	// What this pass saw is what the next pass judges silence against.
+	liveHealth.recordRecoveryPass(arming.recovered, arming.skipped)
 	if stats.recovered > 0 || stats.skipped > 0 {
 		ctx.Logger.Printf("[SubscribeCosmos] recovery scanned [%d,%d]: recovered=%d skipped=%d",
 			passStart, scanTo, stats.recovered, stats.skipped)
@@ -664,14 +798,14 @@ func decodeCosmosPacketsFromEvents(
 	for _, packetEncodedStr := range sendPacketEvent {
 		packetBytes, err := hex.DecodeString(packetEncodedStr)
 		if err != nil {
-			logger.Printf("%s send_packet: failed to decode hex: %v", label, err)
+			logger.Printf("ERROR %s send_packet: failed to decode hex: %v", label, err)
 			continue
 		}
 
 		var packet channeltypesv2.Packet
 		err = proto.Unmarshal(packetBytes, &packet)
 		if err != nil {
-			logger.Printf("%s send_packet: failed to unmarshal: %v", label, err)
+			logger.Printf("ERROR %s send_packet: failed to unmarshal: %v", label, err)
 			continue
 		}
 
@@ -689,26 +823,26 @@ func decodeCosmosPacketsFromEvents(
 	ackEvent := events[EVENT_ACKNOWLEDGEMENT_FIELD]
 	if len(ackPacketEvent) != 0 || len(ackEvent) != 0 {
 		if len(ackPacketEvent) != len(ackEvent) {
-			logger.Printf("%s write_ack: packet/ack count mismatch (%d vs %d), skipping",
+			logger.Printf("ERROR %s write_ack: packet/ack count mismatch (%d vs %d), skipping",
 				logPrefix, len(ackPacketEvent), len(ackEvent))
 		} else {
 			for i := range ackPacketEvent {
 				packetBytes, err := hex.DecodeString(ackPacketEvent[i])
 				if err != nil {
-					logger.Printf("%s write_ack: failed to decode packet hex: %v", label, err)
+					logger.Printf("ERROR %s write_ack: failed to decode packet hex: %v", label, err)
 					continue
 				}
 
 				var packet channeltypesv2.Packet
 				err = proto.Unmarshal(packetBytes, &packet)
 				if err != nil {
-					logger.Printf("%s write_ack: failed to unmarshal packet: %v", label, err)
+					logger.Printf("ERROR %s write_ack: failed to unmarshal packet: %v", label, err)
 					continue
 				}
 
 				ackBytes, err := hex.DecodeString(ackEvent[i])
 				if err != nil {
-					logger.Printf("%s write_ack seq=%d: failed to decode ack hex: %v",
+					logger.Printf("ERROR %s write_ack seq=%d: failed to decode ack hex: %v",
 						logPrefix, packet.Sequence, err)
 					continue
 				}
@@ -716,12 +850,12 @@ func decodeCosmosPacketsFromEvents(
 				var acknowledgement channeltypesv2.Acknowledgement
 				err = proto.Unmarshal(ackBytes, &acknowledgement)
 				if err != nil {
-					logger.Printf("%s write_ack seq=%d: failed to unmarshal ack: %v",
+					logger.Printf("ERROR %s write_ack seq=%d: failed to unmarshal ack: %v",
 						logPrefix, packet.Sequence, err)
 					continue
 				}
 				if len(acknowledgement.AppAcknowledgements) == 0 {
-					logger.Printf("%s write_ack seq=%d: missing app acknowledgements", label, packet.Sequence)
+					logger.Printf("ERROR %s write_ack seq=%d: missing app acknowledgements", label, packet.Sequence)
 					continue
 				}
 
@@ -742,14 +876,14 @@ func decodeCosmosPacketsFromEvents(
 	for _, packetEncodedStr := range timeoutPacketEvent {
 		packetBytes, err := hex.DecodeString(packetEncodedStr)
 		if err != nil {
-			logger.Printf("%s timeout: failed to decode hex: %v", label, err)
+			logger.Printf("ERROR %s timeout: failed to decode hex: %v", label, err)
 			continue
 		}
 
 		var packet channeltypesv2.Packet
 		err = proto.Unmarshal(packetBytes, &packet)
 		if err != nil {
-			logger.Printf("%s timeout: failed to unmarshal: %v", label, err)
+			logger.Printf("ERROR %s timeout: failed to unmarshal: %v", label, err)
 			continue
 		}
 
@@ -767,13 +901,13 @@ func decodeCosmosPacketsFromEvents(
 	for _, packetEncodedStr := range settledEvent {
 		packetBytes, err := hex.DecodeString(packetEncodedStr)
 		if err != nil {
-			logger.Printf("[%s] acknowledge_packet: failed to decode hex: %v", logPrefix, err)
+			logger.Printf("ERROR [%s] acknowledge_packet: failed to decode hex: %v", logPrefix, err)
 			continue
 		}
 
 		var packet channeltypesv2.Packet
 		if err := proto.Unmarshal(packetBytes, &packet); err != nil {
-			logger.Printf("[%s] acknowledge_packet: failed to unmarshal: %v", logPrefix, err)
+			logger.Printf("ERROR [%s] acknowledge_packet: failed to unmarshal: %v", logPrefix, err)
 			continue
 		}
 
@@ -823,7 +957,14 @@ func enqueueCosmosPackets(
 		// whether a packet still NEEDS relaying, which is not the question.
 		if packet.Type == services.CosmosAcknowledged {
 			seenEvents[key] = struct{}{}
-			batchBuilder.PendingTracker.RemovePacketIfCurrent(*packet.Packet)
+			// Persist the terminal fact even when there is no active entry. The
+			// packet may already be in a handed-off batch, where DropCosmosQueued
+			// cannot reach it; its later tracking attempt must see this tombstone
+			// instead of recreating a pending record after the cursor moved on.
+			if err := batchBuilder.PendingTracker.MarkSettled(*packet.Packet); err != nil {
+				ctx.Logger.Printf("ERROR [SubscribeCosmos][ATTENTION] failed to persist terminal settlement for seq=%d: %v",
+					packet.Packet.Sequence, err)
+			}
 			// The owed-acknowledgement ledger too, not only the pending tracker.
 			// This branch runs when the acknowledgement arrived -- whoever relayed
 			// it -- and a debt this process recorded is settled by that fact.

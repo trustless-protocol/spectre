@@ -25,10 +25,4 @@ contract CompatibilityDeploymentTest is Test {
             assertEq(verifiers[i], expected[i]);
         }
     }
-
-    function testCompatibilityAndReleaseManifestsAreReadable() public view {
-        assertGt(bytes(vm.readFile("scripts/solidity/baseline.json")).length, 0);
-        assertGt(bytes(vm.readFile("scripts/solidity/ownership-manifest.json")).length, 0);
-        assertGt(bytes(vm.readFile("scripts/solidity/verifier-manifest.json")).length, 0);
-    }
 }

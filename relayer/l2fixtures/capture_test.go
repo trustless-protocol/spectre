@@ -40,7 +40,7 @@ func validConfig() Config {
 	}
 }
 
-func TestCapturePinsBlocksAndProducesAFixtureChecksum(t *testing.T) {
+func TestCapture_PinsBlocksAndProducesAFixtureChecksum(t *testing.T) {
 	proof := json.RawMessage(`{
 		"address":"0x0000000000000000000000000000000000000001",
 		"accountProof":["0x01"],
@@ -84,7 +84,7 @@ func TestCapturePinsBlocksAndProducesAFixtureChecksum(t *testing.T) {
 	}
 }
 
-func TestConfigRejectsDuplicateRolesBeforeNetworkAccess(t *testing.T) {
+func TestConfig_RejectsDuplicateRolesBeforeNetworkAccess(t *testing.T) {
 	config := validConfig()
 	config.ProofRequests = append(config.ProofRequests, config.ProofRequests[0])
 	if err := config.Validate(); err == nil {
@@ -92,7 +92,7 @@ func TestConfigRejectsDuplicateRolesBeforeNetworkAccess(t *testing.T) {
 	}
 }
 
-func TestConfigRejectsInvalidProfileDigestBeforeNetworkAccess(t *testing.T) {
+func TestConfig_RejectsInvalidProfileDigestBeforeNetworkAccess(t *testing.T) {
 	config := validConfig()
 	config.ProfileSHA256 = "ABC"
 	if err := config.Validate(); err == nil {
@@ -100,7 +100,7 @@ func TestConfigRejectsInvalidProfileDigestBeforeNetworkAccess(t *testing.T) {
 	}
 }
 
-func TestCaptureRejectsMismatchedBlockNumber(t *testing.T) {
+func TestCapture_RejectsMismatchedBlockNumber(t *testing.T) {
 	proof := json.RawMessage(`{
 		"address":"0x0000000000000000000000000000000000000001",
 		"accountProof":["0x01"],
@@ -117,7 +117,7 @@ func TestCaptureRejectsMismatchedBlockNumber(t *testing.T) {
 	}
 }
 
-func TestProofAtRejectsMismatchedResponseIdentity(t *testing.T) {
+func TestProofAt_RejectsMismatchedResponseIdentity(t *testing.T) {
 	request := ProofRequest{
 		Address: "0x0000000000000000000000000000000000000001",
 		StorageKeys: []string{
@@ -138,7 +138,7 @@ func TestProofAtRejectsMismatchedResponseIdentity(t *testing.T) {
 	}
 }
 
-func TestWriteCaptureRejectsAManifestForDifferentFixtureBytes(t *testing.T) {
+func TestWriteCapture_RejectsAManifestForDifferentFixtureBytes(t *testing.T) {
 	fixture := Fixture{SchemaVersion: schemaVersion, ConfigID: "configuration"}
 	manifest := Provenance{FixtureSHA256: "0000000000000000000000000000000000000000000000000000000000000000"}
 	if err := WriteCapture(filepath.Join(t.TempDir(), "fixture"), fixture, manifest); err == nil {

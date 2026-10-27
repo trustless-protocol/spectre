@@ -56,11 +56,18 @@ contract ClientMigrationExecutor is IClientMigrationExecutor, IICS02ClientErrors
             migration.digest == _migrationDigest(clientId, counterpartyInfo, client),
             IBCClientMigrationMismatch(clientId)
         );
+        // The proposer already rejects such clients. This also covers a proposal committed before it did, and a
+        // client that has lost its code since.
+        require(client.code.length != 0, IBCInvalidClientAddress());
 
         IAccessManager manager = IAccessManager(IAccessManaged(address(this)).authority());
         require(!manager.isTargetClosed(address(this)), IBCUnauthorizedMigrator(clientId, msg.sender));
-        (bool isMember,) = manager.hasRole(IBCRolesLib.getLightClientMigratorRole(clientId), migration.proposer);
+        (bool isMember, uint32 executionDelay) =
+            manager.hasRole(IBCRolesLib.getLightClientMigratorRole(clientId), migration.proposer);
         require(isMember, IBCUnauthorizedMigrator(clientId, migration.proposer));
+        // The proposer needed a non-zero delay to commit the proposal, so a role re-granted without one no longer
+        // authorizes it.
+        require(executionDelay != 0, IBCClientMigrationDelayRequired(clientId));
 
         $.counterpartyInfos[clientId] = counterpartyInfo;
         $.clients[clientId] = ILightClient(client);

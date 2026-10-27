@@ -1,6 +1,7 @@
 //! This module provides [`verify_misbehaviour`] function to check for misbehaviour
 
-use ethereum_types::consensus::light_client_header::LightClientUpdate;
+use alloy_primitives::B256;
+use ethereum_types::consensus::light_client_header::{LightClientHeader, LightClientUpdate};
 
 use crate::{
     client_state::ClientState,
@@ -9,6 +10,35 @@ use crate::{
     header::ActiveSyncCommittee,
     verify::{validate_light_client_update, BlsVerify},
 };
+
+/// Returns the execution commitments of two attested headers that are comparable with each other.
+///
+/// Two pre-Gloas-format headers are compared by execution state root, as before. As soon as either
+/// header is in the Gloas format, which carries no state root, both are compared by execution
+/// block hash. Equal block hashes mean equal execution state, so that comparison is never weaker
+/// than comparing state roots.
+fn conflicting_execution_roots(
+    header_1: &LightClientHeader,
+    header_2: &LightClientHeader,
+) -> Result<(B256, B256), EthereumIBCError> {
+    match (&header_1.execution, &header_2.execution) {
+        (Some(execution_1), Some(execution_2)) => {
+            Ok((execution_1.state_root, execution_2.state_root))
+        }
+        _ => Ok((
+            execution_block_hash(header_1)?,
+            execution_block_hash(header_2)?,
+        )),
+    }
+}
+
+const fn execution_block_hash(header: &LightClientHeader) -> Result<B256, EthereumIBCError> {
+    match (&header.execution, header.execution_block_hash) {
+        (Some(execution), None) => Ok(execution.block_hash),
+        (None, Some(block_hash)) => Ok(block_hash),
+        _ => Err(EthereumIBCError::InvalidLightClientHeaderFormat),
+    }
+}
 
 /// Verifies if a consensus misbehaviour is valid by checking if the two conflicting light client updates are valid.
 ///
@@ -49,10 +79,8 @@ pub fn verify_misbehaviour<V: BlsVerify>(
         EthereumIBCError::MisbehaviourSlotMismatch(slot_1, slot_2)
     );
 
-    let (state_root_1, state_root_2) = (
-        update_1.attested_header.execution.state_root,
-        update_2.attested_header.execution.state_root,
-    );
+    let (state_root_1, state_root_2) =
+        conflicting_execution_roots(&update_1.attested_header, &update_2.attested_header)?;
     ensure!(
         state_root_1 != state_root_2,
         EthereumIBCError::MisbehaviourStorageRootsMatch(state_root_1)

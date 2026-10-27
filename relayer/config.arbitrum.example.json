@@ -37,6 +37,7 @@
         "l2_ics26_client_id": "arb-client-0",
         "head_kind": "safe",
         "log_scan_chunk": 0,
+        "router_deploy_block": 0,
         "include_provisional": true,
         "rollup_profile": {
           "common": {

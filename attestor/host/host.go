@@ -41,13 +41,12 @@ type RunnerSpec struct {
 // deployment that intentionally disables gRPC while retaining lifecycle
 // supervision of its plugins.
 type Config struct {
-	Routes                   map[string]core.Ports
-	Runners                  []RunnerSpec
-	Listener                 net.Listener
-	AllowLegacyEmptySrcChain bool
-	EnableReflection         bool
-	HealthPoll               time.Duration
-	GracefulStopTimeout      time.Duration
+	Routes              map[string]core.Ports
+	Runners             []RunnerSpec
+	Listener            net.Listener
+	EnableReflection    bool
+	HealthPoll          time.Duration
+	GracefulStopTimeout time.Duration
 }
 
 // Host owns a shared gRPC server and runner supervisor.
@@ -69,9 +68,7 @@ func New(config Config) (*Host, error) {
 	if len(config.Routes) == 0 {
 		return nil, fmt.Errorf("attestor host requires at least one route")
 	}
-	service, err := attestorgrpc.New(config.Routes, attestorgrpc.Options{
-		AllowLegacyEmptySrcChain: config.AllowLegacyEmptySrcChain,
-	})
+	service, err := attestorgrpc.New(config.Routes)
 	if err != nil {
 		return nil, err
 	}

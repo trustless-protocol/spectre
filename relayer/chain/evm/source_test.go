@@ -8,13 +8,13 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"relayer/chain"
+	"relayer/chain/chaintest"
+	"relayer/services"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"relayer/chain"
-	"relayer/services"
 
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -33,84 +33,86 @@ func ethPacket(t services.EthPacketType) services.EthPacket {
 	return p
 }
 
-// TestEthPacketToEvent_TypeMapping mirrors cosmos TestCosmosPacketToEvent: it
-// pins which queued EthPacket types become relay events and which are skipped
-// (EthTimeout is scanner-owned; EthAck is a terminal settle, not relayed here).
-func TestEthPacketToEvent_TypeMapping(t *testing.T) {
-	tests := []struct {
-		name     string
-		packet   services.EthPacket
-		wantOK   bool
-		wantType chain.EventType
-	}{
-		{
-			name:     "send relayed as recv",
-			packet:   ethPacket(services.EthSend),
-			wantOK:   true,
-			wantType: chain.SendPacket,
-		},
-		{
-			name:     "write-ack relayed as ack",
-			packet:   ethPacket(services.EthWriteAck),
-			wantOK:   true,
-			wantType: chain.AckPacket,
-		},
-		{
-			// EthTimeout is refunded on ETH by the async scanner, never relayed here.
-			name:   "eth timeout skipped (scanner-owned)",
-			packet: ethPacket(services.EthTimeout),
-			wantOK: false,
-		},
-		{
-			// EthAck settles a pending ETH-origin send; it is not a relayable event.
-			name:   "eth ack skipped (terminal settle)",
-			packet: ethPacket(services.EthAck),
-			wantOK: false,
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			e, ok := ethPacketToEvent(tc.packet)
-			if ok != tc.wantOK {
-				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
-			}
-			if ok && e.Type != tc.wantType {
-				t.Fatalf("type = %d, want %d", e.Type, tc.wantType)
-			}
-		})
-	}
-}
+func TestEthPacketToEvent(t *testing.T) {
+	// TestEthPacketToEvent/type mapping mirrors cosmos TestCosmosPacketToEvent: it
+	// pins which queued EthPacket types become relay events and which are skipped
+	// (EthTimeout is scanner-owned; EthAck is a terminal settle, not relayed here).
+	t.Run("type mapping", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			packet   services.EthPacket
+			wantOK   bool
+			wantType chain.EventType
+		}{
+			{
+				name:     "send relayed as recv",
+				packet:   ethPacket(services.EthSend),
+				wantOK:   true,
+				wantType: chain.SendPacket,
+			},
+			{
+				name:     "write-ack relayed as ack",
+				packet:   ethPacket(services.EthWriteAck),
+				wantOK:   true,
+				wantType: chain.AckPacket,
+			},
+			{
+				// EthTimeout is refunded on ETH by the async scanner, never relayed here.
+				name:   "eth timeout skipped (scanner-owned)",
+				packet: ethPacket(services.EthTimeout),
+				wantOK: false,
+			},
+			{
+				// EthAck settles a pending ETH-origin send; it is not a relayable event.
+				name:   "eth ack skipped (terminal settle)",
+				packet: ethPacket(services.EthAck),
+				wantOK: false,
+			},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				e, ok := ethPacketToEvent(tc.packet)
+				if ok != tc.wantOK {
+					t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
+				}
+				if ok && e.Type != tc.wantType {
+					t.Fatalf("type = %d, want %d", e.Type, tc.wantType)
+				}
+			})
+		}
+	})
 
-// TestEthPacketToEvent_AckBytesCarried guards that an ack event carries its
-// acknowledgement bytes through to the event (needed to build MsgAcknowledgement).
-func TestEthPacketToEvent_AckBytesCarried(t *testing.T) {
-	e, ok := ethPacketToEvent(ethPacket(services.EthWriteAck))
-	if !ok {
-		t.Fatal("write-ack with bytes must be relayed")
-	}
-	if len(e.AckBytes) != 1 || len(e.AckBytes[0]) != 1 || e.AckBytes[0][0] != 0x01 {
-		t.Fatalf("ack bytes not carried: %v", e.AckBytes)
-	}
-}
+	// TestEthPacketToEvent/ack bytes carried guards that an ack event carries its
+	// acknowledgement bytes through to the event (needed to build MsgAcknowledgement).
+	t.Run("ack bytes carried", func(t *testing.T) {
+		e, ok := ethPacketToEvent(ethPacket(services.EthWriteAck))
+		if !ok {
+			t.Fatal("write-ack with bytes must be relayed")
+		}
+		if len(e.AckBytes) != 1 || len(e.AckBytes[0]) != 1 || e.AckBytes[0][0] != 0x01 {
+			t.Fatalf("ack bytes not carried: %v", e.AckBytes)
+		}
+	})
 
-// TestEthPacketToEvent_EmptyAckSkipped guards the no-ack-bytes skip: a write-ack
-// without acknowledgement bytes cannot be built into a MsgAcknowledgement.
-func TestEthPacketToEvent_EmptyAckSkipped(t *testing.T) {
-	p := services.EthPacket{
-		Type:   services.EthWriteAck,
-		Packet: &channeltypesv2.Packet{Sequence: 1, SourceClient: "eth-router-0", DestinationClient: "08-wasm-0"},
-		// AckBytes deliberately empty
-	}
-	if _, ok := ethPacketToEvent(p); ok {
-		t.Fatal("write-ack with no acknowledgement bytes must be skipped")
-	}
-}
+	// TestEthPacketToEvent/empty ack skipped guards the no-ack-bytes skip: a write-ack
+	// without acknowledgement bytes cannot be built into a MsgAcknowledgement.
+	t.Run("empty ack skipped", func(t *testing.T) {
+		p := services.EthPacket{
+			Type:   services.EthWriteAck,
+			Packet: &channeltypesv2.Packet{Sequence: 1, SourceClient: "eth-router-0", DestinationClient: "08-wasm-0"},
+			// AckBytes deliberately empty
+		}
+		if _, ok := ethPacketToEvent(p); ok {
+			t.Fatal("write-ack with no acknowledgement bytes must be skipped")
+		}
+	})
 
-// TestEthPacketToEvent_NilPacket guards the encode-failure skip.
-func TestEthPacketToEvent_NilPacket(t *testing.T) {
-	if _, ok := ethPacketToEvent(services.EthPacket{Type: services.EthSend}); ok {
-		t.Fatal("nil packet must be skipped")
-	}
+	// TestEthPacketToEvent/nil packet guards the encode-failure skip.
+	t.Run("nil packet", func(t *testing.T) {
+		if _, ok := ethPacketToEvent(services.EthPacket{Type: services.EthSend}); ok {
+			t.Fatal("nil packet must be skipped")
+		}
+	})
 }
 
 // Mirror of chain/cosmos TestEventsWithOrigins_StaysIndexAligned. The handler
@@ -457,4 +459,11 @@ func TestMembershipProof(t *testing.T) {
 			t.Fatalf("eth_getProof was called %d times for a zero height; it must fail before dialing", got)
 		}
 	})
+}
+
+// The adapter contract suite. Everything asserted here is asserted identically
+// on the other two adapters: adding a fourth chain is a package plus this file.
+func TestAdapterContract(t *testing.T) {
+	chaintest.RunSourceContract(t, chaintest.SourceFixture{Name: "evm", Unwired: &Source{}})
+	chaintest.RunDestinationContract(t, chaintest.DestinationFixture{Name: "evm", Unwired: &Destination{}})
 }

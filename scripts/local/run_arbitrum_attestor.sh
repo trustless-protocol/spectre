@@ -41,6 +41,7 @@
 #   ATTESTOR_NITRO_WS_URL              container-visible Nitro WebSocket override
 #   ATTESTOR_DOCKER_NETWORK            optional Docker network to join
 #   GRPC_PORT (3001)
+#   METRICS_PORT (9090)
 #   RUNTIME_POLL_INTERVAL (2s)
 #   RUNTIME_BACKFILL_MAX_BLOCKS (2048)
 #       Max L2 heights fetched per unsafe/safe/finalized range in one runtime
@@ -68,9 +69,9 @@
 #       but prefer ATTESTOR_RUN_DIR: the devnet bring-up scripts use RUN_DIR for
 #       their own artifacts
 #   STARTUP_WAIT_SECS (600)
-#   ATTESTOR_DOCKER_IMAGE (fast-ibc-arbitrum-attestor:local)
-#   ATTESTOR_CONTAINER_NAME (fast-ibc-arbitrum-attestor)
-#   ATTESTOR_STATE_VOLUME (fast-ibc-arbitrum-attestor-data)
+#   ATTESTOR_DOCKER_IMAGE (spectre-arbitrum-attestor:local)
+#   ATTESTOR_CONTAINER_NAME (spectre-arbitrum-attestor)
+#   ATTESTOR_STATE_VOLUME (spectre-arbitrum-attestor-data)
 #   DETACH (0)                         exit after readiness and leave container running
 
 set -euo pipefail
@@ -176,6 +177,7 @@ SRC_CHAIN=${SRC_CHAIN:-$PROFILE_SRC_CHAIN}
 ASSERTIONS_MAPPING_SLOT=${ASSERTIONS_MAPPING_SLOT:-$PROFILE_ASSERTIONS_MAPPING_SLOT}
 ASSERTION_STATUS_OFFSET=${ASSERTION_STATUS_OFFSET:-$PROFILE_ASSERTION_STATUS_OFFSET}
 GRPC_PORT=${GRPC_PORT:-3001}
+METRICS_PORT=${METRICS_PORT:-9090}
 RUNTIME_POLL_INTERVAL=${RUNTIME_POLL_INTERVAL:-$PROFILE_RUNTIME_POLL_INTERVAL}
 ASSERTION_POLL_INTERVAL=${ASSERTION_POLL_INTERVAL:-$PROFILE_ASSERTION_POLL_INTERVAL}
 ASSERTION_MAX_BLOCK_RANGE=${ASSERTION_MAX_BLOCK_RANGE:-$PROFILE_ASSERTION_MAX_BLOCK_RANGE}
@@ -196,9 +198,9 @@ RUNTIME_BACKFILL_CONCURRENCY=${RUNTIME_BACKFILL_CONCURRENCY:-8}
 # instead; RUN_DIR still works for anything that already sets it.
 RUN_DIR=${ATTESTOR_RUN_DIR:-${RUN_DIR:-$REPO_ROOT/.arbitrum-attestor-run}}
 STARTUP_WAIT_SECS=${STARTUP_WAIT_SECS:-600}
-ATTESTOR_DOCKER_IMAGE=${ATTESTOR_DOCKER_IMAGE:-fast-ibc-arbitrum-attestor:local}
-ATTESTOR_CONTAINER_NAME=${ATTESTOR_CONTAINER_NAME:-fast-ibc-arbitrum-attestor}
-ATTESTOR_STATE_VOLUME=${ATTESTOR_STATE_VOLUME:-fast-ibc-arbitrum-attestor-data}
+ATTESTOR_DOCKER_IMAGE=${ATTESTOR_DOCKER_IMAGE:-spectre-arbitrum-attestor:local}
+ATTESTOR_CONTAINER_NAME=${ATTESTOR_CONTAINER_NAME:-spectre-arbitrum-attestor}
+ATTESTOR_STATE_VOLUME=${ATTESTOR_STATE_VOLUME:-spectre-arbitrum-attestor-data}
 DETACH=${DETACH:-0}
 
 fail() {
@@ -250,6 +252,8 @@ ASSERTION_START_BLOCK=${ASSERTION_START_BLOCK:-${PROFILE_ASSERTION_START_BLOCK:-
 
 [[ "$GRPC_PORT" =~ ^[0-9]+$ ]] && [ "$GRPC_PORT" -gt 0 ] && [ "$GRPC_PORT" -le 65535 ] ||
     fail "GRPC_PORT must be between 1 and 65535"
+[[ "$METRICS_PORT" =~ ^[0-9]+$ ]] && [ "$METRICS_PORT" -gt 0 ] && [ "$METRICS_PORT" -le 65535 ] ||
+    fail "METRICS_PORT must be between 1 and 65535"
 [[ "$ASSERTIONS_MAPPING_SLOT" =~ ^0x[0-9a-fA-F]{64}$ ]] ||
     fail "ASSERTIONS_MAPPING_SLOT must be a 32-byte hexadecimal value"
 [[ "$ASSERTION_STATUS_OFFSET" =~ ^[0-9]+$ ]] &&
@@ -304,6 +308,7 @@ fi
 CONFIG=$RUN_DIR/config.json
 jq -n \
     --arg grpc_listen_address "127.0.0.1:50051" \
+    --arg metrics_listen_address "127.0.0.1:9090" \
     --arg runtime_poll_interval "$RUNTIME_POLL_INTERVAL" \
     --argjson runtime_backfill_max_blocks "$RUNTIME_BACKFILL_MAX_BLOCKS" \
     --argjson runtime_backfill_concurrency "$RUNTIME_BACKFILL_CONCURRENCY" \
@@ -326,6 +331,7 @@ jq -n \
     --arg nitro_ws_url "$CONTAINER_NITRO_WS_URL" \
     '{
         grpc_listen_address: $grpc_listen_address,
+        metrics_listen_address: $metrics_listen_address,
         runtime_poll_interval: $runtime_poll_interval,
         runtime_backfill_max_blocks: $runtime_backfill_max_blocks,
         runtime_backfill_concurrency: $runtime_backfill_concurrency,
@@ -344,7 +350,7 @@ jq -n \
         assertion_start_block: $assertion_start_block,
         assertion_poll_interval: $assertion_poll_interval,
         assertion_max_block_range: $assertion_max_block_range,
-        attestor_state_path: "/var/lib/fast-ibc/attestor/attested-roots.json",
+        attestor_state_path: "/var/lib/spectre/attestor/attested-roots.json",
         nitro_rpc_url: $nitro_rpc_url,
         nitro_ws_url: $nitro_ws_url
     }' >"$CONFIG"
@@ -382,8 +388,9 @@ docker run \
     --add-host host.docker.internal:host-gateway \
     ${DOCKER_NETWORK_ARGS[@]+"${DOCKER_NETWORK_ARGS[@]}"} \
     --publish "127.0.0.1:$GRPC_PORT:50051" \
+    --publish "127.0.0.1:$METRICS_PORT:9090" \
     --volume "$RUN_DIR:/config:ro" \
-    --volume "$ATTESTOR_STATE_VOLUME:/var/lib/fast-ibc/attestor" \
+    --volume "$ATTESTOR_STATE_VOLUME:/var/lib/spectre/attestor" \
     --env ATTESTOR_CONFIG=/config/config.json \
     --env ATTESTOR_SIGNING_KEY \
     "$ATTESTOR_DOCKER_IMAGE" >/dev/null

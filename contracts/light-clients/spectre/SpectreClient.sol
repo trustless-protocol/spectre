@@ -4,7 +4,7 @@ pragma solidity ^0.8.28;
 // solhint-disable gas-strict-inequalities
 
 import { ISpectreClientMsgs } from "contracts/light-clients/spectre/messages/ISpectreClientMsgs.sol";
-import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { ISpectreTendermintMsgs } from "contracts/light-clients/spectre/messages/ISpectreTendermintMsgs.sol";
 import { IMembershipMsgs } from "contracts/light-clients/spectre/messages/IMembershipMsgs.sol";
 import { ILightClientMsgs } from "contracts/light-clients/messages/ILightClientMsgs.sol";
 import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
@@ -25,7 +25,7 @@ import { SSTORE2 } from "contracts/light-clients/spectre/libraries/SSTORE2.sol";
 import { AccessControl } from "@openzeppelin-contracts/access/AccessControl.sol";
 
 /// @title SpectreClient
-/// @notice ICS-07 Tendermint light client using gnark Groth16. SpectreClient is the only stateful
+/// @notice Spectre light client using gnark Groth16. SpectreClient is the only stateful
 ///         piece: it owns the Store, performs the >2/3 quorum accounting, and applies every state
 ///         write. Header validation and signature verification are delegatecalled into the
 ///         UpdateClient / Misbehaviour modules; ICS-23 membership is staticcalled into the
@@ -50,23 +50,32 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
     ///      constructor can assert `initialPinnedValidatorSet` actually matches the genesis
     ///      consensus state's `nextValidatorsHash` — otherwise a mis-pinned genesis validator set
     ///      (deployer mistake or malice) would be undetectable on-chain.
+    /// @dev Each module must already be deployed. They are reached with a delegatecall (or a call) whose success
+    ///      is read as "verified", and a call to an address without code succeeds with no return data, so a module
+    ///      that was never deployed (for instance `address(0)`) would accept anything: with no misbehaviour module,
+    ///      two identical headers and a quorum in the proof metadata would freeze the client without a proof check.
+    ///      The addresses are immutable, so the constructor is the only place to catch that.
     /// @dev roleManager==address(0) is the intentional permissionless escape hatch (devnet/test):
     ///      no account is granted `DEFAULT_ADMIN_ROLE` in that branch, which means `unfreeze()`
     ///      becomes permanently uncallable if this client ever freezes while in that mode — the
     ///      only recovery path is migrating the router to a replacement client. Production
     ///      deployments must pass a real `roleManager` (the relayer defaults it to the router,
-    ///      see `relayer/transaction/handler.go`). This is documented, not a bug.
+    ///      see `effectiveRoleManager` in `relayer/cmd/build_source.go`). This is documented, not a bug.
     constructor(
         address updateClientModule,
         address membershipModule,
         address misbehaviourModule,
         bytes memory clientState_,
-        IICS07TendermintMsgs.ConsensusState memory consensusState_,
-        IICS07TendermintMsgs.ValidatorSet memory initialPinnedValidatorSet,
+        ISpectreTendermintMsgs.ConsensusState memory consensusState_,
+        ISpectreTendermintMsgs.ValidatorSet memory initialPinnedValidatorSet,
         address roleManager
     ) {
+        _requireDeployed(updateClientModule);
+        _requireDeployed(membershipModule);
+        _requireDeployed(misbehaviourModule);
+
         SpectreStore.Store storage $ = SpectreStore.load();
-        IICS07TendermintMsgs.ClientState memory cs = abi.decode(clientState_, (IICS07TendermintMsgs.ClientState));
+        ISpectreTendermintMsgs.ClientState memory cs = abi.decode(clientState_, (ISpectreTendermintMsgs.ClientState));
         $.clientState = cs;
 
         require(cs.trustingPeriod > 0, LengthIsOutOfRange(cs.trustingPeriod, 1, type(uint32).max));
@@ -124,6 +133,17 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
     /// @inheritdoc ISpectreClient
     function getPinnedValidatorsHash() external view returns (bytes32) {
         return SpectreStore.load().pinnedValidatorsHash;
+    }
+
+    /// @inheritdoc ISpectreClient
+    function getConsensusStateHash(uint64 revisionHeight) external view returns (bytes32) {
+        return SpectreStore.load().getConsensusStateHash(revisionHeight);
+    }
+
+    /// @inheritdoc ISpectreClient
+    function getPinnedSnapshot() external view returns (uint64 height, uint128 timestamp) {
+        SpectreStore.Store storage $ = SpectreStore.load();
+        return ($.snapshotHeights[$.snapshotHeights.length - 1], $.pinnedTimestamp);
     }
 
     /// @inheritdoc ISpectreClient
@@ -283,11 +303,13 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
     ///      snapshot's consensus timestamp must remain inside the trusting period, but it need not
     ///      equal the trusted height's next validator set. Contrast `_verifyMisbehaviourQuorum`
     ///      below, which legitimately uses `snapshotAt(trustedHeight)` because misbehaviour evidence
-    ///      can reference any past trusted height, not just the latest.
+    ///      can reference any past trusted height, not just the latest. The selected historical
+    ///      snapshot must nevertheless remain inside the trusting period before its voting power
+    ///      can be counted.
     function _verifyPinnedQuorum(
         SpectreStore.Store storage $,
         ISpectreClientMsgs.BatchProof memory proof_,
-        IICS07TendermintMsgs.Header memory header
+        ISpectreTendermintMsgs.Header memory header
     )
         private
         view
@@ -297,22 +319,24 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
         _verifyQuorum(proof_, header.signedHeader.commit.commitSigs, snapshot);
     }
 
-    /// @notice Sums the verified signers' voting power against the snapshot trusted at the header's
-    ///         trusted height, requiring >2/3.
+    /// @notice Validates and sums the verified signers' voting power against the snapshot trusted
+    ///         at the header's trusted height, requiring >2/3.
     function _verifyMisbehaviourQuorum(
         SpectreStore.Store storage $,
         ISpectreClientMsgs.BatchProof memory proof_,
-        IICS07TendermintMsgs.Header memory header
+        ISpectreTendermintMsgs.Header memory header
     )
         private
         view
     {
-        _verifyQuorum(proof_, header.signedHeader.commit.commitSigs, $.snapshotAt(header.trustedHeight.revisionHeight));
+        SpectreStore.PinnedValidatorSetSnapshot memory snapshot = $.snapshotAt(header.trustedHeight.revisionHeight);
+        _validateConsensusStateTrustingPeriod(snapshot.timestamp);
+        _verifyQuorum(proof_, header.signedHeader.commit.commitSigs, snapshot);
     }
 
     function _verifyQuorum(
         ISpectreClientMsgs.BatchProof memory proof_,
-        IICS07TendermintMsgs.CommitSig[] memory commitSigs,
+        ISpectreTendermintMsgs.CommitSig[] memory commitSigs,
         SpectreStore.PinnedValidatorSetSnapshot memory snapshot
     )
         private
@@ -420,7 +444,7 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
         IMembershipMsgs.KVPair[] calldata kvPairs,
         IMembershipMsgs.MerkleProof[] calldata merkleProofs,
         bytes32 appHash,
-        IICS07TendermintMsgs.ConsensusState calldata trustedConsensusState,
+        ISpectreTendermintMsgs.ConsensusState calldata trustedConsensusState,
         IMembershipMsgs.MembershipType membershipType,
         bytes[] calldata kvPath,
         bytes memory kvValue
@@ -440,7 +464,7 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
         IMembershipMsgs.KVPair[] calldata kvPairs,
         IMembershipMsgs.MerkleProof[] calldata merkleProofs,
         bytes32 appHash,
-        IICS07TendermintMsgs.ConsensusState calldata trustedConsensusState,
+        ISpectreTendermintMsgs.ConsensusState calldata trustedConsensusState,
         bytes[] calldata kvPath,
         bytes memory kvValue
     )
@@ -481,7 +505,7 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
     function _validateMembershipInput(
         bytes32 commitmentRoot,
         uint64 proofHeight,
-        IICS07TendermintMsgs.ConsensusState memory trustedConsensusState
+        ISpectreTendermintMsgs.ConsensusState memory trustedConsensusState
     )
         private
         view
@@ -534,9 +558,9 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
             abi.decode(misbehaviourMsg, (ISpectreClientMsgs.MsgSubmitMisbehaviour));
 
         SpectreStore.Store storage $ = SpectreStore.load();
-        // Bind the submitter-chosen time to the wall clock. Without this, `time` could be picked
-        // inside the trusting period of an arbitrarily old trusted state, letting a long-expired
-        // (unbonded) snapshot validator set freeze the client.
+        // Bind the submitter-chosen time to the wall clock so the delegatecalled header validation
+        // cannot accept stale trusted consensus states. `_verifyMisbehaviourQuorum` independently
+        // requires the snapshot selected at each trusted height to remain within the trusting period.
         _requireFreshness($, msg_.time);
 
         // Quorum accounting first: it gates the (expensive) signature proof and must revert before
@@ -574,7 +598,7 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
 
     // ============ Internal state writes ============
 
-    function _setPinnedValidatorSet(IICS07TendermintMsgs.ValidatorSet memory validatorSet) private {
+    function _setPinnedValidatorSet(ISpectreTendermintMsgs.ValidatorSet memory validatorSet) private {
         SpectreStore.Store storage $ = SpectreStore.load();
         bytes32 validatorsHash = Header.hashValSet(validatorSet);
         bytes memory cacheData = ValidatorSetLib.buildCache(validatorsHash, validatorSet);
@@ -609,8 +633,16 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
 
     // ============ Helpers ============
 
+    /// @notice Reverts unless `module` holds contract code.
+    function _requireDeployed(address module) private view {
+        require(module.code.length != 0, ModuleHasNoCode(module));
+    }
+
     /// @notice Delegatecalls a module, bubbling up any revert data (so custom errors survive).
+    /// @dev A delegatecall to an address without code succeeds and returns nothing. The constructor already
+    ///      rejects such modules; the check here keeps that success from ever being read as a verified proof.
     function _delegate(address target, bytes memory data) private returns (bytes memory) {
+        _requireDeployed(target);
         (bool ok, bytes memory ret) = target.delegatecall(data);
         if (!ok) {
             assembly ("memory-safe") {

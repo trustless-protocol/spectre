@@ -1,11 +1,14 @@
 package l2rollup
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // This file mirrors, byte-for-byte on the JSON wire, the header types the cw-ics08
 // L2 wasm light clients deserialize. Ground truth, and there is no longer a
 // per-chain half — the three verifier crates are identical adapters:
-//   - packages/l2-client/src/msg.rs              → ClientMessage, AttestedL2Header,
+//   - packages/l2-client/src/msg.rs              → ClientMessage, SignedAttestedL2Header,
 //                                                  EvmAccountProof, EvmStorageProof
 //   - packages/l2-client/src/canonical_header.rs → CanonicalEvmHeader
 //
@@ -76,14 +79,14 @@ type IndexedAttestorSignature struct {
 	Signature     []byte `json:"signature"`
 }
 
-// AttestedL2Header mirrors l2-client `SignedAttestedL2Header` — the only update
+// SignedAttestedL2Header mirrors l2-client `SignedAttestedL2Header` — the only update
 // shape the attestor-trusted clients accept, and identical for every chain.
 //
 // The settlement fields the per-chain headers used to carry (beacon_slot,
 // l1_state_root, factory/game/assertion proofs, output-root preimages) are gone
 // because nothing verifies them any more. Indexed signatures replace settlement
 // evidence as the contract-verifiable source of trust.
-type AttestedL2Header struct {
+type SignedAttestedL2Header struct {
 	L2Header          CanonicalEvmHeader         `json:"l2_header"`
 	RouterProof       EvmAccountProof            `json:"router_proof"`
 	AttestorSignature []IndexedAttestorSignature `json:"attestor_signature"`
@@ -93,7 +96,14 @@ type AttestedL2Header struct {
 // no inner envelope any more: the Arbitrum verifier used to wrap its header in a
 // second tagged enum (`{"type":"bold_v2",...}`) because it had more than one header
 // variant, and it no longer does.
-func (h *AttestedL2Header) EncodeClientMessage() ([]byte, error) {
+// TrustedAt is the L2 block time the header carries: the source-chain timestamp
+// a client update installs, which is what the client-update observer measures
+// staleness from (the same figure the ETH and Cosmos builders report).
+func (h *SignedAttestedL2Header) TrustedAt() time.Time {
+	return time.Unix(int64(h.L2Header.Timestamp), 0).UTC()
+}
+
+func (h *SignedAttestedL2Header) EncodeClientMessage() ([]byte, error) {
 	if len(h.AttestorSignature) == 0 {
 		return nil, fmt.Errorf("l2 client message: signed header requires at least one attestor signature")
 	}
@@ -101,4 +111,4 @@ func (h *AttestedL2Header) EncodeClientMessage() ([]byte, error) {
 }
 
 // Header types satisfy ClientMessage.
-var _ ClientMessage = (*AttestedL2Header)(nil)
+var _ ClientMessage = (*SignedAttestedL2Header)(nil)

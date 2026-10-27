@@ -244,7 +244,7 @@ tail -f /dev/null
         name = "arb-rollup-deployer",
         config = ServiceConfig(
             image = ImageBuildSpec(
-                image_name = "fast-ibc-arb-rollupcreator",
+                image_name = "spectre-arb-rollupcreator",
                 build_context_dir = "./rollupcreator",
                 build_args = {
                     "NITRO_CONTRACTS_REF": config["nitro_contracts_ref"],
@@ -331,19 +331,35 @@ tail -f /dev/null
             ports = {
                 "rpc": PortSpec(
                     number = 8547,
-                    public_port = 32200,
                     transport_protocol = "TCP",
                     application_protocol = "http",
                 ),
                 "ws": PortSpec(
                     number = 8548,
-                    public_port = 32201,
                     transport_protocol = "TCP",
                     application_protocol = "ws",
                 ),
                 "feed": PortSpec(
                     number = 9642,
-                    public_port = 32202,
+                    transport_protocol = "TCP",
+                    application_protocol = "ws",
+                ),
+            },
+            # PortSpec has no public_port argument; fixed host ports are
+            # declared here, keyed by the same port ids.
+            public_ports = {
+                "rpc": PortSpec(
+                    number = 32200,
+                    transport_protocol = "TCP",
+                    application_protocol = "http",
+                ),
+                "ws": PortSpec(
+                    number = 32201,
+                    transport_protocol = "TCP",
+                    application_protocol = "ws",
+                ),
+                "feed": PortSpec(
+                    number = 32202,
                     transport_protocol = "TCP",
                     application_protocol = "ws",
                 ),

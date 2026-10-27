@@ -49,7 +49,7 @@ type AttestedRoot struct {
 	AssertionConfirmed bool        `json:"assertion_confirmed,omitempty"`
 }
 
-// ProposedAssertion is a finalized-L1 BoLD AssertionCreated event waiting for
+// ProposedAssertion is a BoLD AssertionCreated event waiting for
 // the configured Nitro endpoint to reach and verify its committed L2 block.
 type ProposedAssertion struct {
 	AssertionHash    common.Hash `json:"assertion_hash"`
@@ -152,11 +152,12 @@ func (s *AttestedRootStore) BindSourceIdentity(identity string) error {
 // verified feed. Writers mutate it from the Arbitrum attestation loop; gRPC
 // readers use the RWMutex-protected frontier accessors.
 type AttestedRootStore struct {
-	mu     sync.RWMutex
-	saveMu sync.Mutex
-	path   string
-	state  persistedAttestedRootState
-	fs     attestedRootFileSystem
+	mu      sync.RWMutex
+	saveMu  sync.Mutex
+	path    string
+	state   persistedAttestedRootState
+	fs      attestedRootFileSystem
+	metrics *Metrics
 }
 
 // NewAttestedRootStore constructs an in-memory feed, primarily for tests.
@@ -218,6 +219,41 @@ func LoadAttestedRootStore(path, srcChain string, startL1Block uint64) (*Atteste
 	return store, nil
 }
 
+// SetMetrics enables bounded persistence-failure and feed-state metrics. It is
+// intentionally optional so the domain store remains usable in tests and
+// tooling without a Prometheus registry.
+func (s *AttestedRootStore) SetMetrics(metrics *Metrics) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.metrics = metrics
+}
+
+// Stats returns a stable, hash-free snapshot for operator metrics.
+func (s *AttestedRootStore) Stats() AttestedRootStoreStats {
+	if s == nil {
+		return AttestedRootStoreStats{}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	stats := AttestedRootStoreStats{
+		NextL1Block:       s.state.NextL1Block,
+		PendingAssertions: uint64(len(s.state.Proposals)),
+		MismatchRecords:   uint64(len(s.state.Mismatches)),
+	}
+	for _, entry := range s.state.Attested {
+		if entry.Provisional {
+			stats.ProvisionalRoots++
+			if entry.Source == SourceAssertion {
+				stats.PendingAssertions++
+			}
+		}
+	}
+	return stats
+}
+
 // Commit applies a mutation to an isolated snapshot, persists that snapshot,
 // then publishes it to readers. It serializes production writers so a delayed
 // save cannot overwrite a newer assertion or derived-root transition.
@@ -233,6 +269,8 @@ func (s *AttestedRootStore) Commit(mutate func(*AttestedRootStore) (bool, error)
 	s.mu.RLock()
 	path := s.path
 	fs := s.fileSystem()
+	metrics := s.metrics
+	chain := s.state.SrcChain
 	staged := &AttestedRootStore{
 		path:  path,
 		state: clonePersistedAttestedRootState(s.state),
@@ -253,6 +291,9 @@ func (s *AttestedRootStore) Commit(mutate func(*AttestedRootStore) (bool, error)
 		return fmt.Errorf("marshal attested-root state: %w", err)
 	}
 	if err := persistAttestedRootState(path, fs, data); err != nil {
+		if metrics != nil {
+			metrics.ObservePersistenceFailure(chain)
+		}
 		return err
 	}
 	s.mu.Lock()
@@ -264,7 +305,7 @@ func (s *AttestedRootStore) Commit(mutate func(*AttestedRootStore) (bool, error)
 // Save atomically replaces the persistent state file from the current
 // snapshot. New production mutations must use Commit so readers cannot see a
 // successful in-memory mutation whose durable save failed.
-func (s *AttestedRootStore) Save() error {
+func (s *AttestedRootStore) Save() (err error) {
 	if s == nil {
 		return errors.New("attested-root store is nil")
 	}
@@ -273,8 +314,15 @@ func (s *AttestedRootStore) Save() error {
 	s.mu.RLock()
 	path := s.path
 	fs := s.fileSystem()
+	metrics := s.metrics
+	chain := s.state.SrcChain
 	data, err := json.MarshalIndent(s.state, "", "  ")
 	s.mu.RUnlock()
+	defer func() {
+		if err != nil && metrics != nil {
+			metrics.ObservePersistenceFailure(chain)
+		}
+	}()
 	if err != nil {
 		return fmt.Errorf("marshal attested-root state: %w", err)
 	}
@@ -579,6 +627,7 @@ func (s *AttestedRootStore) RecordProposal(proposal ProposedAssertion) error {
 			return fmt.Errorf("assertion %s was observed with conflicting event data", proposal.AssertionHash)
 		}
 		existing.Confirmed = existing.Confirmed || proposal.Confirmed
+		existing.L1BlockNumber = proposal.L1BlockNumber
 		return nil
 	}
 	for index := range s.state.Attested {
@@ -588,6 +637,7 @@ func (s *AttestedRootStore) RecordProposal(proposal ProposedAssertion) error {
 				return fmt.Errorf("attested assertion %s changed L2 block hash", proposal.AssertionHash)
 			}
 			existing.AssertionConfirmed = existing.AssertionConfirmed || proposal.Confirmed
+			existing.L1BlockNumber = proposal.L1BlockNumber
 			return nil
 		}
 	}
@@ -685,7 +735,11 @@ func (s *AttestedRootStore) RecordAssertionAttestation(
 		if entry.L2BlockHash != commitment.BlockHash || entry.Root != commitment.StateRoot {
 			return fmt.Errorf("assertion %s changed its local commitment", proposal.AssertionHash)
 		}
+		if !entry.Provisional && provisional {
+			return fmt.Errorf("assertion %s cannot be demoted from finalized", proposal.AssertionHash)
+		}
 		entry.Provisional = provisional
+		entry.L1BlockNumber = proposal.L1BlockNumber
 		entry.AssertionConfirmed = entry.AssertionConfirmed || proposal.Confirmed
 		return nil
 	}
@@ -731,6 +785,86 @@ func (s *AttestedRootStore) RemoveAssertion(assertionHash common.Hash) {
 		}
 	}
 	s.state.Attested = kept
+}
+
+// IsFinalizedAssertion reports whether an assertion already has irreversible evidence.
+func (s *AttestedRootStore) IsFinalizedAssertion(hash common.Hash) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, entry := range s.state.Attested {
+		if entry.Source == SourceAssertion && entry.AssertionHash == hash && !entry.Provisional {
+			return true
+		}
+	}
+	return false
+}
+
+// DropUnfinalizedAssertions removes entries at or beyond the durable cursor.
+// Call only on a staged store inside Commit before serving persisted state.
+func (s *AttestedRootStore) DropUnfinalizedAssertions() uint64 {
+	return s.pruneUnfinalizedAssertionsFrom(s.NextL1Block(), nil)
+}
+
+// HasUnfinalizedAssertions identifies work not covered by the finalized cursor.
+func (s *AttestedRootStore) HasUnfinalizedAssertions() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, proposal := range s.state.Proposals {
+		if proposal.L1BlockNumber >= s.state.NextL1Block {
+			return true
+		}
+	}
+	for _, entry := range s.state.Attested {
+		if entry.Source == SourceAssertion && entry.Provisional && entry.L1BlockNumber >= s.state.NextL1Block {
+			return true
+		}
+	}
+	return false
+}
+
+// PruneUnfinalizedAssertions applies a complete speculative snapshot. Call only
+// on a staged store inside Commit; derived entries and finalized work survive.
+func (s *AttestedRootStore) PruneUnfinalizedAssertions(finalized uint64, present map[common.Hash]bool) uint64 {
+	if finalized == ^uint64(0) {
+		return 0
+	}
+	return s.pruneUnfinalizedAssertionsFrom(finalized+1, present)
+}
+
+func (s *AttestedRootStore) pruneUnfinalizedAssertionsFrom(from uint64, present map[common.Hash]bool) uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	removed := make(map[common.Hash]bool)
+	proposals := s.state.Proposals[:0]
+	for _, proposal := range s.state.Proposals {
+		if proposal.L1BlockNumber >= from && !present[proposal.AssertionHash] {
+			removed[proposal.AssertionHash] = true
+		} else {
+			proposals = append(proposals, proposal)
+		}
+	}
+	s.state.Proposals = proposals
+	attested := s.state.Attested[:0]
+	for _, entry := range s.state.Attested {
+		if entry.Source == SourceAssertion && entry.Provisional && entry.L1BlockNumber >= from && !present[entry.AssertionHash] {
+			removed[entry.AssertionHash] = true
+		} else {
+			attested = append(attested, entry)
+		}
+	}
+	s.state.Attested = attested
+	return uint64(len(removed))
+}
+
+// ObserveAssertionIngest publishes only successfully committed snapshots.
+func (s *AttestedRootStore) ObserveAssertionIngest(head, revoked uint64) {
+	s.mu.RLock()
+	metrics, chain := s.metrics, s.state.SrcChain
+	s.mu.RUnlock()
+	if metrics != nil {
+		metrics.AssertionIngestHead.WithLabelValues(chain).Set(float64(head))
+		metrics.AssertionRevocations.WithLabelValues(chain).Add(float64(revoked))
+	}
 }
 
 // RecordAssertionMismatch removes a rejected assertion and retains an alerting

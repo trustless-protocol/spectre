@@ -112,6 +112,15 @@ func GetEthMembershipProof(ctx context.Context, client *ethclient.Client, contra
 		valueStr = sp.Value.String()
 	}
 
+	// The mirror of the guard GetEthNonMembershipProof already has. An empty slot
+	// is not a commitment, and a "proof" of zero is not a proof: it is accepted
+	// here, submitted, and rejected on chain, which costs a transaction and reads
+	// as a deterministic revert -- so a packet that was merely early gets dropped.
+	if sp.Value == nil || sp.Value.ToInt().Sign() == 0 {
+		return nil, fmt.Errorf("storage slot empty at key %s for block %s: %w",
+			storageKey.Hex(), toBlockNumArg(blockNumber), ErrCommitmentAbsent)
+	}
+
 	proof := MembershipProof{
 		AccountProof: accountProofData{
 			StorageRoot: result.StorageHash.Hex(),

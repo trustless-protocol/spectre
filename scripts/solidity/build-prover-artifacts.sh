@@ -3,7 +3,8 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 staging="$repo_root/.artifacts/solidity/prover"
-native_lib="$repo_root/third_party/ecip-gnark"
+native_lib="$repo_root/.artifacts/native"
+export CGO_LDFLAGS="-L$native_lib${CGO_LDFLAGS:+ $CGO_LDFLAGS}"
 export LD_LIBRARY_PATH="$native_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export DYLD_LIBRARY_PATH="$native_lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
 force=0

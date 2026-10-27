@@ -47,10 +47,10 @@ import (
 	ictcosmos "github.com/cosmos/interchaintest/v10/chain/cosmos"
 	"github.com/cosmos/interchaintest/v10/ibc"
 
-	"github.com/decentrio/fast-ibc/packages/go-abigen/ibcerc20"
-	"github.com/decentrio/fast-ibc/packages/go-abigen/ics20transfer"
-	"github.com/decentrio/fast-ibc/packages/go-abigen/ics26router"
-	"github.com/decentrio/fast-ibc/packages/go-abigen/spectreclient"
+	"github.com/decentrio/spectre/packages/go-abigen/ibcerc20"
+	"github.com/decentrio/spectre/packages/go-abigen/ics20transfer"
+	"github.com/decentrio/spectre/packages/go-abigen/ics26router"
+	"github.com/decentrio/spectre/packages/go-abigen/spectreclient"
 
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/chainconfig"
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/cosmos"
@@ -70,15 +70,15 @@ type MultichainTestSuite struct {
 	// The private key of the faucet account of interchaintest
 	deployer *ecdsa.PrivateKey
 
-	contractAddresses         ethereum.DeployedContracts
-	chainAGroth16Ics07Address ethcommon.Address
-	chainBGroth16Ics07Address ethcommon.Address
+	contractAddresses          ethereum.DeployedContracts
+	chainASpectreClientAddress ethcommon.Address
+	chainBSpectreClientAddress ethcommon.Address
 
-	chainAGroth16Ics07Contract *spectreclient.Contract
-	chainBGroth16Ics07Contract *spectreclient.Contract
-	ics26Contract              *ics26router.Contract
-	ics20Contract              *ics20transfer.Contract
-	erc20Contract              *erc20.Contract
+	chainASpectreClientContract *spectreclient.Contract
+	chainBSpectreClientContract *spectreclient.Contract
+	ics26Contract               *ics26router.Contract
+	ics20Contract               *ics20transfer.Contract
+	erc20Contract               *erc20.Contract
 
 	SimdARelayerSubmitter ibc.Wallet
 	SimdBRelayerSubmitter ibc.Wallet
@@ -124,7 +124,7 @@ func (s *MultichainTestSuite) generateEthCosmosRelayerConfig(
 	chain *ictcosmos.CosmosChain,
 	signer ibc.Wallet,
 	ics26ClientID string,
-	ics07Client string,
+	spectreClientHex string,
 	configPath string,
 	proofType types.SupportedProofType,
 ) {
@@ -144,7 +144,7 @@ func (s *MultichainTestSuite) generateEthCosmosRelayerConfig(
 			BeaconAPI:          beaconAPI,
 			SignerAddress:      signer.FormattedAddress(),
 			MockWasmClient:     os.Getenv(testvalues.EnvKeyEthTestnetType) == testvalues.EthTestnetTypePoW,
-			SpectreClient:      ics07Client,
+			SpectreClient:      spectreClientHex,
 			SignatureVerifier:  s.contractAddresses.SignatureVerifier,
 			Membership:         s.contractAddresses.Membership,
 			Misbehaviour:       s.contractAddresses.Misbehaviour,
@@ -178,28 +178,28 @@ func (s *MultichainTestSuite) createEthCosmosClients(
 	ethRelayerAddr := crypto.PubkeyToAddress(s.deployer.PublicKey)
 	preNonce, err := eth.RPCClient.PendingNonceAt(ctx, ethRelayerAddr)
 	s.Require().NoError(err)
-	ics07Address := crypto.CreateAddress(ethRelayerAddr, preNonce)
+	spectreClientAddress := crypto.CreateAddress(ethRelayerAddr, preNonce)
 
 	s.generateEthCosmosRelayerConfig(eth, chain, signer, ics26ClientID, "", configPath, proofType)
 
-	args := []string{"--trust-level", "1/3"}
+	wasmChecksum := ""
 	if eth.BeaconAPIClient != nil {
-		args = append(args, "--wasm-checksum", checksumHex)
+		wasmChecksum = checksumHex
 	}
-	err = relayer.RunCreateClients(configPath, args...)
+	err = relayer.RunCreateClients(configPath, wasmChecksum, "1/3")
 	s.Require().NoError(err)
 
 	clientAddress, err := s.ics26Contract.GetClient(nil, ics26ClientID)
 	s.Require().NoError(err)
-	s.Require().Equal(ics07Address, clientAddress)
+	s.Require().Equal(spectreClientAddress, clientAddress)
 
 	if eth.BeaconAPIClient == nil {
 		s.createMockEthereumLightClient(ctx, chain, signer, checksumHex, ics26ClientID)
 	}
 
-	s.generateEthCosmosRelayerConfig(eth, chain, signer, ics26ClientID, ics07Address.Hex(), configPath, proofType)
+	s.generateEthCosmosRelayerConfig(eth, chain, signer, ics26ClientID, spectreClientAddress.Hex(), configPath, proofType)
 
-	return ics07Address
+	return spectreClientAddress
 }
 
 func (s *MultichainTestSuite) createMockEthereumLightClient(
@@ -562,7 +562,7 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 
 		simdARelayerMnemonic, err := generateRelayerMnemonic()
 		s.Require().NoError(err)
-		s.SimdARelayerSubmitter, err = simdA.BuildWallet(ctx, "fast-ibc-relayer-a", simdARelayerMnemonic)
+		s.SimdARelayerSubmitter, err = simdA.BuildWallet(ctx, "spectre-relayer-a", simdARelayerMnemonic)
 		s.Require().NoError(err)
 		err = simdA.SendFunds(ctx, interchaintest.FaucetAccountKeyName, ibc.WalletAmount{
 			Address: s.SimdARelayerSubmitter.FormattedAddress(),
@@ -573,7 +573,7 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 
 		simdBRelayerMnemonic, err := generateRelayerMnemonic()
 		s.Require().NoError(err)
-		s.SimdBRelayerSubmitter, err = simdB.BuildWallet(ctx, "fast-ibc-relayer-b", simdBRelayerMnemonic)
+		s.SimdBRelayerSubmitter, err = simdB.BuildWallet(ctx, "spectre-relayer-b", simdBRelayerMnemonic)
 		s.Require().NoError(err)
 		err = simdB.SendFunds(ctx, interchaintest.FaucetAccountKeyName, ibc.WalletAmount{
 			Address: s.SimdBRelayerSubmitter.FormattedAddress(),
@@ -615,7 +615,7 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 	})
 
 	s.Require().True(s.Run("Create Ethereum/Cosmos clients for SimdA", func() {
-		s.chainAGroth16Ics07Address = s.createEthCosmosClients(
+		s.chainASpectreClientAddress = s.createEthCosmosClients(
 			ctx,
 			eth,
 			simdA,
@@ -627,12 +627,12 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 		)
 
 		var err error
-		s.chainAGroth16Ics07Contract, err = spectreclient.NewContract(s.chainAGroth16Ics07Address, eth.RPCClient)
+		s.chainASpectreClientContract, err = spectreclient.NewContract(s.chainASpectreClientAddress, eth.RPCClient)
 		s.Require().NoError(err)
 	}))
 
 	s.Require().True(s.Run("Create Ethereum/Cosmos clients for SimdB", func() {
-		s.chainBGroth16Ics07Address = s.createEthCosmosClients(
+		s.chainBSpectreClientAddress = s.createEthCosmosClients(
 			ctx,
 			eth,
 			simdB,
@@ -644,7 +644,7 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 		)
 
 		var err error
-		s.chainBGroth16Ics07Contract, err = spectreclient.NewContract(s.chainBGroth16Ics07Address, eth.RPCClient)
+		s.chainBSpectreClientContract, err = spectreclient.NewContract(s.chainBSpectreClientAddress, eth.RPCClient)
 		s.Require().NoError(err)
 	}))
 
@@ -727,7 +727,7 @@ func (s *MultichainTestSuite) Test_Deploy() {
 	simdA, simdB := s.CosmosChains[0], s.CosmosChains[1]
 
 	s.Require().True(s.Run("Verify SimdA Groth16 Client", func() {
-		clientState, err := getGroth16ClientState(s.chainAGroth16Ics07Contract)
+		clientState, err := getGroth16ClientState(s.chainASpectreClientContract)
 		s.Require().NoError(err)
 
 		stakingParams, err := simdA.StakingQueryParams(ctx)
@@ -744,7 +744,7 @@ func (s *MultichainTestSuite) Test_Deploy() {
 	}))
 
 	s.Require().True(s.Run("Verify SimdB Groth16 Client", func() {
-		clientState, err := getGroth16ClientState(s.chainBGroth16Ics07Contract)
+		clientState, err := getGroth16ClientState(s.chainBSpectreClientContract)
 		s.Require().NoError(err)
 
 		stakingParams, err := simdB.StakingQueryParams(ctx)
@@ -763,7 +763,7 @@ func (s *MultichainTestSuite) Test_Deploy() {
 	s.Require().True(s.Run("Verify ICS02 Client", func() {
 		clientAddress, err := s.ics26Contract.GetClient(nil, multichainChainAUniversalClientID)
 		s.Require().NoError(err)
-		s.Require().Equal(s.chainAGroth16Ics07Address, clientAddress)
+		s.Require().Equal(s.chainASpectreClientAddress, clientAddress)
 
 		counterpartyInfo, err := s.ics26Contract.GetCounterparty(nil, multichainChainAUniversalClientID)
 		s.Require().NoError(err)
@@ -771,7 +771,7 @@ func (s *MultichainTestSuite) Test_Deploy() {
 
 		clientAddress, err = s.ics26Contract.GetClient(nil, multichainChainBUniversalClientID)
 		s.Require().NoError(err)
-		s.Require().Equal(s.chainBGroth16Ics07Address, clientAddress)
+		s.Require().Equal(s.chainBSpectreClientAddress, clientAddress)
 
 		counterpartyInfo, err = s.ics26Contract.GetCounterparty(nil, multichainChainBUniversalClientID)
 		s.Require().NoError(err)

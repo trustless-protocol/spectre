@@ -14,6 +14,12 @@ interface IICS02ClientErrors {
     /// @notice The counterparty client identifier is malformed.
     error IBCInvalidCounterpartyClientId();
 
+    /// @notice The counterparty Merkle prefix has no elements, so no packet path could be proven against it.
+    error IBCInvalidCounterpartyMerklePrefix();
+
+    /// @notice The light client address is zero or holds no contract code.
+    error IBCInvalidClientAddress();
+
     /// @notice Proposed counterparty information differs from the client's existing binding.
     error IBCCounterpartyMismatch();
 
@@ -58,8 +64,12 @@ interface IICS02ClientErrors {
     /// @notice A configured migration module address has no deployed code.
     error IBCClientMigrationModuleMissing(address module);
 
-    /// @notice A configured contract does not identify as the required migration module.
-    error IBCClientMigrationModuleMismatch(address module, bytes32 expectedModuleId);
+    /// @notice A configured contract does not answer `moduleId()` with a single `bytes32`.
+    /// @dev The call reverted or returned data of the wrong length: the address holds an unrelated contract.
+    error IBCClientMigrationModuleNotResponding(address module);
+
+    /// @notice A configured contract identifies as a different migration module than required.
+    error IBCClientMigrationModuleMismatch(address module, bytes32 expectedModuleId, bytes32 actualModuleId);
 
     /// @notice A migration module was called directly instead of through the router.
     error IBCClientMigrationDirectCallNotAllowed();

@@ -1146,6 +1146,17 @@
   },
   {
     "type": "error",
+    "name": "ICS20CustomDenomIsAddress",
+    "inputs": [
+      {
+        "name": "denom",
+        "type": "string",
+        "internalType": "string"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "ICS20DenomAlreadyExists",
     "inputs": [
       {
@@ -1223,6 +1234,22 @@
         "name": "clientID",
         "type": "string",
         "internalType": "string"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ICS20InsufficientCallbackGas",
+    "inputs": [
+      {
+        "name": "required",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "available",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ]
   },

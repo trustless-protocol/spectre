@@ -1,5 +1,5 @@
 // Package cosmos adapts a Cosmos (Tendermint) chain to the chain.Source and
-// chain.ClientUpdateBuilder contracts. It wraps the existing relayer/client and
+// chain.Builder contracts. It wraps the existing relayer/client and
 // relayer/services code — it does not reimplement signature extraction, proof
 // generation, or gap-recovery.
 package cosmos
@@ -35,8 +35,7 @@ var (
 //
 // It also holds the shared *services.BatchBuilder so Subscribe drains the same
 // queue the (single) Services instance owns and can re-queue handler failures
-// back onto it (with a waiting backoff) — the re-queue behavior of the legacy
-// handleCosmos, expressed generically.
+// back onto it (with a waiting backoff).
 type Source struct {
 	cosmos       services.CosmosEndpoint
 	evm          services.EVMEndpoint
@@ -54,6 +53,10 @@ type Source struct {
 	// starves every later packet permanently. Touched only from UnrelayedPackets,
 	// which the relay module calls on one goroutine.
 	flushCursor uint64
+	// ackProbeCursor is the same rotation for the acknowledgement leg, over the
+	// EVM router's commitments rather than this chain's: the lowest sequence the
+	// last probe reached, 0 meaning "start from the newest".
+	ackProbeCursor uint64
 }
 
 // NewSource wires the Cosmos source to its endpoints and the shared batch builder.
@@ -84,8 +87,7 @@ func (s *Source) LatestHeight(ctx context.Context) (uint64, error) {
 const cosmosAppHashLag = 2
 
 // RelayableHeight returns latest committed height minus the AppHash lag, so the
-// module only proves a Cosmos packet once its commitment is queryable (the legacy
-// waitCosmosAppHash(maxPacketHeight+2) precondition, as a value).
+// module only proves a Cosmos packet once its commitment is queryable.
 func (s *Source) RelayableHeight(ctx context.Context) (uint64, error) {
 	latest, err := s.LatestHeight(ctx)
 	if err != nil {
@@ -129,9 +131,13 @@ func (s *Source) QueryHeader(ctx context.Context, height uint64) ([]byte, error)
 // MembershipProof proves the packet's commitment (recv) or ack (ack) exists at
 // height, wrapping services.CosmosMembership. eventType selects the ICS-24 path.
 func (s *Source) MembershipProof(ctx context.Context, packet []byte, height uint64, eventType chain.EventType) ([]byte, error) {
-	pkt, lb, err := s.decodePacketAndBlock(ctx, packet, height)
-	if err != nil {
-		return nil, err
+	// Decode and classify BEFORE fetching the light block, the way the ETH and L2
+	// sources already do. Both inputs are permanently wrong when they are wrong,
+	// so discovering it after a round trip spends one for nothing -- and on a
+	// slow endpoint it arrives as a timeout, hiding the real cause.
+	var pkt channeltypesv2.Packet
+	if err := pkt.Unmarshal(packet); err != nil {
+		return nil, fmt.Errorf("cosmos source: decode packet: %w", err)
 	}
 	var clientID string
 	var pathType []byte
@@ -140,8 +146,7 @@ func (s *Source) MembershipProof(ctx context.Context, packet []byte, height uint
 		// A Cosmos->ETH send whose timeout has passed (measured against ETH block
 		// time, the destination clock) can never be received on ETH — recvPacket
 		// would revert. Report it permanent so the module DROPS it and the async
-		// timeout scanner refunds it on Cosmos instead (mirrors the legacy
-		// planCosmosPacketMsgs ethBlockTime>=TimeoutTimestamp skip). Without this the
+		// timeout scanner refunds it on Cosmos instead. Without this the
 		// module retries the dead packet forever, each retry re-running a full
 		// client update and draining gas.
 		if timedOut, err := s.sendTimedOutOnEth(ctx, pkt); err != nil {
@@ -154,6 +159,10 @@ func (s *Source) MembershipProof(ctx context.Context, packet []byte, height uint
 		clientID, pathType = pkt.DestinationClient, pathAck
 	default:
 		return nil, fmt.Errorf("cosmos source: MembershipProof: unsupported event type %d", eventType)
+	}
+	lb, err := s.lightBlock(ctx, height)
+	if err != nil {
+		return nil, err
 	}
 	proofCtx, cancel := context.WithTimeout(ctx, s.fetchTimeout)
 	defer cancel()
@@ -195,13 +204,23 @@ func (s *Source) decodePacketAndBlock(ctx context.Context, packet []byte, height
 	if err := pkt.Unmarshal(packet); err != nil {
 		return channeltypesv2.Packet{}, nil, fmt.Errorf("cosmos source: decode packet: %w", err)
 	}
+	lb, err := s.lightBlock(ctx, height)
+	if err != nil {
+		return channeltypesv2.Packet{}, nil, err
+	}
+	return pkt, lb, nil
+}
+
+// lightBlock is the round trip the proof paths share, split out so a caller can
+// finish validating its cheap inputs before spending one.
+func (s *Source) lightBlock(ctx context.Context, height uint64) (*relayerclient.LightBlock, error) {
 	fetchCtx, cancel := context.WithTimeout(ctx, s.fetchTimeout)
 	defer cancel()
 	lb, err := relayerclient.GetLightBlock(fetchCtx, s.cosmos.CosmosClient(), int64(height))
 	if err != nil {
-		return channeltypesv2.Packet{}, nil, fmt.Errorf("cosmos source: light block at %d: %w", height, err)
+		return nil, fmt.Errorf("cosmos source: light block at %d: %w", height, err)
 	}
-	return pkt, lb, nil
+	return lb, nil
 }
 
 // drainInterval is how often the Subscribe bridge flushes the batch builder.
@@ -228,7 +247,7 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 		if len(running) == 0 {
 			return
 		}
-		s.logger.Printf("[SubscribeCosmos] shutdown drain timed out after %s; workers still running: %v",
+		s.logger.Printf("ERROR [SubscribeCosmos] shutdown drain timed out after %s; workers still running: %v",
 			workergroup.SourceDrainTimeout, running)
 		// RETURN it, do not only log it. The caller cancels on SIGTERM and then
 		// normalises context.Canceled to a clean exit, so a stuck worker reported
@@ -313,8 +332,7 @@ func eventsWithOrigins(packets []services.CosmosPacket, clientID string) ([]chai
 // commitment for it — relaying an ETH timeoutPacket would waste a Groth16 proof +
 // tx (and historically blocked the relay loop). The live subscribe path enqueues
 // these (destination_client == routerClientID matches the configured-client
-// filter), so the check the legacy planCosmosPacketMsgs applied at plan time is
-// applied here instead. ETH-originated timeouts (destination_client != routerClientID)
+// filter), so the check is applied here. ETH-originated timeouts (destination_client != routerClientID)
 // still relay so ETH deletes its commitment + refunds.
 func cosmosPacketToEvent(p services.CosmosPacket, routerClientID string) (chain.Event, bool) {
 	if p.Packet == nil {
@@ -335,8 +353,8 @@ func cosmosPacketToEvent(p services.CosmosPacket, routerClientID string) (chain.
 		e.Type = chain.SendPacket
 	case services.CosmosAck:
 		// An ack with no acknowledgement bytes cannot be built into a MsgAckPacket
-		// (the ETH side needs the ack) — skip it like the legacy planCosmosPacketMsgs
-		// did, rather than emitting an event that would error and re-queue forever.
+		// (the ETH side needs the ack) — skip it, rather than emitting an event that
+		// would error and re-queue forever.
 		if len(p.AckBytes) == 0 {
 			return chain.Event{}, false
 		}

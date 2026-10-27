@@ -61,18 +61,26 @@ pub struct Spec {
     /// The fulu (Fusaka) fork epoch. `u64::MAX` when Fulu is not scheduled; a beacon
     /// spec that omits `FULU_FORK_EPOCH` (pre-Fulu chain) defaults to that value.
     #[serde_as(as = "DisplayFromStr")]
-    #[serde(default = "fulu_epoch_not_scheduled")]
+    #[serde(default = "fork_epoch_not_scheduled")]
     pub fulu_fork_epoch: u64,
+    /// The gloas (Glamsterdam) fork version.
+    #[serde(default)]
+    pub gloas_fork_version: Version,
+    /// The gloas (Glamsterdam) fork epoch. `u64::MAX` when Gloas is not scheduled; a beacon
+    /// spec that omits `GLOAS_FORK_EPOCH` (pre-Gloas chain) defaults to that value.
+    #[serde_as(as = "DisplayFromStr")]
+    #[serde(default = "fork_epoch_not_scheduled")]
+    pub gloas_fork_epoch: u64,
 }
 
-/// The `FULU_FORK_EPOCH` sentinel used when a chain has not scheduled Fulu.
-const fn fulu_epoch_not_scheduled() -> u64 {
+/// The `*_FORK_EPOCH` sentinel used when a chain has not scheduled a fork.
+const fn fork_epoch_not_scheduled() -> u64 {
     u64::MAX
 }
 
-// Hand-written so `fulu_fork_epoch` defaults to the not-scheduled sentinel
-// (`u64::MAX`) rather than 0, keeping `Spec::default().to_fork_parameters()` from
-// selecting the zero Fulu version for every epoch.
+// Hand-written so `fulu_fork_epoch` and `gloas_fork_epoch` default to the not-scheduled
+// sentinel (`u64::MAX`) rather than 0, keeping `Spec::default().to_fork_parameters()` from
+// selecting the zero Gloas version for every epoch.
 impl Default for Spec {
     fn default() -> Self {
         Self {
@@ -93,7 +101,9 @@ impl Default for Spec {
             electra_fork_version: Version::default(),
             electra_fork_epoch: 0,
             fulu_fork_version: Version::default(),
-            fulu_fork_epoch: fulu_epoch_not_scheduled(),
+            fulu_fork_epoch: fork_epoch_not_scheduled(),
+            gloas_fork_version: Version::default(),
+            gloas_fork_epoch: fork_epoch_not_scheduled(),
         }
     }
 }
@@ -134,6 +144,10 @@ impl Spec {
             fulu: Fork {
                 version: self.fulu_fork_version,
                 epoch: self.fulu_fork_epoch,
+            },
+            gloas: Fork {
+                version: self.gloas_fork_version,
+                epoch: self.gloas_fork_epoch,
             },
         }
     }

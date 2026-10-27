@@ -1,5 +1,8 @@
 set dotenv-load
 
+# cgo link path for libgaraga_rs (decentrio/ecip-gnark's Rust FFI); build it with scripts/build-garaga-ffi.sh.
+export CGO_LDFLAGS := "-L" + justfile_directory() + "/.artifacts/native " + env_var_or_default("CGO_LDFLAGS", "")
+
 # Default task lists all available tasks
 default:
   just --list
@@ -31,9 +34,15 @@ build-attestor:
 	cd attestor/optimism && go build -o attestor ./cmd
 
 # Build and optimize the eth wasm light client using `cosmwasm/optimizer`. Requires `docker` and `gzip`
+#
+# RUSTUP_TOOLCHAIN pins the image's own Rust 1.86.0. Without it rustup inside the container follows
+# rust-toolchain.toml and downloads that newer Rust, which breaks the optimizer two ways. On 1.97.1 the
+# link fails with `undefined symbol: db_read` etc.: Rust 1.96 stopped passing --allow-undefined and the
+# optimizer sets RUSTFLAGS, which drops the flag in .cargo/config.toml. On 1.95.0 the link passes but the
+# image's wasm-opt rejects the bulk-memory instructions with "Bulk memory operations require bulk memory".
 [group('build')]
 build-cw-ics08-wasm-eth:
-	docker run --rm -v "$(pwd)":/code --mount type=volume,source="$(basename "$(pwd)")_cache",target=/target --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry cosmwasm/optimizer:0.17.0@sha256:7e0b9229c1a4118d0c9a2af2e7f5d95a91f264c26a2ce5681c779926e74d7f85 ./programs/cw-ics08-wasm-eth
+	docker run --rm -e RUSTUP_TOOLCHAIN=1.86.0-x86_64-unknown-linux-musl -v "$(pwd)":/code --mount type=volume,source="$(basename "$(pwd)")_cache",target=/target --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry cosmwasm/optimizer:0.17.0@sha256:7e0b9229c1a4118d0c9a2af2e7f5d95a91f264c26a2ce5681c779926e74d7f85 ./programs/cw-ics08-wasm-eth
 	cp artifacts/cw_ics08_wasm_eth.wasm e2e/interchaintestv8/wasm
 	gzip -n e2e/interchaintestv8/wasm/cw_ics08_wasm_eth.wasm -f
 
@@ -65,11 +74,6 @@ build-cw-ics08-wasm-l2-native:
 [group('generate')]
 capture-l2-fixture config out:
 	cd relayer && go run ./l2fixtures/cmd -config {{config}} -out ../{{out}}
-
-# Build the relayer docker image
-[group('build')]
-build-relayer-image:
-    docker build -t fast-ibc-relayer:latest -f programs/relayer/Dockerfile .
 
 # Install the Go relayer for use in the e2e tests.
 # Builds with an explicit -o name because the package dir is `cmd/`, so a plain
@@ -156,11 +160,10 @@ generate-ethereum-types:
 	rm -f e2e/interchaintestv8/types/ethereum/types.gen.go.bak # this is to be linux and mac compatible (coming from the sed command)
 	cd e2e/interchaintestv8 && golangci-lint run --fix types/ethereum/types.gen.go
 
-# Generate the code from pritibuf using `buf generate`. (Only used for relayer testing at the moment)
+# Generate the attestor sidecar gRPC bindings from proto/attestor using `buf generate`.
 [group('generate')]
 generate-buf:
-    @echo "Generating Protobuf files for relayer"
-    buf generate --template buf.gen.yaml
+    @echo "Generating Protobuf files for the attestor"
     buf generate --template buf.gen.attestor.yaml
 
 shadowfork := if env("ETH_RPC_URL", "") == "" { "--no-match-path test/shadowfork/*" } else { "" }
@@ -211,6 +214,36 @@ test-attestor:
 	@echo "Running Optimism attestor tests..."
 	cd attestor/optimism && go test -v ./...
 
+# Run the non-destructive live attestor suite against an already-running local
+# sidecar. route is one of op, base, or arbitrum; the helper sources its
+# attestor.env and deliberately does not start/stop or reconfigure the stack.
+[group('test')]
+test-attestor-e2e route="op":
+	scripts/local/test_attestor_e2e.sh {{route}}
+
+# Run the long-running attestor feed-lifecycle suite against an ISOLATED route:
+# the helper starts its own attestor (temporary state, separate ports) beside
+# the running devnet and removes it afterwards. phase is provisional,
+# finalized, or all.
+[group('test')]
+test-attestor-lifecycle-e2e route="op" phase="all":
+	scripts/local/test_attestor_lifecycle_e2e.sh {{route}} {{phase}}
+
+# Run the attestor fault-recovery suite: disposable attestors behind TCP fault
+# proxies (replica, L1 RPC, WebSocket outages; SIGTERM/SIGKILL restarts;
+# replica lag). The devnet itself is never stopped.
+[group('test')]
+test-attestor-fault-e2e route="op":
+	scripts/local/test_attestor_fault_e2e.sh {{route}}
+
+# Run the attestor divergence drills (#533) on isolated routes: an invalid
+# on-chain OP game (permanent on L1), and provisional corrections driven by a
+# replica-RPC interposer. route is op or arbitrum; drill is invalid-game (op),
+# correction, or all.
+[group('test')]
+test-attestor-divergence-e2e route="op" drill="all":
+	scripts/local/test_attestor_divergence_e2e.sh {{route}} {{drill}}
+
 # Run any e2e test using the test's full name. For example, `just test-e2e TestWithEthCosmosTestSuite/Test_Deploy`
 #
 # ETH_TESTNET_TYPE=pos picks the Kurtosis PoS network (with beacon API), which is what
@@ -226,13 +259,24 @@ test-e2e testname: clean-foundry install-go-relayer build-prover-artifacts
 		E2E_PROOF_TYPE="${E2E_PROOF_TYPE:-groth16}" \
 		go test -v -run '^{{testname}}$' -timeout 120m
 
+# Run the Cosmos -> L2 pause/expire/restart timeout test against a running OP or Base devnet.
+# For example, `just test-l2-timeout relayer/config.json`. The sender defaults to the devnet's
+# `test2` key (it must not be the relayer's COSMOS_PRIVATE_KEY); see docs/E2E.md.
+[group('test')]
+test-l2-timeout config:
+	@echo "Running the L2 timeout lifecycle test against {{config}}..."
+	. ./scripts/local/gaiad_binary.sh && \
+	L2_TIMEOUT_SENDER_KEY="${L2_TIMEOUT_SENDER_KEY:-$("$GAIAD" keys export test2 --unarmored-hex --unsafe --keyring-backend test --home "$HOME/.gaia" -y)}" \
+	L2_TIMEOUT_CONFIG="$(cd "$(dirname "{{config}}")" && pwd)/$(basename "{{config}}")" \
+		bash -c 'cd relayer && go test -tags l2devnet -race -count=1 -timeout 40m -run TestL2TimeoutLifecycle -v ./cmd'
+
 # Run any e2e test in the EthCosmosTestSuite. For example, `just test-e2e-eth-cosmos Test_Deploy`
 [group('test')]
 test-e2e-eth-cosmos testname:
 	@echo "Running {{testname}} test..."
 	just test-e2e TestWithEthCosmosTestSuite/{{testname}}
 
-# Run any e2e test in the RelayerTestSuite. For example, `just test-e2e-relayer Test_RelayerInfo`
+# Run any e2e test in the RelayerTestSuite. For example, `just test-e2e-relayer Test_5_RecvPacketToEth`
 [group('test')]
 test-e2e-relayer testname:
 	@echo "Running {{testname}} test..."

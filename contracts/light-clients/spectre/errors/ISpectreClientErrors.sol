@@ -201,4 +201,11 @@ interface ISpectreClientErrors {
     ///         ever raised past 256 without revisiting the bitmask.
     /// @param index the out-of-range pinned validator index.
     error PinnedIndexOverflowsBitmask(uint32 index);
+
+    /// @notice Returned when a module address holds no contract code (for example `address(0)`).
+    /// @dev A delegatecall to such an address succeeds with empty return data. A module whose
+    ///      interface returns nothing, like `IMisbehaviour.verifyMisbehaviour`, is then
+    ///      indistinguishable from a module that ran and accepted the proof.
+    /// @param module the module address without code.
+    error ModuleHasNoCode(address module);
 }

@@ -10,11 +10,12 @@ Builds and runs the attestor against the Nitro HTTP and WebSocket endpoints in
 CONFIG_PATH.
 
 Environment:
-  ATTESTOR_DOCKER_IMAGE       Image name (default: fast-ibc-attestor:local).
-  ATTESTOR_CONTAINER_NAME     Container name (default: fast-ibc-attestor).
+  ATTESTOR_DOCKER_IMAGE       Image name (default: spectre-attestor:local).
+  ATTESTOR_CONTAINER_NAME     Container name (default: spectre-attestor).
   ATTESTOR_GRPC_PUBLISH       Host publish address (default: 127.0.0.1:50051).
+  ATTESTOR_METRICS_PUBLISH    Host metrics publish address (default: 127.0.0.1:9090).
   ATTESTOR_STATE_VOLUME       Persistent attestor-state volume
-                              (default: fast-ibc-attestor-data).
+                              (default: spectre-attestor-data).
 EOF
 }
 
@@ -42,10 +43,11 @@ command -v docker >/dev/null 2>&1 || fail "docker is required"
 
 config_dir="$(cd "$(dirname "$requested_config")" && pwd)"
 config_name="$(basename "$requested_config")"
-image="${ATTESTOR_DOCKER_IMAGE:-fast-ibc-attestor:local}"
-container_name="${ATTESTOR_CONTAINER_NAME:-fast-ibc-attestor}"
+image="${ATTESTOR_DOCKER_IMAGE:-spectre-attestor:local}"
+container_name="${ATTESTOR_CONTAINER_NAME:-spectre-attestor}"
 grpc_publish="${ATTESTOR_GRPC_PUBLISH:-127.0.0.1:50051}"
-state_volume="${ATTESTOR_STATE_VOLUME:-fast-ibc-attestor-data}"
+metrics_publish="${ATTESTOR_METRICS_PUBLISH:-127.0.0.1:9090}"
+state_volume="${ATTESTOR_STATE_VOLUME:-spectre-attestor-data}"
 
 printf 'Building attestor image %s\n' "$image"
 docker build \
@@ -60,7 +62,8 @@ exec docker run \
 	--name "$container_name" \
 	--stop-timeout 40 \
 	--publish "$grpc_publish:50051" \
+	--publish "$metrics_publish:9090" \
 	--volume "$config_dir:/config:ro" \
-	--volume "$state_volume:/var/lib/fast-ibc/attestor" \
+	--volume "$state_volume:/var/lib/spectre/attestor" \
 	--env "ATTESTOR_CONFIG=/config/$config_name" \
 	"$image"

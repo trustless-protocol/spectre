@@ -21,8 +21,8 @@ import (
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 
-	"github.com/decentrio/fast-ibc/packages/go-abigen/ics26router"
-	"github.com/decentrio/fast-ibc/packages/go-abigen/spectreclient"
+	"github.com/decentrio/spectre/packages/go-abigen/ics26router"
+	"github.com/decentrio/spectre/packages/go-abigen/spectreclient"
 
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/e2esuite"
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/ethereum"
@@ -40,9 +40,9 @@ type SpectreClientTestSuite struct {
 	generateFixtures bool
 
 	// Addresses of the deployed contracts
-	contractAddresses   ethereum.DeployedContracts
-	groth16Ics07Address ethcommon.Address
-	ics26Address        ethcommon.Address
+	contractAddresses    ethereum.DeployedContracts
+	spectreClientAddress ethcommon.Address
+	ics26Address         ethcommon.Address
 
 	// The private key of a test account
 	key *ecdsa.PrivateKey
@@ -107,7 +107,7 @@ func (s *SpectreClientTestSuite) SetupSuite(ctx context.Context, proofType types
 
 		relayerMnemonic, err := generateRelayerMnemonic()
 		s.Require().NoError(err)
-		simdRelayerWallet, err := simd.BuildWallet(ctx, "fast-ibc-groth16-relayer", relayerMnemonic)
+		simdRelayerWallet, err := simd.BuildWallet(ctx, "spectre-groth16-relayer", relayerMnemonic)
 		s.Require().NoError(err)
 		err = simd.SendFunds(ctx, interchaintest.FaucetAccountKeyName, ibc.WalletAmount{
 			Address: simdRelayerWallet.FormattedAddress(),
@@ -185,9 +185,9 @@ func (s *SpectreClientTestSuite) SetupSuite(ctx context.Context, proofType types
 		cosmosToEthConfig, err := readCosmosToEthConfig(testvalues.RelayerConfigFilePath)
 		s.Require().NoError(err)
 		s.Require().NotEmpty(cosmosToEthConfig.SpectreClient)
-		s.groth16Ics07Address = ethcommon.HexToAddress(cosmosToEthConfig.SpectreClient)
+		s.spectreClientAddress = ethcommon.HexToAddress(cosmosToEthConfig.SpectreClient)
 
-		s.contract, err = spectreclient.NewContract(s.groth16Ics07Address, eth.RPCClient)
+		s.contract, err = spectreclient.NewContract(s.spectreClientAddress, eth.RPCClient)
 		s.Require().NoError(err)
 	}))
 

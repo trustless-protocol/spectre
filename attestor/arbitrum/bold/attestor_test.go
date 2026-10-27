@@ -340,6 +340,77 @@ func TestAssertionAttestorSyncFailureMatrix(t *testing.T) {
 	}
 }
 
+func TestRunWithObserverSuppressesObserverOnContextCancellation(t *testing.T) {
+	store, err := arbitrum.NewAttestedRootStore("arbitrum-one", 10)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	source := &assertionTestSource{finalizedErr: context.Canceled}
+	resolver := &assertionTestResolver{}
+	loop, err := NewAssertionAttestor(
+		source,
+		resolver,
+		store,
+		AssertionAttestorConfig{PollInterval: time.Hour, MaxL1BlockRange: 10},
+	)
+	if err != nil {
+		t.Fatalf("create assertion attestor: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	observed := 0
+	loop.RunWithObserver(ctx, func(error) { observed++ })
+
+	if observed != 0 {
+		t.Fatalf("observer called %d times on a canceled context; want 0 (clean shutdown must not count as a failure)", observed)
+	}
+}
+
+func TestRunWithObserverReportsRealFailures(t *testing.T) {
+	store, err := arbitrum.NewAttestedRootStore("arbitrum-one", 10)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	syncErr := errors.New("finalized unavailable")
+	source := &assertionTestSource{finalizedErr: syncErr}
+	resolver := &assertionTestResolver{}
+	loop, err := NewAssertionAttestor(
+		source,
+		resolver,
+		store,
+		AssertionAttestorConfig{PollInterval: time.Hour, MaxL1BlockRange: 10},
+	)
+	if err != nil {
+		t.Fatalf("create assertion attestor: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	observations := make(chan error, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		loop.RunWithObserver(ctx, func(err error) { observations <- err })
+	}()
+
+	select {
+	case observedErr := <-observations:
+		if !errors.Is(observedErr, syncErr) {
+			t.Fatalf("observer error = %v, want %v", observedErr, syncErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the initial sync's observation")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for RunWithObserver to return after cancellation")
+	}
+}
+
 func TestAssertionAttestorRemovesAssertionWhenRollupNoLongerReportsIt(t *testing.T) {
 	store, err := arbitrum.NewAttestedRootStore("arbitrum-one", 11)
 	if err != nil {
@@ -453,4 +524,14 @@ func (r *assertionTestResolver) ResolveCanonicalBlockHash(
 	mode arbitrum.RunMode,
 ) (arbitrum.BlockCommitment, error) {
 	return r.results[mode], r.errs[mode]
+}
+
+func (s *assertionTestSource) Head(_ context.Context, _ arbitrum.L1IngestHead) (L1Block, error) {
+	return L1Block{Number: s.finalizedBlock, Hash: common.BigToHash(new(big.Int).SetUint64(s.finalizedBlock))}, s.finalizedErr
+}
+func (s *assertionTestSource) CanonicalHash(_ context.Context, n uint64) (common.Hash, error) {
+	return common.BigToHash(new(big.Int).SetUint64(n)), nil
+}
+func (s *assertionTestSource) AssertionStatusAtHash(ctx context.Context, p arbitrum.ProposedAssertion, _ common.Hash) (uint8, error) {
+	return s.AssertionStatus(ctx, p, s.finalizedBlock)
 }

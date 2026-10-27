@@ -5,14 +5,15 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// TestEVMSignerLock pins the distinction that makes this guard different from
+// TestAcquireEVMSignerLocks pins the distinction that makes this guard different from
 // the Cosmos signer lock: an EVM nonce belongs to (chain id, address), not to
 // an address alone. The same key on two chains must therefore take two locks.
-func TestEVMSignerLock(t *testing.T) {
+func TestAcquireEVMSignerLocks(t *testing.T) {
 	address := common.HexToAddress("0xd58ed941051839DB5ffe8735905881d3C7460cE1")
 
 	setup := func(t *testing.T) {
@@ -65,7 +66,7 @@ func TestEVMSignerLock(t *testing.T) {
 	})
 }
 
-func TestEVMSignerLockKeysCoverEveryEVMSubmitPath(t *testing.T) {
+func TestEvmSignerLockKeys_CoverEveryEVMSubmitPath(t *testing.T) {
 	address := common.HexToAddress("0xd58ed941051839DB5ffe8735905881d3C7460cE1")
 	chainIDs := map[string]string{
 		"http://eth":        "1",
@@ -74,9 +75,9 @@ func TestEVMSignerLockKeysCoverEveryEVMSubmitPath(t *testing.T) {
 	}
 
 	keys, err := evmSignerLockKeysWithChainID(context.Background(), &appConfig{
-		CosmosToEthConfigs: []cosmosToEthConfig{{EthRpcUrl: "http://eth"}},
-		CosmosToL2Configs:  []cosmosToEthConfig{{EthRpcUrl: "http://l2"}},
-		L2ToCosmosConfigs:  []l2ToCosmosConfig{{L2RpcUrl: "http://return-leg"}},
+		HasCosmosToEth: true, CosmosToEthConfig: cosmosToEthConfig{EthRpcUrl: "http://eth"},
+		HasCosmosToL2: true, CosmosToL2Config: cosmosToEthConfig{EthRpcUrl: "http://l2"},
+		HasL2ToCosmos: true, L2ToCosmosConfig: l2ToCosmosConfig{L2RpcUrl: "http://return-leg"},
 	}, address, func(_ context.Context, endpoint string) (string, error) {
 		return chainIDs[endpoint], nil
 	})
@@ -100,18 +101,92 @@ func TestEVMSignerLockKeysCoverEveryEVMSubmitPath(t *testing.T) {
 	}
 }
 
-func TestEVMSignerLockKeysRefuseAnUnansweredEndpoint(t *testing.T) {
+func TestEvmSignerLockKeysWithChainID_RefuseAnUnansweredEndpoint(t *testing.T) {
+	shortenEVMChainIDRetries(t)
+
 	_, err := evmSignerLockKeysWithChainID(context.Background(), &appConfig{
-		CosmosToEthConfigs: []cosmosToEthConfig{{EthRpcUrl: "http://unavailable"}},
+		HasCosmosToEth: true, CosmosToEthConfig: cosmosToEthConfig{EthRpcUrl: "http://unavailable"},
 	}, common.HexToAddress("0xd58ed941051839DB5ffe8735905881d3C7460cE1"), func(context.Context, string) (string, error) {
 		return "", errors.New("endpoint did not answer")
 	})
 	if err == nil {
 		t.Fatal("startup accepted an EVM endpoint without a chain id and would have run without its nonce lock")
 	}
-	for _, want := range []string{"eth_chainId", "cosmos_to_eth[0]", "without the nonce-domain lock"} {
+	for _, want := range []string{"eth_chainId", "cosmos_to_eth.eth_rpc_url", "without the nonce-domain lock"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error %q does not explain %q", err, want)
 		}
+	}
+}
+
+// shortenEVMChainIDRetries keeps the retry schedule's shape (four attempts)
+// while removing the real waits from the test.
+func shortenEVMChainIDRetries(t *testing.T) {
+	t.Helper()
+	restore := evmSignerLockChainIDRetryDelays
+	evmSignerLockChainIDRetryDelays = []time.Duration{0, 0, 0}
+	t.Cleanup(func() { evmSignerLockChainIDRetryDelays = restore })
+}
+
+func TestEvmSignerLockKeysWithChainID_RetryABlip(t *testing.T) {
+	shortenEVMChainIDRetries(t)
+
+	calls := 0
+	keys, err := evmSignerLockKeysWithChainID(context.Background(), &appConfig{
+		HasCosmosToEth: true, CosmosToEthConfig: cosmosToEthConfig{EthRpcUrl: "http://slow-to-start"},
+	}, common.HexToAddress("0xd58ed941051839DB5ffe8735905881d3C7460cE1"), func(context.Context, string) (string, error) {
+		calls++
+		if calls < 3 {
+			return "", errors.New("connection refused")
+		}
+		return "1", nil
+	})
+	if err != nil {
+		t.Fatalf("startup stopped on an endpoint that answered on attempt 3: %v", err)
+	}
+	if calls != 3 {
+		t.Fatalf("eth_chainId was asked %d times, want 3", calls)
+	}
+	if len(keys) != 1 || keys[0].chainID != "1" {
+		t.Fatalf("keys = %+v, want one key on chain 1", keys)
+	}
+}
+
+func TestEvmSignerLockKeysWithChainID_BoundedAttempts(t *testing.T) {
+	shortenEVMChainIDRetries(t)
+
+	calls := 0
+	_, err := evmSignerLockKeysWithChainID(context.Background(), &appConfig{
+		HasCosmosToEth: true, CosmosToEthConfig: cosmosToEthConfig{EthRpcUrl: "http://unavailable"},
+	}, common.HexToAddress("0xd58ed941051839DB5ffe8735905881d3C7460cE1"), func(context.Context, string) (string, error) {
+		calls++
+		return "", errors.New("endpoint did not answer")
+	})
+	if err == nil {
+		t.Fatal("startup accepted an endpoint that never answered")
+	}
+	if want := len(evmSignerLockChainIDRetryDelays) + 1; calls != want {
+		t.Fatalf("eth_chainId was asked %d times, want %d", calls, want)
+	}
+	if !strings.Contains(err.Error(), "endpoint did not answer") {
+		t.Fatalf("error %q lost the last attempt's cause", err)
+	}
+}
+
+func TestEvmSignerLockKeysWithChainID_CancelStopsRetrying(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	calls := 0
+	_, err := evmSignerLockKeysWithChainID(ctx, &appConfig{
+		HasCosmosToEth: true, CosmosToEthConfig: cosmosToEthConfig{EthRpcUrl: "http://unavailable"},
+	}, common.HexToAddress("0xd58ed941051839DB5ffe8735905881d3C7460cE1"), func(context.Context, string) (string, error) {
+		calls++
+		cancel()
+		return "", errors.New("endpoint did not answer")
+	})
+	if err == nil {
+		t.Fatal("startup succeeded after its context was cancelled")
+	}
+	if calls != 1 {
+		t.Fatalf("eth_chainId was asked %d times after cancellation, want 1", calls)
 	}
 }

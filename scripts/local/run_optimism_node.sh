@@ -188,7 +188,10 @@ fi
 # helper enabled for the batcher/proposer launchers. Set OP_OBSERVABILITY=1 to restore
 # the package default.
 MAIN_STAR=$PKG_DIR/main.star
-if [ "$OP_OBSERVABILITY" = "0" ] && ! grep -Fq 'fast-ibc: observability intentionally skipped' "$MAIN_STAR"; then
+# The marker is matched without its project prefix so a main.star patched by an
+# older checkout (which used a different prefix) is still recognised.
+OBS_MARKER=': observability intentionally skipped in the local devnet.'
+if [ "$OP_OBSERVABILITY" = "0" ] && ! grep -Fq "$OBS_MARKER" "$MAIN_STAR"; then
     log "patching main.star (skip optional observability bundle in local devnet)"
     python3 - "$MAIN_STAR" <<'PYEOF'
 import sys
@@ -199,24 +202,26 @@ anchor = '''    observability.launch(
     )'''
 if anchor not in src:
     sys.exit("anchor for observability patch not found in main.star")
-src = src.replace(anchor, '''    # fast-ibc: observability intentionally skipped in the local devnet.
+src = src.replace(anchor, '''    # spectre: observability intentionally skipped in the local devnet.
     plan.print("Skipping optional observability bundle")''', 1)
 open(path, "w").write(src)
 PYEOF
-elif [ "$OP_OBSERVABILITY" = "1" ] && grep -Fq 'fast-ibc: observability intentionally skipped' "$MAIN_STAR"; then
+elif [ "$OP_OBSERVABILITY" = "1" ] && grep -Fq "$OBS_MARKER" "$MAIN_STAR"; then
     log "restoring main.star (enable optional observability bundle)"
     python3 - "$MAIN_STAR" <<'PYEOF'
-import sys
+import re, sys
 path = sys.argv[1]
 src = open(path).read()
-skipped = '''    # fast-ibc: observability intentionally skipped in the local devnet.
-    plan.print("Skipping optional observability bundle")'''
+skipped = re.compile(
+    r'    # [\w-]+: observability intentionally skipped in the local devnet\.\n'
+    r'    plan\.print\("Skipping optional observability bundle"\)'
+)
 launch = '''    observability.launch(
         plan, observability_helper, global_node_selectors, observability_params
     )'''
-if skipped not in src:
+if not skipped.search(src):
     sys.exit("anchor for observability restore not found in main.star")
-src = src.replace(skipped, launch, 1)
+src = skipped.sub(lambda _: launch, src, count=1)
 open(path, "w").write(src)
 PYEOF
 fi
@@ -236,6 +241,7 @@ ENCLAVE="$ENCLAVE" ETH_PIN="$ETH_PIN" RUN_DIR="$RUN_DIR" \
 # shellcheck disable=SC1091
 . "$RUN_DIR/eth.env" # ETH_RPC / ETH_WS / ETH_BEACON_API
 L1_RPC_URL=$ETH_RPC
+L1_CHAIN_ID=$(cast chain-id --rpc-url "$L1_RPC_URL")
 
 # Validate up front: fail fast if the beacon endpoint itself is unreachable (wrong port
 # discovered, or the CL service is down) instead of the finality wait silently
@@ -296,10 +302,11 @@ done
 [ -n "$SEQ_EL_SVC" ] || SEQ_EL_SVC=${OP_EL_SVCS[0]}
 L2_RPC_URL="http://$(kurtosis port print "$ENCLAVE" "$SEQ_EL_SVC" rpc | sed 's|^http://||')"
 L2_WS_URL="ws://$(kurtosis port print "$ENCLAVE" "$SEQ_EL_SVC" ws 2>/dev/null | sed 's|^ws://||')" || L2_WS_URL=""
+L2_CHAIN_ID=$(cast chain-id --rpc-url "$L2_RPC_URL")
 
 log "L1 RPC:            $L1_RPC_URL"
 log "replica op-node:   $OP_NODE_RPC_URL   ($REPLICA_SVC)"
-log "sequencer op-geth: $L2_RPC_URL   ($SEQ_EL_SVC)"
+log "sequencer op-geth: $L2_RPC_URL   ($SEQ_EL_SVC, chain $L2_CHAIN_ID)"
 
 # Contract addresses from op-deployer's state artifact.
 rm -rf "$RUN_DIR/op-deployer"
@@ -350,6 +357,7 @@ ENV_FILE=$RUN_DIR/attestor.env
 cat > "$ENV_FILE" <<EOF
 export L1_RPC_URL=$L1_RPC_URL
 export L1_WS_URL=$ETH_WS
+export L1_CHAIN_ID=$L1_CHAIN_ID
 export ETH_BEACON_API=$ETH_BEACON_API
 export OP_NODE_RPC_URL=$OP_NODE_RPC_URL
 export L2_RPC_URL=$L2_RPC_URL

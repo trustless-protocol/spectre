@@ -6,7 +6,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 
-	"github.com/decentrio/fast-ibc/packages/go-abigen/spectreclient"
+	"github.com/decentrio/spectre/packages/go-abigen/spectreclient"
 )
 
 // The SpectreClient contract exposes its client state only as
@@ -15,13 +15,13 @@ import (
 // These helpers decode those bytes into a struct so the e2e suites can assert on
 // individual fields, mirroring relayer/client.DecodeClientState.
 
-// groth16TrustLevel mirrors IICS07TendermintMsgs.TrustThreshold.
+// groth16TrustLevel mirrors ISpectreTendermintMsgs.TrustThreshold.
 type groth16TrustLevel struct {
 	Numerator   uint8
 	Denominator uint8
 }
 
-// groth16ClientState mirrors the IICS07TendermintMsgs.ClientState tuple returned
+// groth16ClientState mirrors the ISpectreTendermintMsgs.ClientState tuple returned
 // (ABI-encoded) by SpectreClient.getClientState().
 type groth16ClientState struct {
 	ChainId         string

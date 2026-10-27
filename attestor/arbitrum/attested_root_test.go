@@ -223,6 +223,173 @@ func TestAttestedRootStoreCommitSerializesConcurrentWriters(t *testing.T) {
 	}
 }
 
+// Commit must retain the old public snapshot for every failure before rename.
+// A directory-sync failure is necessarily uncertain: rename has already made
+// the replacement visible, so the durable file can be new even though Commit
+// returns an error. The live store still refuses to publish that uncertain
+// snapshot and the next reconciliation can replay it idempotently.
+func TestAttestedRootStoreCommitFailureMatrix(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		configure   func(testAttestedRootFileSystem) testAttestedRootFileSystem
+		wantDurable uint64
+	}{
+		{
+			name: "create directory",
+			configure: func(fs testAttestedRootFileSystem) testAttestedRootFileSystem {
+				fs.mkdirAll = func(string, os.FileMode) error { return errors.New("mkdir failed") }
+				return fs
+			},
+			wantDurable: 1,
+		},
+		{
+			name: "create temporary",
+			configure: func(fs testAttestedRootFileSystem) testAttestedRootFileSystem {
+				fs.createTemp = func(string, string) (attestedRootFile, error) { return nil, errors.New("create failed") }
+				return fs
+			},
+			wantDurable: 1,
+		},
+		{
+			name: "chmod temporary",
+			configure: func(fs testAttestedRootFileSystem) testAttestedRootFileSystem {
+				create := fs.createTemp
+				fs.createTemp = func(dir, pattern string) (attestedRootFile, error) {
+					file, err := create(dir, pattern)
+					return failingAttestedRootFile{attestedRootFile: file, chmodErr: errors.New("chmod failed")}, err
+				}
+				return fs
+			},
+			wantDurable: 1,
+		},
+		{
+			name: "write temporary",
+			configure: func(fs testAttestedRootFileSystem) testAttestedRootFileSystem {
+				create := fs.createTemp
+				fs.createTemp = func(dir, pattern string) (attestedRootFile, error) {
+					file, err := create(dir, pattern)
+					return failingAttestedRootFile{attestedRootFile: file, writeErr: errors.New("write failed")}, err
+				}
+				return fs
+			},
+			wantDurable: 1,
+		},
+		{
+			name: "sync temporary",
+			configure: func(fs testAttestedRootFileSystem) testAttestedRootFileSystem {
+				create := fs.createTemp
+				fs.createTemp = func(dir, pattern string) (attestedRootFile, error) {
+					file, err := create(dir, pattern)
+					return failingAttestedRootFile{attestedRootFile: file, syncErr: errors.New("sync failed")}, err
+				}
+				return fs
+			},
+			wantDurable: 1,
+		},
+		{
+			name: "close temporary",
+			configure: func(fs testAttestedRootFileSystem) testAttestedRootFileSystem {
+				create := fs.createTemp
+				fs.createTemp = func(dir, pattern string) (attestedRootFile, error) {
+					file, err := create(dir, pattern)
+					return failingAttestedRootFile{attestedRootFile: file, closeErr: errors.New("close failed")}, err
+				}
+				return fs
+			},
+			wantDurable: 1,
+		},
+		{
+			name: "rename",
+			configure: func(fs testAttestedRootFileSystem) testAttestedRootFileSystem {
+				fs.rename = func(string, string) error { return errors.New("rename failed") }
+				return fs
+			},
+			wantDurable: 1,
+		},
+		{
+			name: "sync directory",
+			configure: func(fs testAttestedRootFileSystem) testAttestedRootFileSystem {
+				fs.syncDir = func(string) error { return errors.New("directory sync failed") }
+				return fs
+			},
+			wantDurable: 2,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "state", "attested-roots.json")
+			store, err := LoadAttestedRootStore(path, "arbitrum-one", 1)
+			if err != nil {
+				t.Fatalf("LoadAttestedRootStore: %v", err)
+			}
+			if err := store.Save(); err != nil {
+				t.Fatalf("initial Save: %v", err)
+			}
+			store.fs = tc.configure(realAttestedRootFileSystem())
+			if err := store.Commit(func(staged *AttestedRootStore) (bool, error) {
+				staged.SetNextL1Block(2)
+				return true, nil
+			}); err == nil {
+				t.Fatal("Commit succeeded despite injected persistence failure")
+			}
+			if got := store.NextL1Block(); got != 1 {
+				t.Fatalf("published cursor after failed Commit = %d, want 1", got)
+			}
+			reloaded, err := LoadAttestedRootStore(path, "arbitrum-one", 0)
+			if err != nil {
+				t.Fatalf("reload after failed Commit: %v", err)
+			}
+			if got := reloaded.NextL1Block(); got != tc.wantDurable {
+				t.Fatalf("durable cursor after failed Commit = %d, want %d", got, tc.wantDurable)
+			}
+		})
+	}
+}
+
+func TestAttestedRootStoreCommitIsRaceSafeWithReaders(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "attested-roots.json")
+	store, err := LoadAttestedRootStore(path, "arbitrum-one", 1)
+	if err != nil {
+		t.Fatalf("LoadAttestedRootStore: %v", err)
+	}
+	stopReaders := make(chan struct{})
+	var readersDone sync.WaitGroup
+	for range 8 {
+		readersDone.Add(1)
+		go func() {
+			defer readersDone.Done()
+			for {
+				select {
+				case <-stopReaders:
+					return
+				default:
+					_ = store.NextL1Block()
+					_, _ = store.HighestAttested(true)
+					_ = store.Stats()
+				}
+			}
+		}()
+	}
+	for want := uint64(2); want <= 16; want++ {
+		if err := store.Commit(func(staged *AttestedRootStore) (bool, error) {
+			staged.SetNextL1Block(want)
+			return true, nil
+		}); err != nil {
+			close(stopReaders)
+			readersDone.Wait()
+			t.Fatalf("Commit cursor %d: %v", want, err)
+		}
+	}
+	close(stopReaders)
+	readersDone.Wait()
+	reloaded, err := LoadAttestedRootStore(path, "arbitrum-one", 0)
+	if err != nil {
+		t.Fatalf("reload state: %v", err)
+	}
+	if got := reloaded.NextL1Block(); got != 16 {
+		t.Fatalf("durable cursor = %d, want 16", got)
+	}
+}
+
 func TestAttestedRootStoreRejectsIdentityMismatch(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "attested-roots.json")
 	store, err := LoadAttestedRootStore(path, "arbitrum-one", 1)

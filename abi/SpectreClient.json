@@ -25,7 +25,7 @@
       {
         "name": "consensusState_",
         "type": "tuple",
-        "internalType": "struct IICS07TendermintMsgs.ConsensusState",
+        "internalType": "struct ISpectreTendermintMsgs.ConsensusState",
         "components": [
           {
             "name": "timestamp",
@@ -47,12 +47,12 @@
       {
         "name": "initialPinnedValidatorSet",
         "type": "tuple",
-        "internalType": "struct IICS07TendermintMsgs.ValidatorSet",
+        "internalType": "struct ISpectreTendermintMsgs.ValidatorSet",
         "components": [
           {
             "name": "validators",
             "type": "tuple[]",
-            "internalType": "struct IICS07TendermintMsgs.ValidatorInfo[]",
+            "internalType": "struct ISpectreTendermintMsgs.ValidatorInfo[]",
             "components": [
               {
                 "name": "valAddress",
@@ -84,7 +84,7 @@
           {
             "name": "proposer",
             "type": "tuple",
-            "internalType": "struct IICS07TendermintMsgs.ValidatorInfo",
+            "internalType": "struct ISpectreTendermintMsgs.ValidatorInfo",
             "components": [
               {
                 "name": "valAddress",
@@ -158,6 +158,43 @@
         "name": "",
         "type": "bytes",
         "internalType": "bytes"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getConsensusStateHash",
+    "inputs": [
+      {
+        "name": "revisionHeight",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getPinnedSnapshot",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "height",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "timestamp",
+        "type": "uint128",
+        "internalType": "uint128"
       }
     ],
     "stateMutability": "view"
@@ -675,7 +712,7 @@
           {
             "name": "trustedConsensusState",
             "type": "tuple",
-            "internalType": "struct IICS07TendermintMsgs.ConsensusState",
+            "internalType": "struct ISpectreTendermintMsgs.ConsensusState",
             "components": [
               {
                 "name": "timestamp",
@@ -1011,7 +1048,7 @@
           {
             "name": "trustedConsensusState",
             "type": "tuple",
-            "internalType": "struct IICS07TendermintMsgs.ConsensusState",
+            "internalType": "struct ISpectreTendermintMsgs.ConsensusState",
             "components": [
               {
                 "name": "timestamp",
@@ -1513,6 +1550,17 @@
         "name": "actual",
         "type": "bytes32",
         "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ModuleHasNoCode",
+    "inputs": [
+      {
+        "name": "module",
+        "type": "address",
+        "internalType": "address"
       }
     ]
   },

@@ -8,9 +8,8 @@ import (
 	"relayer/chain"
 )
 
-// This file is the whose-fault-is-it table for the attestor, from §C1 of the
-// relayer design doc. Every failure the attestor can hand back gets a class, and
-// two of them get an alarm.
+// This file is the whose-fault-is-it table for the attestor. Every failure the
+// attestor can hand back gets a class, and two of them get an alarm.
 //
 // Before it, the relayer distinguished exactly ONE attestor failure —
 // Unimplemented on VerifyStateRoot — and every other one arrived as a bare
@@ -99,22 +98,24 @@ var ErrVerifyStateRootUnsupported = fmt.Errorf("%w: VerifyStateRoot", ErrAttesto
 // An unrecognised failure is transient. That is Classify's default and the right
 // one: the packet is kept, and the cost of being wrong is a retry rather than a
 // locked escrow.
+// tag names the work that hit the failure (Attest, Frontier, RelayableHeight);
+// the direction is fixed, because only the L2->Cosmos path talks to an attestor.
 func classifyAttestorFailure(tag string, err error) chain.Retry {
 	switch {
 	case errors.Is(err, ErrAttestorUnimplemented):
-		log.Printf("[%s][ATTENTION] the attestor does not implement an RPC this relayer requires: %v; "+
+		log.Printf("ERROR [l2->cosmos %s][ATTENTION] the attestor does not implement an RPC this relayer requires: %v; "+
 			"startup is supposed to reject such a daemon, so this relay path is running unverified — "+
 			"check the attestor build matches the relayer", tag, err)
 		return chain.Permanent(err)
 
 	case errors.Is(err, ErrAttestorDivergence):
-		log.Printf("[%s][ATTENTION] the attestor replica disagrees with the L2 RPC: %v; "+
+		log.Printf("WARN [l2->cosmos %s][ATTENTION] the attestor replica disagrees with the L2 RPC: %v; "+
 			"this retries, but if it does not clear within a few blocks the two are genuinely diverged "+
 			"and no header from this L2 RPC is attested state", tag, err)
 		return chain.Transient(err)
 
 	case errors.Is(err, ErrAttestorSignature):
-		log.Printf("[%s][ATTENTION] the attestor signature does not verify against the pinned profile: %v; "+
+		log.Printf("ERROR [l2->cosmos %s][ATTENTION] the attestor signature does not verify against the pinned profile: %v; "+
 			"either rollup_profile.common.attestor_public_key is not this daemon's key, or the daemon is not "+
 			"signing the block identity it was asked about — no retry resolves either", tag, err)
 		return chain.Permanent(err)

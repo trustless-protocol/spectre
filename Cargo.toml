@@ -14,17 +14,13 @@ members = [
     "programs/cw-ics08-wasm-base",
     "programs/cw-ics08-wasm-op",
 ]
-# Keep the gnark submodules out of this workspace: their Rust crate
-# (third_party/ecip-gnark/ffi/garaga_rs) must build standalone, not get pulled
-# into this workspace when cargo walks up from the submodule directory (#156 CI).
-exclude = ["third_party"]
 resolver = "2"
 
 [workspace.package]
 version    = "0.1.0"
 edition    = "2021"
 license    = "MIT"
-repository = "https://github.com/decentrio/fast-ibc"
+repository = "https://github.com/decentrio/spectre"
 keywords   = ["cosmos", "ibc", "tendermint", "ethereum", "bridge", "solidity", "eureka", "gnark"]
 
 [workspace.dependencies]

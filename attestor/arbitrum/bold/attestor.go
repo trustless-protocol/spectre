@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"sync"
 	"time"
 
 	arbitrum "attestor/arbitrum"
@@ -27,13 +28,14 @@ type CommitmentResolver interface {
 	) (arbitrum.BlockCommitment, error)
 }
 
-// AssertionAttestorConfig controls finalized-L1 assertion ingestion.
+// AssertionAttestorConfig controls L1 assertion ingestion and reconciliation.
 type AssertionAttestorConfig struct {
+	L1IngestHead    arbitrum.L1IngestHead
 	PollInterval    time.Duration
 	MaxL1BlockRange uint64
 }
 
-// AssertionAttestor turns finalized-L1 RollupCore events into a Nitro-checked
+// AssertionAttestor turns RollupCore events into a Nitro-checked
 // commitment feed.
 type AssertionAttestor struct {
 	source  AssertionSource
@@ -41,6 +43,7 @@ type AssertionAttestor struct {
 	store   *arbitrum.AttestedRootStore
 	config  AssertionAttestorConfig
 	now     func() time.Time
+	syncMu  sync.Mutex
 }
 
 // NewAssertionAttestor constructs an assertion ingestion loop.
@@ -59,6 +62,11 @@ func NewAssertionAttestor(
 	if store == nil {
 		return nil, errors.New("attested-root store must not be nil")
 	}
+	head, err := config.L1IngestHead.Normalize()
+	if err != nil {
+		return nil, err
+	}
+	config.L1IngestHead = head
 	if config.PollInterval == 0 {
 		config.PollInterval = defaultAssertionPollInterval
 	}
@@ -118,9 +126,23 @@ func (a *AssertionAttestor) ValidateChainIDs(
 // Transient L1 or Nitro failures leave the last persisted frontier intact and
 // are retried on the next tick.
 func (a *AssertionAttestor) Run(ctx context.Context) {
+	a.RunWithObserver(ctx, nil)
+}
+
+// RunWithObserver is Run with an optional per-pass callback for composition
+// roots. The callback observes only the pass outcome; it cannot alter
+// settlement ingestion or the durable feed.
+func (a *AssertionAttestor) RunWithObserver(ctx context.Context, observe func(error)) {
 	sync := func() {
-		if err := a.SyncOnce(ctx); err != nil && ctx.Err() == nil {
+		err := a.SyncOnce(ctx)
+		if err != nil && ctx.Err() != nil {
+			return
+		}
+		if err != nil {
 			log.Printf("Arbitrum assertion attestation failed: %v", err)
+		}
+		if observe != nil {
+			observe(err)
 		}
 	}
 	sync()
@@ -137,12 +159,37 @@ func (a *AssertionAttestor) Run(ctx context.Context) {
 	}
 }
 
-// SyncOnce ingests every newly finalized L1 assertion event and reconciles
-// pending/provisional entries against both RollupCore status and Nitro.
+// SyncOnce advances the finalized log cursor, reconciles finalized evidence,
+// and optionally rebuilds the complete speculative L1 window.
 func (a *AssertionAttestor) SyncOnce(ctx context.Context) error {
-	finalizedL1Block, err := a.source.FinalizedBlockNumber(ctx)
+	a.syncMu.Lock()
+	defer a.syncMu.Unlock()
+	var finalizedSnapshot L1Block
+	var finalizedL1Block uint64
+	var err error
+	if a.config.L1IngestHead == arbitrum.L1IngestFinalized {
+		finalizedL1Block, err = a.source.FinalizedBlockNumber(ctx)
+	} else {
+		finalizedSnapshot, err = a.source.Head(ctx, arbitrum.L1IngestFinalized)
+		finalizedL1Block = finalizedSnapshot.Number
+	}
 	if err != nil {
 		return err
+	}
+
+	// Track both retained and rejected assertions at this finalized snapshot.
+	checked := make(map[common.Hash]bool)
+
+	// Validate persisted speculative work before advancing the cursor across
+	// its creation blocks. Otherwise a failed recheck followed by a restart
+	// could disguise an unchecked early root as finalized-cursor history.
+	if a.store.HasUnfinalizedAssertions() {
+		if err := a.reconcileProposals(ctx, finalizedL1Block, checked); err != nil {
+			return err
+		}
+		if err := a.reconcileProvisional(ctx, finalizedL1Block, checked); err != nil {
+			return err
+		}
 	}
 
 	for from := a.store.NextL1Block(); from <= finalizedL1Block; {
@@ -156,6 +203,10 @@ func (a *AssertionAttestor) SyncOnce(ctx context.Context) error {
 		}
 		if err := a.store.Commit(func(store *arbitrum.AttestedRootStore) (bool, error) {
 			for _, proposal := range proposals {
+				// Do not resurrect work rejected at this finalized snapshot.
+				if retained, done := checked[proposal.AssertionHash]; done && !retained {
+					continue
+				}
 				if err := store.RecordProposal(proposal); err != nil {
 					return false, err
 				}
@@ -179,11 +230,25 @@ func (a *AssertionAttestor) SyncOnce(ctx context.Context) error {
 		from = to + 1
 	}
 
-	if err := a.reconcileProposals(ctx, finalizedL1Block); err != nil {
+	if err := a.reconcileProposals(ctx, finalizedL1Block, checked); err != nil {
 		return err
 	}
-	if err := a.reconcileProvisional(ctx, finalizedL1Block); err != nil {
+	if err := a.reconcileProvisional(ctx, finalizedL1Block, checked); err != nil {
 		return err
+	}
+	if a.config.L1IngestHead != arbitrum.L1IngestFinalized {
+		return a.ingestUnfinalized(ctx, finalizedSnapshot)
+	}
+	var revoked uint64
+	if err := a.store.Commit(func(store *arbitrum.AttestedRootStore) (bool, error) {
+		revoked = store.PruneUnfinalizedAssertions(finalizedL1Block, nil)
+		return revoked != 0, nil
+	}); err != nil {
+		return err
+	}
+	a.store.ObserveAssertionIngest(finalizedL1Block, revoked)
+	if revoked != 0 {
+		log.Printf("Arbitrum unfinalized assertions withdrawn: l1_ingest_head=finalized l1_head=%d count=%d", finalizedL1Block, revoked)
 	}
 	return nil
 }
@@ -191,8 +256,15 @@ func (a *AssertionAttestor) SyncOnce(ctx context.Context) error {
 func (a *AssertionAttestor) reconcileProposals(
 	ctx context.Context,
 	finalizedL1Block uint64,
+	checked map[common.Hash]bool,
 ) error {
 	for _, proposal := range a.store.Proposals() {
+		if _, done := checked[proposal.AssertionHash]; proposal.L1BlockNumber > finalizedL1Block || done {
+			continue
+		}
+		// Share the set across proposal and provisional reconciliation so a
+		// newly attested proposal is not checked again in the same pass.
+		checked[proposal.AssertionHash] = true
 		status, err := a.source.AssertionStatus(
 			ctx,
 			proposal,
@@ -203,6 +275,7 @@ func (a *AssertionAttestor) reconcileProposals(
 		}
 		switch status {
 		case assertionStatusNone:
+			checked[proposal.AssertionHash] = false
 			if err := a.store.Commit(func(store *arbitrum.AttestedRootStore) (bool, error) {
 				store.RemoveAssertion(proposal.AssertionHash)
 				return true, nil
@@ -239,6 +312,7 @@ func (a *AssertionAttestor) reconcileProposals(
 			}
 			continue
 		case errors.Is(err, arbitrum.ErrCommitmentMismatch):
+			checked[proposal.AssertionHash] = false
 			if err := a.rejectAssertion(proposal.AssertionHash, proposal.L2BlockHash, err); err != nil {
 				return err
 			}
@@ -286,8 +360,13 @@ func (a *AssertionAttestor) resolveProposal(
 func (a *AssertionAttestor) reconcileProvisional(
 	ctx context.Context,
 	finalizedL1Block uint64,
+	checked map[common.Hash]bool,
 ) error {
 	for _, entry := range a.store.ProvisionalAssertions() {
+		if _, done := checked[entry.AssertionHash]; entry.L1BlockNumber > finalizedL1Block || done {
+			continue
+		}
+		checked[entry.AssertionHash] = true
 		status, err := a.source.AssertionStatus(
 			ctx,
 			arbitrum.ProposedAssertion{
@@ -300,6 +379,7 @@ func (a *AssertionAttestor) reconcileProvisional(
 			return err
 		}
 		if status == assertionStatusNone {
+			checked[entry.AssertionHash] = false
 			if err := a.store.Commit(func(store *arbitrum.AttestedRootStore) (bool, error) {
 				store.RemoveAssertion(entry.AssertionHash)
 				return true, nil
@@ -325,6 +405,7 @@ func (a *AssertionAttestor) reconcileProvisional(
 		case errors.Is(err, arbitrum.ErrCommitmentNotReady):
 			continue
 		case errors.Is(err, arbitrum.ErrCommitmentMismatch):
+			checked[entry.AssertionHash] = false
 			if err := a.rejectAssertion(entry.AssertionHash, entry.L2BlockHash, err); err != nil {
 				return err
 			}
@@ -349,6 +430,7 @@ func (a *AssertionAttestor) reconcileProvisional(
 			}
 			continue
 		case errors.Is(err, arbitrum.ErrCommitmentMismatch):
+			checked[entry.AssertionHash] = false
 			if err := a.rejectAssertion(entry.AssertionHash, entry.L2BlockHash, err); err != nil {
 				return err
 			}

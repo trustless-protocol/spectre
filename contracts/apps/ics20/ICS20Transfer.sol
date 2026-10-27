@@ -284,6 +284,9 @@ contract ICS20Transfer is
         returns (uint64)
     {
         require(msg_.amount > 0, IICS20Errors.ICS20InvalidAmount(0));
+        // The sender is the refundee, and a token will not transfer to the zero address: the packet could not be
+        // settled
+        require(sender != address(0), ICS20InvalidAddress(Strings.toHexString(sender)));
         // transfer the tokens to us (requires the allowance to be set)
         IEscrow escrow = _getOrCreateEscrow(msg_.sourceClient);
         _transferFrom(_msgSender(), address(escrow), msg_.denom, msg_.amount);
@@ -335,16 +338,16 @@ contract ICS20Transfer is
         uint64 sequence = _getICS26Router()
             .sendPacket(
                 IICS26RouterMsgs.MsgSendPacket({
-                sourceClient: msg_.sourceClient,
-                timeoutTimestamp: msg_.timeoutTimestamp,
-                payload: IICS26RouterMsgs.Payload({
-                sourcePort: ICS20Lib.DEFAULT_PORT_ID,
-                destPort: ICS20Lib.DEFAULT_PORT_ID,
-                version: ICS20Lib.ICS20_VERSION,
-                encoding: ICS20Lib.ICS20_ENCODING,
-                value: abi.encode(packetData)
-            })
-            })
+                    sourceClient: msg_.sourceClient,
+                    timeoutTimestamp: msg_.timeoutTimestamp,
+                    payload: IICS26RouterMsgs.Payload({
+                        sourcePort: ICS20Lib.DEFAULT_PORT_ID,
+                        destPort: ICS20Lib.DEFAULT_PORT_ID,
+                        version: ICS20Lib.ICS20_VERSION,
+                        encoding: ICS20Lib.ICS20_ENCODING,
+                        value: abi.encode(packetData)
+                    })
+                })
             );
 
         _getICS20TransferStorage()._refundRateLimitCredits[msg_.sourceClient][sequence] = usageRemoved;
@@ -354,6 +357,11 @@ contract ICS20Transfer is
     /// @inheritdoc IICS20TransferAccessControlled
     function setCustomERC20(string calldata denom, address token) external restricted {
         ICS20TransferStorage storage $ = _getICS20TransferStorage();
+        // A denom that is a token address names that native token. A mapping would take over the refunds of its
+        // in-flight packets, which are paid in whatever the denom maps to.
+        // slither-disable-next-line unused-return
+        (bool isAddress,) = Strings.tryParseAddress(denom);
+        require(!isAddress, ICS20CustomDenomIsAddress(denom));
         require(address($._ibcERC20Contracts[denom]) == address(0), IICS20Errors.ICS20DenomAlreadyExists(denom));
         require(
             bytes($._ibcERC20Denoms[token]).length == 0, IICS20Errors.ICS20TokenAlreadyExists($._ibcERC20Denoms[token])
@@ -379,12 +387,19 @@ contract ICS20Transfer is
     }
 
     /// @inheritdoc IIBCApp
+    /// @dev A failure with a non-empty reason is committed by the router as an error acknowledgement, which
+    /// finalizes the packet. That is the intended outcome for a packet this contract cannot process, but not for
+    /// a rejection that says nothing about the packet: re-entry is turned into an empty revert (see
+    /// `abortIfReentered`) and the router then aborts the whole `recvPacket`. A pause of this contract alone is
+    /// still reported with `EnforcedPause()`, so every inbound packet relayed while only ICS20 is paused is
+    /// finalized with an error acknowledgement and refunded on the source chain; pausing the router holds them.
     // NOTE: Reentrancy disabled for this function via the `nonReentrant` modifier.
     // slither-disable-next-line reentrancy-no-eth
     function onRecvPacket(IIBCAppCallbacks.OnRecvPacketCallback calldata msg_)
         // solhint-disable-previous-line function-max-lines
         external
         onlyRouter
+        abortIfReentered
         nonReentrant
         whenNotPaused
         returns (bytes memory)
@@ -681,6 +696,21 @@ contract ICS20Transfer is
     /// @notice Modifier to check if the caller is the ICS26Router contract
     modifier onlyRouter() {
         require(_msgSender() == address(_getICS26Router()), ICS20Unauthorized(_msgSender()));
+        _;
+    }
+
+    /// @notice Modifier to revert without a reason when this contract is re-entered
+    /// @dev `sendTransfer` holds this contract's lock while it calls the token, but the router's lock is taken
+    /// only later, inside `sendPacket`. A hostile token can therefore call `ICS26Router.recvPacket` with a packet
+    /// that was proven for somebody else. The router writes the receipt before it calls the app and turns any
+    /// non-empty revert reason into a committed error acknowledgement, so the reason of `nonReentrant` would
+    /// finalize that packet as failed and no relayer could ever deliver it. An empty reason makes the router
+    /// revert instead, which rolls the receipt back. This modifier must come before `nonReentrant`.
+    modifier abortIfReentered() {
+        if (_reentrancyGuardEntered()) {
+            // solhint-disable-next-line gas-custom-errors, reason-string
+            revert();
+        }
         _;
     }
 

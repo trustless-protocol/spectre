@@ -14,16 +14,16 @@ import (
 	"go.uber.org/zap"
 
 	tendermintClient "relayer/client"
-	"relayer/prover"
+	"relayer/relay"
 	"relayer/services"
 	"relayer/transaction"
 )
 
-// UpdateClient advances the Cosmos light client on Ethereum once.
+// UpdateClient advances the Cosmos light client that lives on Ethereum once.
 func UpdateClient(logger *zap.Logger) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "update-client",
-		Short: "update the Cosmos light client on Ethereum once",
+		Short: "update the Cosmos light client that lives on Ethereum (Cosmos → Ethereum) once",
 		Args:  cobra.ExactArgs(0),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			configPath, err := cmd.Flags().GetString(flagConfigPath)
@@ -37,6 +37,7 @@ func UpdateClient(logger *zap.Logger) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("failed to load config: %w", err)
 			}
+			logConfigTarget(logger, "update-client", configPath, cfg)
 
 			ethClient, err := tendermintClient.DialEthRPC(context.Background(), cfg.CosmosToEthConfig.EthRpcUrl, tendermintClient.DefaultRPCTimeout)
 			if err != nil {
@@ -49,21 +50,11 @@ func UpdateClient(logger *zap.Logger) *cobra.Command {
 			}
 
 			binDir := envOrDefault("PROVER_BIN_DIR", "./bin")
-			selectedBackend, hasBackendOverride, err := proofBackendFromFlags(cmd)
+			p, err := buildProverService(cmd, binDir)
 			if err != nil {
-				return fmt.Errorf("failed to resolve proof backend: %w", err)
+				return err
 			}
-
-			var p *prover.EcipProver
-			if hasBackendOverride {
-				logger.Sugar().Infof("update-client: overriding proof backend via flags: %s", selectedBackend.Name())
-				p, err = prover.NewProverWithBackend(binDir, selectedBackend)
-			} else {
-				p, err = prover.NewProver(binDir)
-			}
-			if err != nil {
-				return fmt.Errorf("failed to load prover: %w", err)
-			}
+			defer p.Stop()
 
 			cosmosWasmClientID := cosmosWasmClientIDOrDefault(cfg)
 			if cosmosWasmClientID == "" {
@@ -153,7 +144,7 @@ func UpdateClient(logger *zap.Logger) *cobra.Command {
 				return fmt.Errorf("update-client: --max-hops must be greater than 0")
 			}
 
-			worker := services.NewWorker(&transaction.Handler{}, p)
+			worker := services.NewOneShotWorker(&transaction.Handler{}, p)
 
 			// RLY-01: validator churn can force the builder onto a multi-hop
 			// path that only advances the client to an intermediate height
@@ -207,6 +198,6 @@ func UpdateClient(logger *zap.Logger) *cobra.Command {
 	cmd.Flags().Bool(flagGPUProve, false, "use the ICICLE GPU backend for proving (or set GPU_PROVE=1); requires an icicle-enabled build")
 	cmd.Flags().Bool(flagForceRotation, false, "force pinned-set rotation regardless of overlap threshold (operator stopgap for RLY-01)")
 	cmd.Flags().Int64(flagTargetHeight, 0, "override the update target height; 0 uses the chain's current latest height (operator stopgap for RLY-01)")
-	cmd.Flags().Int64(flagMaxHops, 16, "maximum multi-hop iterations before giving up in one invocation")
+	cmd.Flags().Int64(flagMaxHops, relay.MaxClientUpdateHops, "maximum multi-hop iterations before giving up in one invocation")
 	return cmd
 }

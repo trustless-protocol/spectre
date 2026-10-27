@@ -5,20 +5,22 @@ import (
 	"crypto/ed25519"
 	"flag"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/backend/groth16"
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/frontend"
-	"github.com/consensys/gnark/frontend/cs/r1cs"
 
-	"relayer/prover"
+	"relayer/prover/gnark"
+	"relayer/prover/witness"
 )
 
-// setup-circuits: for each bucket in prover.Buckets, compile BatchCircuit,
+// setup-circuits: for each bucket in proof.Buckets, compile BatchCircuit,
 // run Groth16 setup, write bin/n{N}/{r1cs,pk,vk}.bin, then export the
 // corresponding Solidity verifier to contracts/verifiers/Groth16Verifier_N{N}.sol.
 //
@@ -27,11 +29,18 @@ import (
 func main() {
 	var gpuProve bool
 	var listBuckets bool
+	var bucketsFlag string
 	flag.BoolVar(&gpuProve, "gpu-prove", false, "use the ICICLE GPU backend for setup/proving (or set GPU_PROVE=1); requires an icicle-enabled build")
-	flag.BoolVar(&listBuckets, "list-buckets", false, "print the configured prover buckets and exit")
+	flag.BoolVar(&listBuckets, "list-buckets", false, "print the buckets this invocation would build and exit")
+	flag.StringVar(&bucketsFlag, "buckets", "4", "comma-separated bucket sizes to build; each must be in the supported family "+fmt.Sprint(witness.SupportedBuckets))
 	flag.Parse()
+	buckets, err := parseBuckets(bucketsFlag)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	if listBuckets {
-		for _, bucket := range prover.Buckets {
+		for _, bucket := range buckets {
 			fmt.Println(bucket)
 		}
 		return
@@ -49,34 +58,22 @@ func main() {
 		panic(fmt.Errorf("create solidity output dir: %w", err))
 	}
 
-	useGPU := gpuProve || prover.GPUProveEnvEnabled()
-	proofBackend, err := prover.NewProofBackend(useGPU)
+	useGPU := gpuProve || gnark.GPUProveEnvEnabled()
+	proofBackend, err := gnark.NewProofBackend(useGPU)
 	if err != nil {
 		panic(err)
 	}
 	fmt.Printf("Using proof backend: %s\n", proofBackend.Name())
 
-	for _, n := range prover.Buckets {
+	for _, n := range buckets {
 		fmt.Printf("\n=== bucket n=%d ===\n", n)
-		bucketDir := filepath.Join(outDir, fmt.Sprintf("n%d", n))
-		if err := os.MkdirAll(bucketDir, 0o755); err != nil {
-			panic(fmt.Errorf("create %s: %w", bucketDir, err))
-		}
-
-		circuit := prover.NewBatchCircuit(n)
-		fmt.Printf("Compiling BatchCircuit (n=%d)...\n", n)
-		r1csObj, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, circuit)
+		fmt.Printf("Compiling BatchCircuit (n=%d) and running Groth16 setup...\n", n)
+		r1csObj, pk, vk, err := gnark.SetupBucket(outDir, n, proofBackend)
 		if err != nil {
-			panic(fmt.Errorf("compile n=%d: %w", n, err))
+			panic(err)
 		}
 		fmt.Printf("R1CS: %d constraints, %d public witness values\n",
 			r1csObj.GetNbConstraints(), r1csObj.GetNbPublicVariables())
-
-		fmt.Println("Running Groth16 setup...")
-		pk, vk, err := proofBackend.Setup(r1csObj)
-		if err != nil {
-			panic(fmt.Errorf("setup n=%d: %w", n, err))
-		}
 
 		smokeTest(r1csObj, pk, vk, n, proofBackend)
 
@@ -85,10 +82,7 @@ func main() {
 			panic(fmt.Errorf("export solidity n=%d: %w", n, err))
 		}
 		fmt.Printf("Saved %s\n", solPath)
-
-		mustWriteArtifact(filepath.Join(bucketDir, "r1cs.bin"), r1csObj)
-		mustWriteArtifact(filepath.Join(bucketDir, "pk.bin"), pk)
-		mustWriteArtifact(filepath.Join(bucketDir, "vk.bin"), vk)
+		fmt.Printf("Saved artifacts under %s/n%d\n", outDir, n)
 	}
 
 	fmt.Println("\nAll buckets built.")
@@ -102,17 +96,17 @@ func main() {
 // exercises the full Sig/Pub decompression + prefix/block-hash binding + witness
 // hashing path so a broken circuit fails fast before the operator loads the
 // artifacts into the relayer.
-func smokeTest(cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk groth16.VerifyingKey, n int, proofBackend prover.ProofBackend) {
+func smokeTest(cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk groth16.VerifyingKey, n int, proofBackend gnark.ProofBackend) {
 	msg := makeSmokeVote()
 
-	valSigs := make([]prover.ValidatorSignature, n)
+	valSigs := make([]witness.ValidatorSignature, n)
 	for i := 0; i < n; i++ {
 		pub, priv, err := ed25519.GenerateKey(nil)
 		if err != nil {
 			panic(err)
 		}
 		sig := ed25519.Sign(priv, msg)
-		valSigs[i] = prover.ValidatorSignature{
+		valSigs[i] = witness.ValidatorSignature{
 			Signature:   sig,
 			PublicKey:   pub,
 			SignedBytes: msg,
@@ -120,12 +114,12 @@ func smokeTest(cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk groth16
 		}
 	}
 
-	hash, err := prover.ComputeWitnessHash(valSigs)
+	hash, err := witness.ComputeWitnessHash(valSigs)
 	if err != nil {
 		panic(fmt.Errorf("hash witness n=%d: %w", n, err))
 	}
 
-	assignment, err := prover.BuildBatchAssignment(valSigs, hash)
+	assignment, err := gnark.BuildBatchAssignment(valSigs, hash)
 	if err != nil {
 		panic(fmt.Errorf("build assignment n=%d: %w", n, err))
 	}
@@ -173,7 +167,7 @@ func makeSmokeVote() []byte {
 		msg[4+j] = byte(j + 1)
 	}
 	// BlockID: field 4 (0x22), length 0x48, inner hash tag 0x0a length 0x20.
-	// msg[12] must not be the round tag 0x19 so roundPresent stays false, which
+	// msg[12] must not be the round tag 0x19 so the round is absent (committed Round = 0), which
 	// places the 32-byte block hash at no-round in-message index 16 (msg[16:48]).
 	msg[12] = 0x22
 	msg[13] = 0x48
@@ -206,16 +200,28 @@ func exportSolidityVerifier(vk groth16.VerifyingKey, path string, n int) error {
 	return os.WriteFile(path, renamed, 0o644)
 }
 
-func mustWriteArtifact(path string, value interface {
-	WriteTo(io.Writer) (int64, error)
-}) {
-	f, err := os.Create(path)
-	if err != nil {
-		panic(fmt.Errorf("create %s: %w", path, err))
+// parseBuckets parses the -buckets flag and rejects sizes outside the
+// protocol's supported family (each member needs its own circuit and on-chain
+// verifier — an arbitrary N is not buildable).
+func parseBuckets(raw string) ([]int, error) {
+	var out []int
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		n, err := strconv.Atoi(part)
+		if err != nil {
+			return nil, fmt.Errorf("invalid bucket %q in -buckets", part)
+		}
+		if !witness.IsSupported(n) {
+			return nil, fmt.Errorf("bucket %d is outside the supported family %v", n, witness.SupportedBuckets)
+		}
+		out = append(out, n)
 	}
-	defer f.Close()
-	if _, err := value.WriteTo(f); err != nil {
-		panic(fmt.Errorf("write %s: %w", path, err))
+	if len(out) == 0 {
+		return nil, fmt.Errorf("-buckets is empty")
 	}
-	fmt.Printf("Saved %s\n", path)
+	sort.Ints(out)
+	return out, nil
 }

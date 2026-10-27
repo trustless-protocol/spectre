@@ -12,7 +12,7 @@ import { IICS26RouterMsgs } from "contracts/core/messages/IICS26RouterMsgs.sol";
 import { IICS20TransferMsgs } from "contracts/apps/ics20/messages/IICS20TransferMsgs.sol";
 import { ILightClientMsgs } from "contracts/light-clients/messages/ILightClientMsgs.sol";
 import { IMembershipMsgs } from "contracts/light-clients/spectre/messages/IMembershipMsgs.sol";
-import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { ISpectreTendermintMsgs } from "contracts/light-clients/spectre/messages/ISpectreTendermintMsgs.sol";
 
 import { IERC20 } from "@openzeppelin-contracts/token/ERC20/IERC20.sol";
 import { IICS26Router } from "contracts/core/interfaces/IICS26Router.sol";
@@ -258,7 +258,7 @@ contract IbcImpl is Test, DeployAccessManagerWithRoles {
                 kvPairs: new IMembershipMsgs.KVPair[](0),
                 merkleProofs: new IMembershipMsgs.MerkleProof[](0),
                 appHash: bytes32(0),
-                trustedConsensusState: IICS07TendermintMsgs.ConsensusState({
+                trustedConsensusState: ISpectreTendermintMsgs.ConsensusState({
                     timestamp: 0, root: bytes32(0), nextValidatorsHash: bytes32(0)
                 }),
                 membershipType: IMembershipMsgs.MembershipType.Membership,
@@ -275,7 +275,7 @@ contract IbcImpl is Test, DeployAccessManagerWithRoles {
                 kvPairs: new IMembershipMsgs.KVPair[](0),
                 merkleProofs: new IMembershipMsgs.MerkleProof[](0),
                 appHash: bytes32(0),
-                trustedConsensusState: IICS07TendermintMsgs.ConsensusState({
+                trustedConsensusState: ISpectreTendermintMsgs.ConsensusState({
                     timestamp: 0, root: bytes32(0), nextValidatorsHash: bytes32(0)
                 }),
                 membershipType: IMembershipMsgs.MembershipType.Membership,

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"math/big"
-	"strconv"
 	"time"
 
 	"relayer/chain"
@@ -23,8 +22,7 @@ import (
 // direction. It holds the endpoints and IDs needed by beacon proofs and state reads,
 // and the shared *services.BatchBuilder so Subscribe drains the same queue the
 // Services instance owns (where the ETH subscriber records EthPendingTracker
-// entries) and can re-queue handler failures (with a waiting backoff) — the
-// re-queue behavior of the legacy handleEth, expressed generically.
+// entries) and can re-queue handler failures (with a waiting backoff).
 // Constructed by the wiring, not the cfg-only registry.
 type Source struct {
 	cosmos      services.CosmosEndpoint
@@ -34,11 +32,28 @@ type Source struct {
 	logger      *log.Logger
 	bb          *services.BatchBuilder
 	recovery    *services.RecoveryStateStore
+
+	// routerDeployBlock is the block the ICS26Router was deployed at; 0 when not
+	// configured. The flush's log lookups start there (see evmflush.Router).
+	routerDeployBlock uint64
+
+	// flush is the enumeration backstop's cursors and log-range policy; see
+	// flush.go. Touched only from UnrelayedPackets, which the relay module calls
+	// on one goroutine.
+	flush flushState
 }
 
 // NewSource wires the Ethereum source to its endpoints and the shared batch builder.
 func NewSource(cosmos services.CosmosEndpoint, evm services.EVMEndpoint, ids services.ClientIDs, batchConfig services.BatchConfig, logger *log.Logger, bb *services.BatchBuilder, recovery *services.RecoveryStateStore) *Source {
 	return &Source{cosmos: cosmos, evm: evm, ids: ids, batchConfig: batchConfig, logger: logger, bb: bb, recovery: recovery}
+}
+
+// WithRouterDeployBlock sets the block the ICS26Router was deployed at, so the
+// enumeration backstop asks for the router's whole history in one log query
+// instead of walking bounded windows back from the head. 0 keeps the walk.
+func (s *Source) WithRouterDeployBlock(n uint64) *Source {
+	s.routerDeployBlock = n
+	return s
 }
 
 func (s *Source) Chain() chain.ChainType { return chain.Ethereum }
@@ -59,7 +74,7 @@ func (s *Source) LatestHeight(ctx context.Context) (uint64, error) {
 // beacon header — the highest ETH block the beacon light client can prove against
 // right now. The module compares packet event heights (execution block numbers)
 // against this, so a packet whose block is not yet finalized is re-queued without
-// building a proof (the legacy waitBeaconFinality precondition, as a value).
+// building a proof.
 func (s *Source) RelayableHeight(ctx context.Context) (uint64, error) {
 	return s.finalizedExecBlock(ctx)
 }
@@ -78,9 +93,9 @@ func (s *Source) finalizedExecBlock(parent context.Context) (uint64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("eth source: finality update: %w", err)
 	}
-	block, err := strconv.ParseUint(fu.FinalizedHeader.Execution.BlockNumber, 10, 64)
+	block, err := relayerclient.FinalizedExecutionBlockNumber(ctx, s.evm.EthClient(), fu.FinalizedHeader)
 	if err != nil {
-		return 0, fmt.Errorf("eth source: parse finalized exec block %q: %w", fu.FinalizedHeader.Execution.BlockNumber, err)
+		return 0, fmt.Errorf("eth source: finalized exec block: %w", err)
 	}
 	return block, nil
 }
@@ -113,7 +128,7 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 		if len(running) == 0 {
 			return
 		}
-		s.logger.Printf("[eth->cosmos Subscribe] shutdown drain timed out after %s; workers still running: %v",
+		s.logger.Printf("ERROR [eth->cosmos Subscribe] shutdown drain timed out after %s; workers still running: %v",
 			workergroup.SourceDrainTimeout, running)
 		// RETURN it, do not only log it. The caller cancels on SIGTERM and then
 		// normalises context.Canceled to a clean exit, so a stuck worker reported
@@ -177,8 +192,8 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 // same invariant in chain/cosmos.
 //
 // settle removes an acked or timed-out ETH-origin send from the pending tracker so
-// the timeout scanner stops considering it (the legacy handleEth EthAck/EthTimeout
-// tracker removal); such a packet is then skipped, as there is nothing to relay.
+// the timeout scanner stops considering it; such a packet is then skipped, as
+// there is nothing to relay.
 func eventsWithOrigins(
 	packets []services.EthPacket,
 	settle func(channeltypesv2.Packet) error,
@@ -189,7 +204,7 @@ func eventsWithOrigins(
 	for _, p := range packets {
 		if p.Packet != nil && (p.Type == services.EthAck || p.Type == services.EthTimeout) {
 			if err := settle(*p.Packet); err != nil {
-				log.Printf("[PendingTracker][ATTENTION] failed to persist removal of settled ETH packet seq=%d: %v", p.Packet.Sequence, err)
+				log.Printf("ERROR [PendingTracker][ATTENTION] failed to persist removal of settled ETH packet seq=%d: %v", p.Packet.Sequence, err)
 			}
 			// Only EthAck settles an owed acknowledgement. A timeout is the other
 			// ending: the packet is refunded, no acknowledgement is owed or coming,
@@ -231,7 +246,7 @@ func ethPacketToEvent(p services.EthPacket) (chain.Event, bool) {
 		e.Type = chain.SendPacket
 	case services.EthWriteAck:
 		// Skip an ack with no acknowledgement bytes — it cannot be built into a
-		// MsgAcknowledgement (mirrors the legacy handleEth EthWriteAck no-ack skip).
+		// MsgAcknowledgement.
 		if len(p.AckBytes) == 0 {
 			return chain.Event{}, false
 		}

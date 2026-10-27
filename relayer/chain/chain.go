@@ -2,20 +2,16 @@
 // serve many source/destination chains (Cosmos, and EVM L2s such as Arbitrum,
 // Optimism, Base) without the core knowing any chain's specifics.
 //
-// It replaces the hardcoded Cosmos<->ETH coupling in the current core:
-//
-//	services.EventListener.SubscribeCosmos/SubscribeEth   -> Source.Subscribe
-//	services.TransactionHandler (mixed Cosmos+Eth methods) -> Destination.*
-//	services.Prover.GenerateProof (Groth16 only)           -> ClientUpdateBuilder.Build
-//	the hardcoded finality/refresh in StartLoop            -> Source.LatestHeight + ClientExpiresAt
+// A relay path is a Source (subscribe to events, report heights, build packet
+// proofs), a Destination (submit client updates and packets, report client expiry)
+// and a Builder (turn a source header into a client update).
 //
 // Method names follow IBC / relayer convention (UpdateClient, RelayPackets,
 // HasPacketReceipt, QueryHeader, LatestHeight) so the contract reads the same
 // as any Cosmos relayer.
 //
-// This is the v0 contract for review. Payload types are intentionally opaque
-// ([]byte / small structs) so each adapter owns its own encoding; later wiring
-// slices refine them. Adapters must not leak chain-specific types across this
+// Payload types are intentionally opaque ([]byte / small structs) so each adapter
+// owns its own encoding. Adapters must not leak chain-specific types across this
 // boundary — that is the whole point.
 package chain
 
@@ -88,8 +84,8 @@ type Event struct {
 // non-monotonic updates itself; this is defense in depth at the core layer.)
 //
 // Payloads are adapter-owned, destination-specific update bytes. Most adapters
-// emit exactly one payload (a Groth16 proof bundle for Cosmos->X or a trustless
-// rollup-proof JSON ClientMessage for L2->Cosmos); beacon updates may need an
+// emit exactly one payload (a Groth16 proof bundle for Cosmos->X or an
+// attestor-signed JSON ClientMessage for L2->Cosmos); beacon updates may need an
 // ordered sequence when crossing sync-committee periods. Only the destination
 // adapter understands their contents. An empty list means the client is already
 // current and no transaction is needed.
@@ -97,7 +93,32 @@ type ClientUpdate struct {
 	Height    uint64
 	Payloads  [][]byte
 	TrustedAt time.Time
+
+	// IsHop means this update is an INTERMEDIATE step, not the target: the
+	// builder could not reach the requested height in one update and picked a
+	// height in between. The caller must ask again from the height this installs.
+	//
+	// It exists because validator churn can outrun the trust-overlap requirement.
+	// When too much of the set has rotated, an update from the trusted height to
+	// the live head cannot be verified at all, and the only way across is a chain
+	// of updates each of which overlaps the last. Only the builder knows it took
+	// that route, so only the builder can say so.
+	//
+	// Adapters that never hop leave it false, which is the whole of their
+	// participation: the engine then does exactly what it did before.
+	IsHop bool
 }
+
+// MaxClientUpdateHops bounds a chain of intermediate client updates. Each hop
+// costs a proof and a transaction, so an unbounded climb is an expensive silent
+// loop dressed as progress.
+//
+// It lives beside IsHop, the field that drives the climb, because every climber
+// must agree on it: the relay engine's packet and refresh paths, the periodic
+// pinned-set refresh in services, and `update-client --max-hops`. Two constants
+// would eventually be two different ceilings, and the operator would have no way
+// to tell which one their client stopped at.
+const MaxClientUpdateHops = 16
 
 // RelayPacket is a source packet together with the source proof the destination
 // needs to submit it. The destination adapter turns it into the concrete IBC
@@ -127,8 +148,7 @@ type Source interface {
 	// Batching (not per-event) is deliberate: it lets the destination fold N
 	// packet messages into one multicall (amortizing the ~21k per-tx intrinsic gas
 	// and one client-update over the batch) and lets the module perform batch-level
-	// waits (source-provability / finality) once instead of per packet — the
-	// handleCosmos/handleEth structure, expressed generically.
+	// waits (source-provability / finality) once instead of per packet.
 	//
 	// handler returns the indices (into the passed slice) of events that failed
 	// TRANSIENTLY and must be re-queued for retry; Subscribe re-queues exactly
@@ -151,9 +171,8 @@ type Source interface {
 	// AND relayed right now. It is the CHEAP precondition the relay module checks
 	// before doing any expensive client-update / proof work: a packet above this
 	// height is re-queued without burning a proof, instead of proving repeatedly
-	// while its source state is not yet available (the legacy waitCosmosAppHash /
-	// waitBeaconFinality guards, expressed as a value instead of a blocking wait).
-	// It encodes each chain's state-availability lag:
+	// while its source state is not yet available. It encodes each chain's
+	// state-availability lag:
 	//   - Cosmos: latest committed height minus the AppHash lag — a commitment
 	//     written at H is only reflected in the queryable app state at H+2, so
 	//     latest-2.
@@ -162,7 +181,7 @@ type Source interface {
 	// It is always <= LatestHeight.
 	RelayableHeight(ctx context.Context) (uint64, error)
 
-	// QueryHeader returns the adapter-owned data a ClientUpdateBuilder needs to
+	// QueryHeader returns the adapter-owned data a Builder needs to
 	// build the update for source state at the given height.
 	QueryHeader(ctx context.Context, height uint64) ([]byte, error)
 
@@ -189,12 +208,34 @@ type Destination interface {
 
 	// RelayPackets builds and submits the concrete IBC packet messages
 	// (recv/ack/timeout) from the given source packets + proofs.
-	RelayPackets(ctx context.Context, packets []RelayPacket) error
+	//
+	// committed is how many packets, counted from the FRONT of the slice, are on
+	// chain when this returns. It is the answer to what a partial failure means:
+	// a bare error leaves the caller unable to tell whether to re-queue five
+	// packets or two, and re-queueing the ones already delivered submits them
+	// again. Returning the count rather than wrapping it in an error type is
+	// deliberate -- a caller cannot forget to unwrap what the signature makes it
+	// take.
+	//
+	// Three rules the caller depends on, and every adapter must keep:
+	//   - committed is a PREFIX count. Adapters that may commit only part of a
+	//     batch must submit in slice order, so packets[:committed] is exactly the
+	//     delivered set.
+	//   - on a nil error, committed == len(packets).
+	//   - an adapter that submits atomically returns 0 with any error. That is
+	//     information, not a default: it says nothing was delivered.
+	RelayPackets(ctx context.Context, packets []RelayPacket) (committed int, err error)
 
 	// HasPacketReceipt reports whether a packet was already delivered on this
 	// chain, so timeout scanners can skip already-settled packets (the #232
 	// pre-check, generalized). Prevents advancing state on already-resolved
 	// packets.
+	//
+	// A non-nil error means "DO NOT KNOW", never "not delivered". The caller must
+	// stop rather than fall back to the false answer: reading an RPC failure as
+	// "no receipt" is the open path to proving a timeout for a packet that was in
+	// fact delivered, which refunds the sender for a transfer the receiver got.
+	// An adapter that cannot answer must error rather than return false.
 	HasPacketReceipt(ctx context.Context, packet []byte) (bool, error)
 
 	// ClientExpiresAt returns when the light-client-of-source on this chain will
@@ -247,6 +288,42 @@ type PacketLister interface {
 	UnrelayedPackets(ctx context.Context) ([]Event, error)
 }
 
+// SettlementChecker is an OPTIONAL Destination capability: for an event the
+// enumeration backstop found, report whether this destination has already
+// settled it, asking the question that matches the event's TYPE.
+//
+// HasPacketReceipt answers only for a receive: a receipt is what a delivered
+// SendPacket leaves behind. It is the wrong question for an acknowledgement,
+// whose settled form on the destination is the ABSENCE of the original send's
+// commitment -- the destination deletes it when the ack lands -- and a receipt
+// check on an ack's packet asks about a receipt that lives on the other chain,
+// so it answers "not delivered" forever and the ack is re-submitted every pass.
+//
+//   - SendPacket    settled ⇔ this destination holds the packet's receipt
+//   - AckPacket     settled ⇔ this destination no longer holds the send's commitment
+//   - TimeoutPacket settled ⇔ same as AckPacket (a timeout also clears it)
+//
+// A destination that does not implement it leaves the module with the receipt
+// check for receives and no filter for the rest.
+type SettlementChecker interface {
+	PacketSettled(ctx context.Context, e Event) (bool, error)
+}
+
+// ClientStatusChecker is an OPTIONAL Destination capability: report whether the
+// destination's light-client-of-source accepts messages at all.
+//
+// A frozen client rejects every packet for a reason that is not the packet's,
+// and the same packet succeeds after the client is unfrozen or migrated. The
+// relay module asks this at startup, before it treats any deterministic
+// rejection as a dead packet, and while it holds a direction on an inactive
+// client -- so a freeze stops the path instead of draining it.
+//
+// status names the state for logs ("Active", "Frozen", "Expired"). A non-nil
+// error means "do not know"; callers must not read it as either answer.
+type ClientStatusChecker interface {
+	ClientActive(ctx context.Context) (active bool, status string, err error)
+}
+
 // FoldingDestination is an optional destination capability for submitting a
 // client update followed by packet messages in one atomic transaction. The
 // relay module uses it only when SupportsUpdatePacketFolding returns true;
@@ -260,7 +337,7 @@ type FoldingDestination interface {
 	RelayWithUpdate(ctx context.Context, clientID string, update ClientUpdate, packets []RelayPacket) error
 }
 
-// ClientUpdateBuilder turns a source header into a destination-verifiable
+// Builder turns a source header into a destination-verifiable
 // ClientUpdate. The strategy is chosen by what the DESTINATION's light client
 // verifies, not one-size-fits-all:
 //   - "groth16":     batched Ed25519 ZK proof — the destination runs a ZK
@@ -271,15 +348,38 @@ type FoldingDestination interface {
 //     ETH L1 -> Cosmos. NO relayer-side proving or re-execution; the wasm
 //     client verifies BLS + Merkle itself. This is the existing eth_to_cosmos
 //     path.
-//   - "l2-opstack" / "l2-arbitrum": assemble the trustless rollup proof — the L1
-//     rollup-contract witnesses (AnchorStateRegistry for OP-Stack, RollupCore for
-//     Arbitrum) + the RLP L2 header + L2 IBC-handler account proof, as a JSON
-//     ClientMessage. L2 -> Cosmos. NO relayer signature or re-execution; the L2
-//     wasm client verifies the rollup proofs against the shared ETH client. The
-//     Source.HeadKind selects the requested latency tier; the request is carried
-//     to the builder and the wasm client independently authenticates the claimed
-//     finality evidence before applying its membership policy.
-type ClientUpdateBuilder interface {
+//   - "l2-op" / "l2-base" / "l2-arbitrum": assemble an attestor-signed header —
+//     a threshold of independent attestors sign the canonical L2 header + a
+//     router account proof (ed25519), as a JSON ClientMessage. L2 -> Cosmos.
+//     The L2 wasm client verifies the attestor signature quorum against its
+//     stored attestor public-key set, then the router account proof against the
+//     header's state root; it does not verify any L1 rollup-contract witness or
+//     defer to the shared ETH client. Source.HeadKind selects the requested
+//     latency tier; the request is carried to the builder, and each head_kind
+//     uses disjoint attestor keys so selecting an RPC tag alone cannot
+//     manufacture Safe or Finalized evidence.
+//
+// Implemented by cosmos.Groth16Builder, evm.BeaconBuilder and
+// l2rollup.AttestedBuilder -- listed so the interface greps to its
+// implementations.
+type Builder interface {
 	Name() string
 	Build(ctx context.Context, header []byte) (ClientUpdate, error)
+}
+
+// RotatingBuilder is implemented by a Builder whose destination client expires
+// from a snapshot that only a heavier update refreshes. BuildRotation is Build
+// with that refresh forced, and the engine asks for it on the expiry-driven
+// refresh alone.
+//
+// Implemented by cosmos.Groth16Builder: SpectreClient measures its trusting
+// period from the pinned validator-set snapshot, and only updateConsensusState
+// moves it. A plain Build takes updateApplicationState whenever the set is
+// unchanged or still overlaps enough, so an anti-expiry refresh built that way
+// lands and leaves the expiry exactly where it was (#541). Builders without
+// such a snapshot (beacon, attested L2) do not implement it, and the refresh
+// uses Build.
+type RotatingBuilder interface {
+	Builder
+	BuildRotation(ctx context.Context, header []byte) (ClientUpdate, error)
 }

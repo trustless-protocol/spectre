@@ -7,7 +7,7 @@ import { SignatureVerifier } from "contracts/light-clients/spectre/SignatureVeri
 import { UpdateClient } from "contracts/light-clients/spectre/modules/UpdateClient.sol";
 import { Header } from "contracts/light-clients/spectre/libraries/Header.sol";
 import { ISpectreClientMsgs } from "contracts/light-clients/spectre/messages/ISpectreClientMsgs.sol";
-import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { ISpectreTendermintMsgs } from "contracts/light-clients/spectre/messages/ISpectreTendermintMsgs.sol";
 import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
 import { ILightClientMsgs } from "contracts/light-clients/messages/ILightClientMsgs.sol";
 import { IICS26RouterMsgs } from "contracts/core/messages/IICS26RouterMsgs.sol";
@@ -66,10 +66,10 @@ contract RecvPacketGasTest is IntegrationTest {
         revert("unknown bucket");
     }
 
-    function _clientState() internal pure returns (IICS07TendermintMsgs.ClientState memory) {
-        return IICS07TendermintMsgs.ClientState({
+    function _clientState() internal pure returns (ISpectreTendermintMsgs.ClientState memory) {
+        return ISpectreTendermintMsgs.ClientState({
             chainId: CHAIN_ID,
-            trustLevel: IICS07TendermintMsgs.TrustThreshold({ numerator: 1, denominator: 3 }),
+            trustLevel: ISpectreTendermintMsgs.TrustThreshold({ numerator: 1, denominator: 3 }),
             latestHeight: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: TRUSTED_HEIGHT }),
             trustingPeriod: TRUSTING_PERIOD,
             unbondingPeriod: UNBONDING_PERIOD,
@@ -78,11 +78,11 @@ contract RecvPacketGasTest is IntegrationTest {
         });
     }
 
-    function _buildValSet(uint16 valCount) internal pure returns (IICS07TendermintMsgs.ValidatorSet memory vs) {
-        IICS07TendermintMsgs.ValidatorInfo[] memory vals = new IICS07TendermintMsgs.ValidatorInfo[](valCount);
+    function _buildValSet(uint16 valCount) internal pure returns (ISpectreTendermintMsgs.ValidatorSet memory vs) {
+        ISpectreTendermintMsgs.ValidatorInfo[] memory vals = new ISpectreTendermintMsgs.ValidatorInfo[](valCount);
         uint64 total = 0;
         for (uint256 i = 0; i < valCount; i++) {
-            vals[i] = IICS07TendermintMsgs.ValidatorInfo({
+            vals[i] = ISpectreTendermintMsgs.ValidatorInfo({
                 valAddress: abi.encodePacked(uint160(i + 1)),
                 pubKey: bytes32(uint256(0xA0000000 + i + 1)),
                 votingPower: 100,
@@ -90,32 +90,32 @@ contract RecvPacketGasTest is IntegrationTest {
             });
             total += 100;
         }
-        vs = IICS07TendermintMsgs.ValidatorSet({
+        vs = ISpectreTendermintMsgs.ValidatorSet({
             validators: vals, hasProposer: false, proposer: vals[0], totalVotingPower: total
         });
     }
 
     function _buildCommitSigs(
-        IICS07TendermintMsgs.ValidatorSet memory vs,
+        ISpectreTendermintMsgs.ValidatorSet memory vs,
         uint16 activeCount
     )
         internal
         pure
-        returns (IICS07TendermintMsgs.CommitSig[] memory sigs)
+        returns (ISpectreTendermintMsgs.CommitSig[] memory sigs)
     {
-        sigs = new IICS07TendermintMsgs.CommitSig[](vs.validators.length);
+        sigs = new ISpectreTendermintMsgs.CommitSig[](vs.validators.length);
         for (uint256 i = 0; i < vs.validators.length; i++) {
             // The commit slot names the validator it belongs to, or the quorum check rejects the
             // proof citing it (ZK-09). Commit and pinned set are the same validators in the same
             // order here, so slot i is validator i.
             bytes20 addr = bytes20(sha256(abi.encodePacked(vs.validators[i].pubKey)));
             if (i < activeCount) {
-                sigs[i] = IICS07TendermintMsgs.CommitSig({
-                    flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT, validatorAddress: addr
+                sigs[i] = ISpectreTendermintMsgs.CommitSig({
+                    flag: ISpectreTendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT, validatorAddress: addr
                 });
             } else {
-                sigs[i] = IICS07TendermintMsgs.CommitSig({
-                    flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT, validatorAddress: addr
+                sigs[i] = ISpectreTendermintMsgs.CommitSig({
+                    flag: ISpectreTendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT, validatorAddress: addr
                 });
             }
         }
@@ -124,15 +124,15 @@ contract RecvPacketGasTest is IntegrationTest {
     function _buildSelfConsistent(BucketConfig memory cfg)
         internal
         returns (
-            IICS07TendermintMsgs.Header memory header,
-            IICS07TendermintMsgs.ConsensusState memory trustedCS,
-            IICS07TendermintMsgs.ValidatorSet memory vs
+            ISpectreTendermintMsgs.Header memory header,
+            ISpectreTendermintMsgs.ConsensusState memory trustedCS,
+            ISpectreTendermintMsgs.ValidatorSet memory vs
         )
     {
         vs = _buildValSet(cfg.valCount);
         bytes32 valSetHash = Header.hashValSet(vs);
 
-        IICS07TendermintMsgs.BlockHeader memory bh;
+        ISpectreTendermintMsgs.BlockHeader memory bh;
         bh.chainId = CHAIN_ID;
         bh.height = NEW_HEIGHT;
         bh.time = NEW_TS_NS;
@@ -141,22 +141,22 @@ contract RecvPacketGasTest is IntegrationTest {
         bh.nextValidatorsHash = valSetHash;
         bytes32 headerHash = Header.hashHeader(bh);
 
-        IICS07TendermintMsgs.BlockCommit memory bc = IICS07TendermintMsgs.BlockCommit({
+        ISpectreTendermintMsgs.BlockCommit memory bc = ISpectreTendermintMsgs.BlockCommit({
             height: NEW_HEIGHT,
             round: 0,
-            blockId: IICS07TendermintMsgs.BlockId({
+            blockId: ISpectreTendermintMsgs.BlockId({
                 hashData: headerHash,
-                partSetHeader: IICS07TendermintMsgs.PartSetHeader({ total: 1, hashData: bytes32(uint256(0x9A57)) })
+                partSetHeader: ISpectreTendermintMsgs.PartSetHeader({ total: 1, hashData: bytes32(uint256(0x9A57)) })
             }),
             commitSigs: _buildCommitSigs(vs, cfg.activeCount)
         });
 
-        header = IICS07TendermintMsgs.Header({
-            signedHeader: IICS07TendermintMsgs.SignedHeader({ header: bh, commit: bc }),
+        header = ISpectreTendermintMsgs.Header({
+            signedHeader: ISpectreTendermintMsgs.SignedHeader({ header: bh, commit: bc }),
             trustedHeight: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: TRUSTED_HEIGHT })
         });
 
-        trustedCS = IICS07TendermintMsgs.ConsensusState({
+        trustedCS = ISpectreTendermintMsgs.ConsensusState({
             timestamp: TRUSTED_TS_NS, root: bytes32(uint256(0xAAA)), nextValidatorsHash: valSetHash
         });
     }
@@ -173,14 +173,16 @@ contract RecvPacketGasTest is IntegrationTest {
 
         BucketConfig memory cfg = _cfg(bucket);
         (
-            IICS07TendermintMsgs.Header memory header,
-            IICS07TendermintMsgs.ConsensusState memory trustedCS,
-            IICS07TendermintMsgs.ValidatorSet memory vs
+            ISpectreTendermintMsgs.Header memory header,
+            ISpectreTendermintMsgs.ConsensusState memory trustedCS,
+            ISpectreTendermintMsgs.ValidatorSet memory vs
         ) = _buildSelfConsistent(cfg);
 
-        IICS07TendermintMsgs.ClientState memory cs = _clientState();
+        ISpectreTendermintMsgs.ClientState memory cs = _clientState();
 
         DummyMembership stubMembership = new DummyMembership();
+        // SpectreClient refuses a module without code; this one is never reached by the test.
+        vm.etch(STUB_MISBEHAVIOUR, hex"00");
 
         // Deploy the real light client with stubMembership so it succeeds
         SpectreClient realClient = new SpectreClient(
@@ -264,7 +266,7 @@ contract RecvPacketGasTest is IntegrationTest {
             kvPairs: kvPairs,
             merkleProofs: merkleProofs,
             appHash: bytes32(uint256(0xCCC)), // bh.appHash from above
-            trustedConsensusState: IICS07TendermintMsgs.ConsensusState({
+            trustedConsensusState: ISpectreTendermintMsgs.ConsensusState({
                 timestamp: NEW_TS_NS, root: bytes32(uint256(0xCCC)), nextValidatorsHash: Header.hashValSet(vs)
             }),
             membershipType: IMembershipMsgs.MembershipType.Membership,

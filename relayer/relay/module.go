@@ -1,6 +1,5 @@
 // Package relay drives one relay path (source -> destination) using only the
-// chain adapter contract. It replaces the hardcoded Cosmos<->ETH orchestration
-// in services.StartLoop: chain-specific work (RPC, event decode, proof/attest,
+// chain adapter contract. Chain-specific work (RPC, event decode, proof/attest,
 // gap recovery) lives inside the adapters, so this loop is generic and depends
 // only on the chain interfaces — no god-object, testable with mock adapters.
 package relay
@@ -10,13 +9,14 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"strings"
-	"sync"
-	"time"
-
 	"relayer/chain"
 	"relayer/services"
 	workergroup "relayer/workers"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // defaultRefreshMargin is used only when the destination cannot report a
@@ -37,7 +37,16 @@ const defaultRefreshMargin = 30 * time.Minute
 // l2rollup's l2SubscribeInterval).
 var refreshTick = time.Minute
 
-// defaultScanInterval matches the legacy StartLoop timeout scan cadence (30s).
+// refreshBackoffCeiling is the widest spacing the retry ever uses, whatever the
+// client's own window allows. Five minutes fits eight attempts into the default
+// one-hour margin and keeps no gap longer than a twelfth of it.
+const refreshBackoffCeiling = 5 * time.Minute
+
+// refreshBackoffFloor keeps the retry from becoming a hot loop on a client whose
+// margin is seconds wide.
+const refreshBackoffFloor = time.Second
+
+// defaultScanInterval is the default timeout scan cadence.
 const defaultScanInterval = 30 * time.Second
 
 // defaultAckWatchInterval is how often the owed-acknowledgement records are
@@ -78,7 +87,7 @@ type Module struct {
 	clientID string
 	src      chain.Source
 	dst      chain.Destination
-	builder  chain.ClientUpdateBuilder
+	builder  chain.Builder
 
 	// Optional timeout-recovery wiring (nil when the path has no timeout scanner,
 	// e.g. a mock or a permissioned client that cannot time out).
@@ -92,6 +101,8 @@ type Module struct {
 	flushInterval       time.Duration
 	track               TrackFunc
 	untrack             UntrackFunc
+	pendingSettled      PendingSettledFunc
+	markPendingSettled  MarkPendingSettledFunc
 	observeClientUpdate ClientUpdateObserver
 
 	// Optional fixed-cadence forced update (nil when the destination client's
@@ -104,6 +115,9 @@ type Module struct {
 	// logs report an age and not just a count. Purely observational — it never
 	// gates a relay decision.
 	waits *waitTracker
+	// beats records when each background loop last completed a pass, so a quiet
+	// direction can be told from a wedged one without a goroutine dump.
+	beats *heartbeats
 
 	// lastHeight is the highest source height whose ClientUpdate we have
 	// submitted. It enforces the append-only / monotonic invariant across the
@@ -129,6 +143,18 @@ type Module struct {
 	// chain.Permanent means for every adapter rather than about this cost.
 	sourceProbeAt time.Time
 	sourceBackoff time.Duration
+
+	// clientInactive is set while the destination's light client refuses every
+	// message (frozen, or on Cosmos otherwise not Active); clientProbeAt and
+	// clientBackoff space the re-checks the same way the source hold does. All
+	// three are guarded by batchMu. See client_hold.go.
+	//
+	// clientHold mirrors the hold for Status, which runs on another goroutine and
+	// must not wait on batchMu behind a batch that is proving.
+	clientInactive bool
+	clientProbeAt  time.Time
+	clientBackoff  time.Duration
+	clientHold     atomic.Pointer[string]
 
 	// batchMu serializes handleBatch.
 	//
@@ -165,10 +191,11 @@ type waitLogState struct {
 // NewModule wires a relay path. name is a human label for logs; clientID is the
 // destination client this path advances. Optional timeout-recovery behavior is
 // added via WithTimeoutScanner / WithPacketTracker.
-func NewModule(name, clientID string, src chain.Source, dst chain.Destination, builder chain.ClientUpdateBuilder, opts ...Option) *Module {
+func NewModule(name, clientID string, src chain.Source, dst chain.Destination, builder chain.Builder, opts ...Option) *Module {
 	m := &Module{
 		name: name, clientID: clientID, src: src, dst: dst, builder: builder,
 		waits: newWaitTracker(),
+		beats: newHeartbeats(),
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -180,19 +207,21 @@ func NewModule(name, clientID string, src chain.Source, dst chain.Destination, b
 // events (the adapter owns gap recovery) and runs a background refresh routine
 // that keeps the destination client from expiring.
 func (m *Module) Run(ctx context.Context) error {
+	m.checkClientAtStartup(ctx)
+
 	runCtx, cancel := context.WithCancel(ctx)
 	workers := workergroup.New()
 	subscribeErr := make(chan error, 1)
 
-	workers.Go("subscriber", func() {
+	workers.Go(workerSubscriber, func() {
 		subscribeErr <- m.src.Subscribe(runCtx, m.handleBatch)
 	})
-	workers.Go("refresh", func() { m.refreshLoop(runCtx) })
+	workers.Go(workerRefresh, func() { m.refreshLoop(runCtx) })
 	if m.scan != nil {
-		workers.Go("timeout-scan", func() { m.scanLoop(runCtx) })
+		workers.Go(workerTimeoutScan, func() { m.scanLoop(runCtx) })
 	}
 	if m.periodicUpdate != nil {
-		workers.Go("periodic-update", func() { m.periodicUpdateLoop(runCtx) })
+		workers.Go(workerPeriodicUpdate, func() { m.periodicUpdateLoop(runCtx) })
 	}
 	if m.overdueAcks != nil {
 		workers.Go("ack-watch", func() { m.ackWatchLoop(runCtx) })
@@ -260,6 +289,9 @@ func (m *Module) scanLoop(ctx context.Context) {
 				return
 			}
 			m.scan(ctx)
+			// After the sweep, not before: the beat means "a pass finished", and a
+			// sweep that hangs must not look like one that ran.
+			m.beats.record(workerTimeoutScan, "")
 		}
 	}
 }
@@ -298,10 +330,18 @@ func (m *Module) flushLoop(ctx context.Context, lister chain.PacketLister) {
 func (m *Module) flushOnce(ctx context.Context, lister chain.PacketLister) {
 	candidates, err := lister.UnrelayedPackets(ctx)
 	if err != nil {
-		log.Printf("[%s Relay] packet flush: %v", m.name, err)
+		log.Printf("WARN [%s Relay] packet flush: %v", m.name, err)
+		// A failed pass beats too, which is heartbeats.record's stated contract.
+		// Reported by @DongLieu: this loop recorded nothing at all, so `relayer
+		// status` omitted it entirely -- and it is the ENUMERATION backstop, the
+		// one that finds packets a lost cursor or an outage hid from the block
+		// scan. An operator asking "is anything still looking for my old packet"
+		// got no answer at all, which reads as a loop that never started.
+		m.beats.record(workerPacketFlush, "enumeration failed: "+err.Error())
 		return
 	}
 	if len(candidates) == 0 {
+		m.beats.record(workerPacketFlush, "nothing outstanding")
 		return
 	}
 	// Filter once outside the lock. This is the bulk of the work after downtime
@@ -309,6 +349,7 @@ func (m *Module) flushOnce(ctx context.Context, lister chain.PacketLister) {
 	// across all of it would stall the live relay path for the whole pass.
 	unsettled := m.dropSettled(ctx, candidates)
 	if len(unsettled) == 0 {
+		m.beats.record(workerPacketFlush, strconv.Itoa(len(candidates))+" outstanding, all already settled")
 		return
 	}
 
@@ -321,13 +362,21 @@ func (m *Module) flushOnce(ctx context.Context, lister chain.PacketLister) {
 	// that can poison a batch carrying other packets with it.
 	unsettled = m.dropSettled(ctx, unsettled)
 	if len(unsettled) == 0 {
+		m.beats.record(workerPacketFlush, strconv.Itoa(len(candidates))+" outstanding, settled while this pass ran")
 		return
 	}
 	// Worth a line every time. A flush that finds work means the block scan
 	// missed it, which is the condition an operator wants to know about even
 	// though the packet is now being relayed.
+	//
+	// Info, not a warning: the enumeration lists every outstanding commitment, so
+	// it also returns packets the live path already holds while it waits for the
+	// source to become provable. On an Ethereum source that wait outlasts the flush
+	// interval, so this fires on an ordinary transfer -- seen in the local devnet
+	// run, three packets the subscriber had logged a minute earlier.
 	log.Printf("[%s Relay] packet flush found %d packet(s) the scan did not: %s",
 		m.name, len(unsettled), describeEvents(unsettled))
+	m.beats.record(workerPacketFlush, "relaying "+strconv.Itoa(len(unsettled))+" the scan did not find")
 	m.handleBatchLocked(ctx, unsettled)
 }
 
@@ -347,18 +396,35 @@ func (m *Module) flushOnce(ctx context.Context, lister chain.PacketLister) {
 func (m *Module) dropSettled(ctx context.Context, candidates []chain.Event) []chain.Event {
 	unsettled := make([]chain.Event, 0, len(candidates))
 	for _, e := range candidates {
-		delivered, err := m.dst.HasPacketReceipt(ctx, e.Raw)
+		settled, err := m.packetSettled(ctx, e)
 		if err != nil {
-			log.Printf("[%s Relay] packet flush: receipt check for %s seq=%d: %v; relaying anyway",
+			log.Printf("WARN [%s Relay] packet flush: settlement check for %s seq=%d: %v; relaying anyway",
 				m.name, e.Type, e.Sequence, err)
 			unsettled = append(unsettled, e)
 			continue
 		}
-		if !delivered {
+		if !settled {
 			unsettled = append(unsettled, e)
 		}
 	}
 	return unsettled
+}
+
+// packetSettled asks the destination the question that fits the event's type.
+//
+// A destination that implements chain.SettlementChecker answers for every type;
+// one that does not can only answer the receive question, and an
+// acknowledgement or timeout it is handed is left unsettled -- relayed, and
+// answered on chain with a no-op -- rather than judged by a receipt that lives
+// on the other chain and would say "not delivered" forever.
+func (m *Module) packetSettled(ctx context.Context, e chain.Event) (bool, error) {
+	if checker, ok := m.dst.(chain.SettlementChecker); ok {
+		return checker.PacketSettled(ctx, e)
+	}
+	if e.Type != chain.SendPacket {
+		return false, nil
+	}
+	return m.dst.HasPacketReceipt(ctx, e.Raw)
 }
 
 // describeEvents names the packets in a flush line, capped like the waiting log
@@ -389,11 +455,22 @@ func nextPeriodicUpdateBackoff(current time.Duration) time.Duration {
 	return min(current*2, periodicUpdateBackoffMax)
 }
 
+// forcedRotationPollInterval waits for a new source block without spending the
+// rotation's safety margin on transaction-failure backoff. This path has not
+// generated a proof or submitted a transaction. For short trusting periods the
+// rotation interval is at most 3/4 of the period, so interval/12 uses at most
+// 1/4 of its safety margin. The one-second ceiling keeps repeated caught-up
+// results cheap to retry even when the snapshot is already near expiry.
+func forcedRotationPollInterval(interval time.Duration) time.Duration {
+	return min(time.Second, max(time.Nanosecond, interval/12))
+}
+
 // periodicUpdateLoop runs the fixed-cadence forced client update (e.g. the
 // pinned-set rotation). It fires on periodicUpdateInterval on success and on an
 // exponential backoff (periodicUpdateBackoffMin→Max) after a failure, so a
 // transient failure of the infrequent update is retried promptly rather than
-// waiting a full interval.
+// waiting a full interval. A caught-up source is polled separately: no proof or
+// transaction failed, and the pinned snapshot still needs its rotation.
 func (m *Module) periodicUpdateLoop(ctx context.Context) {
 	// The first fire uses the on-chain-freshness-derived initial delay (0 = due
 	// now); every fire after that uses the full interval (a success resets the
@@ -412,18 +489,42 @@ func (m *Module) periodicUpdateLoop(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
+			// A frozen client reverts the rotation too; wait it out at the
+			// failure ceiling rather than paying for a revert each backoff step.
+			if m.clientStillHeld(ctx) {
+				next := min(periodicUpdateBackoffMax, m.periodicUpdateInterval)
+				m.beats.record(workerPeriodicUpdate, "held: destination client not active; next in "+next.String())
+				timer.Reset(next)
+				continue
+			}
 			next := m.periodicUpdateInterval
-			if err := m.periodicUpdate(ctx); err != nil {
+			err := m.periodicUpdate(ctx)
+			switch {
+			case err == nil:
+				backoff = 0 // success resets the backoff
+			case errors.Is(err, services.ErrForcedRotationNotReady):
+				backoff = 0
+				next = forcedRotationPollInterval(m.periodicUpdateInterval)
+				log.Printf("[%s UpdateClient] waiting for a new source block to rotate the pinned set; retrying after %s", m.name, next)
+			case m.armClientHoldFrom(ctx, err):
+				// Refused by an inactive client: the hold owns the cadence from here,
+				// exactly as on the held branch above, instead of a backoff that
+				// keeps paying for reverts.
+				backoff = 0
+				next = min(periodicUpdateBackoffMax, m.periodicUpdateInterval)
+				m.beats.record(workerPeriodicUpdate, "held: destination client not active; next in "+next.String())
+				timer.Reset(next)
+				continue
+			default:
 				// Exponential backoff on repeated failure (1m→15m) so a persistently
 				// failing client-update tx does not resubmit every interval and drain
 				// the signer's gas (the legacy routineBackoff). Never slower than the
 				// normal cadence (guards a configuration with a shorter interval).
 				backoff = nextPeriodicUpdateBackoff(backoff)
-				log.Printf("[%s UpdateClient] periodic update: %v; retrying after %s", m.name, err, backoff)
+				log.Printf("WARN [%s UpdateClient] periodic update: %v; retrying after %s", m.name, err, backoff)
 				next = min(backoff, m.periodicUpdateInterval)
-			} else {
-				backoff = 0 // success resets the backoff
 			}
+			m.beats.record(workerPeriodicUpdate, "next in "+next.String())
 			timer.Reset(next)
 		}
 	}
@@ -438,8 +539,7 @@ func (m *Module) periodicUpdateLoop(ctx context.Context) {
 // It also removes each delivered SendPacket from the pending tracker: once
 // received on the destination it can no longer time out, so leaving it in the
 // tracker only bloats it and makes the timeout scanner keep querying a receipt
-// it will always find. Mirrors the legacy handleCosmos
-// PendingTracker.Remove-on-recv. Only paths that supply an untracker
+// it will always find. Only paths that supply an untracker
 // (cosmos->eth) do this; eth->cosmos removes via its source's terminal
 // EthAck/EthTimeout instead.
 func (m *Module) settleDelivered(packets []chain.RelayPacket) {
@@ -493,7 +593,7 @@ func (m *Module) handOverDeliveredSend(p chain.RelayPacket) {
 		return
 	}
 	if !m.ackDue(p.Packet) {
-		log.Printf("[%s Relay] ATTENTION: could not durably record the owed acknowledgement for seq=%d; "+
+		log.Printf("ERROR [%s Relay] ATTENTION: could not durably record the owed acknowledgement for seq=%d; "+
 			"keeping the pending record so the packet stays recoverable, and queued for retry",
 			m.name, p.Sequence)
 		return
@@ -530,7 +630,7 @@ func (m *Module) ackWatchLoop(ctx context.Context) {
 			if len(overdue) > len(shown) {
 				line += fmt.Sprintf(", +%d more", len(overdue)-len(shown))
 			}
-			log.Printf("[%s Relay] %d acknowledgement(s) owed for more than %s and never seen: %s",
+			log.Printf("WARN [%s Relay] %d acknowledgement(s) owed for more than %s and never seen: %s",
 				m.name, len(overdue), m.ackOverdueAfter, line)
 		}
 	}
@@ -548,21 +648,90 @@ func allIndices(n int) []int {
 // updateClientTo advances the destination client so it covers source height,
 // honoring the append-only invariant. It is safe to call from multiple
 // goroutines.
+// MaxClientUpdateHops re-exports the ceiling so `update-client --max-hops` can
+// default to it without cmd reaching into chain for a number. The definition is
+// chain.MaxClientUpdateHops -- there is one, and services/client.go's periodic
+// refresh climb uses the same one.
+const MaxClientUpdateHops = chain.MaxClientUpdateHops
+
+// updateClientTo advances the destination client to height, climbing through
+// intermediate updates when one is not enough.
+//
+// Validator churn can outrun the trust-overlap requirement: when too much of the
+// set has rotated since the trusted height, an update straight to the live head
+// cannot be verified at all, and the only way across is a chain of updates that
+// each overlap the last.
+//
+// Two climbers already existed: the manual `update-client` command, and the
+// periodic pinned-set refresh (services.Worker.RefreshCosmosClient, reached from
+// periodicUpdateLoop through Services.RotatePinnedSet). What had none were the
+// engine's own paths -- refreshLoop and the packet-driven batch update -- so a
+// client that drifted past the threshold stayed stuck there until the rotation
+// cadence or a person happened to cross the gap for it, while refreshLoop
+// retried and failed every cycle underneath.
+//
+// The climb is bounded and each step is logged with its number, because linear
+// cost with no ceiling is how a fix becomes an outage.
 func (m *Module) updateClientTo(ctx context.Context, height uint64) error {
+	return m.updateClient(ctx, height, false)
+}
+
+// refreshClientTo is updateClientTo for the expiry-driven refresh: every step
+// is built with BuildRotation when the builder has one, so the update moves the
+// snapshot the destination measures expiry from rather than only its latest
+// height (see chain.RotatingBuilder). Packet-driven updates stay on Build --
+// forcing the heavy path there would pay for a rotation on every batch.
+func (m *Module) refreshClientTo(ctx context.Context, height uint64) error {
+	return m.updateClient(ctx, height, true)
+}
+
+func (m *Module) updateClient(ctx context.Context, height uint64, forceRotation bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if height <= m.lastHeight {
-		return nil // already covered — nothing to prove
+	for hop := 0; ; hop++ {
+		if hop >= MaxClientUpdateHops {
+			return fmt.Errorf(
+				"relay %s: client still short of height %d after %d hop(s); the trust overlap has not been re-established",
+				m.name, height, hop)
+		}
+		again, err := m.updateClientStepLocked(ctx, height, forceRotation)
+		if err != nil || !again {
+			return err
+		}
+		log.Printf("[%s Relay] client update hop %d landed at %d, short of %d; climbing again",
+			m.name, hop, m.lastHeight, height)
+	}
+}
+
+// updateClientStepLocked performs one update and reports whether another is
+// needed. The caller holds m.mu.
+//
+// again is true ONLY when the builder said it took a hop AND the client actually
+// moved. Both halves matter: without the first, an adapter that simply cannot
+// prove as far as asked would be climbed at forever; without the second, a hop
+// that installs nothing would loop without progress.
+//
+// A forced step owes a rotation, not a height. "Already covered" is therefore
+// never success for it: a packet update can have brought the client to the
+// source head while leaving the pinned snapshot -- and so the expiry -- exactly
+// where it was. It goes to BuildRotation anyway, and a result that installs
+// nothing comes back as services.ErrForcedRotationNotReady, so the refresh
+// retries instead of reporting a refresh that did not happen.
+func (m *Module) updateClientStepLocked(ctx context.Context, height uint64, forceRotation bool) (again bool, err error) {
+	_, rotating := m.builder.(chain.RotatingBuilder)
+	owesRotation := forceRotation && rotating
+	if height <= m.lastHeight && !owesRotation {
+		return false, nil // already covered — nothing to prove
 	}
 
 	header, err := m.src.QueryHeader(ctx, height)
 	if err != nil {
-		return fmt.Errorf("query header at %d: %w", height, err)
+		return false, fmt.Errorf("query header at %d: %w", height, err)
 	}
-	update, err := m.builder.Build(ctx, header)
+	update, err := m.buildUpdate(ctx, header, forceRotation)
 	if err != nil {
-		return fmt.Errorf("build client update: %w", err)
+		return false, fmt.Errorf("build client update: %w", err)
 	}
 	// An empty payload list means "client already current"; the builder still reports
 	// its current height, so learn it (seeding lastHeight from on-chain reality)
@@ -574,82 +743,49 @@ func (m *Module) updateClientTo(ctx context.Context, height uint64) error {
 			m.lastHeight = update.Height
 		}
 		m.recordClientUpdate(update)
-		return nil
+		if owesRotation {
+			return false, rotationNotLanded(update.Height)
+		}
+		return false, nil
 	}
 	// A stale update (at or below what we already trust) is skipped without a tx.
+	// This is also the anti-spin guard for the climb: a hop that installs nothing
+	// ends the loop instead of repeating.
 	if update.Height <= m.lastHeight {
-		return nil
+		if owesRotation {
+			return false, rotationNotLanded(update.Height)
+		}
+		return false, nil
 	}
 
 	if err := m.dst.UpdateClient(ctx, m.clientID, update); err != nil {
-		return fmt.Errorf("submit client update at %d: %w", update.Height, err)
+		return false, fmt.Errorf("submit client update at %d: %w", update.Height, err)
 	}
 	m.lastHeight = update.Height
 	m.recordClientUpdate(update)
-	return nil
+	return update.IsHop, nil
+}
+
+// rotationNotLanded reports a forced step that submitted nothing: the rotation
+// is still owed, and only a new source block can carry it.
+func rotationNotLanded(height uint64) error {
+	return fmt.Errorf("rotation build at %d installs nothing: %w", height, services.ErrForcedRotationNotReady)
+}
+
+// buildUpdate picks the build the caller needs. forceRotation falls back to
+// Build for a builder with no snapshot to rotate, whose plain update already
+// moves its expiry.
+func (m *Module) buildUpdate(ctx context.Context, header []byte, forceRotation bool) (chain.ClientUpdate, error) {
+	if forceRotation {
+		if rb, ok := m.builder.(chain.RotatingBuilder); ok {
+			return rb.BuildRotation(ctx, header)
+		}
+	}
+	return m.builder.Build(ctx, header)
 }
 
 func (m *Module) recordClientUpdate(update chain.ClientUpdate) {
 	if m.observeClientUpdate != nil && !update.TrustedAt.IsZero() {
 		m.observeClientUpdate(update.TrustedAt)
-	}
-}
-
-// needsRefresh reports whether the destination client is close enough to expiry
-// that the anti-expiry routine must advance it now.
-//
-// A zero expiry means "never expires" (e.g. a permissioned client) and needs no
-// refresh. Otherwise the client is refreshed once it is within refreshMargin of
-// expiring — note the direction: MORE than a margin of headroom means there is
-// nothing to do yet, and that is the comparison worth pinning, because inverting
-// it produces a routine that refreshes only while there is plenty of time and
-// goes quiet exactly when the client is about to expire.
-func needsRefresh(expiresAt, now time.Time, trustingPeriod time.Duration) bool {
-	if expiresAt.IsZero() {
-		return false
-	}
-	return expiresAt.Sub(now) <= refreshMarginFor(trustingPeriod)
-}
-
-// refreshMarginFor sizes the margin against the client's own trusting period.
-// A zero period means the destination could not report one (an L2 client has no
-// self-expiry), and the fixed default stands in.
-func refreshMarginFor(trustingPeriod time.Duration) time.Duration {
-	if trustingPeriod <= 0 {
-		return defaultRefreshMargin
-	}
-	return services.RefreshSafetyMargin(trustingPeriod)
-}
-
-// refreshLoop proactively advances the destination client before it expires,
-// covering quiet periods with no packet traffic (the anti-expiry routine).
-func (m *Module) refreshLoop(ctx context.Context) {
-	ticker := time.NewTicker(refreshTick)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if ctx.Err() != nil { // select may pick the tick even when ctx is done
-				return
-			}
-			expiresAt, trustingPeriod, err := m.dst.ClientExpiresAt(ctx, m.clientID)
-			if err != nil {
-				log.Printf("[%s UpdateClient] query client expiry: %v", m.name, err)
-				continue
-			}
-			if !needsRefresh(expiresAt, time.Now(), trustingPeriod) {
-				continue
-			}
-			latest, err := m.src.LatestHeight(ctx)
-			if err != nil {
-				log.Printf("[%s UpdateClient] latest source height for refresh: %v", m.name, err)
-				continue
-			}
-			if err := m.updateClientTo(ctx, latest); err != nil {
-				log.Printf("[%s UpdateClient] refresh update to %d: %v", m.name, latest, err)
-			}
-		}
 	}
 }

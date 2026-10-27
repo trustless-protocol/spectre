@@ -196,7 +196,8 @@ relationship it has with the prover.
 ```
 
 - `server.grpc_port` enables the API (plaintext gRPC — localhost or private
-  network only); HTTP metrics stays on `server.port`.
+  network only); HTTP metrics stays on `server.port`. Every production
+  request must name `src_chain`; the daemon never infers it from one feed.
 - Service definition: `proto/attestor/attestor.proto` (regenerate via
   `buf.gen.attestor.yaml`; generated code is never hand-edited). Methods:
   `Info`, `AttestedUpTo`, `AttestedRootAtOrBelow`, `WatchAttested` — see the
@@ -314,7 +315,7 @@ Run these before trusting a deployment — each must leave the feed
 The fastest way to see real verdicts (minutes, no mainnet sync):
 
 ```bash
-./scripts/local/run_op_stack.sh          # full local OP Stack via Kurtosis:
+./scripts/local/run_optimism_node.sh     # full local OP Stack via Kurtosis:
                                          # L1 + sequencer + replica + proposer
                                          # posting real dispute games every 60s
 source .op-devnet-run/attestor.env
@@ -341,7 +342,7 @@ Pure ingest smoke with no replica at all: public L1 RPC + a dead
 
 ## Metrics reference
 
-All under `fast_ibc_op_attestor_*`, labeled `chain` (= `src_chain`):
+All under `spectre_op_attestor_*`, labeled `chain` (= `src_chain`):
 
 | Metric | Type | Meaning |
 |---|---|---|

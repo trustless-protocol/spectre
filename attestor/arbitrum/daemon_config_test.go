@@ -10,13 +10,39 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
+func TestL1IngestHeadValidationAndDefault(t *testing.T) {
+	for _, head := range []L1IngestHead{"", L1IngestFinalized, L1IngestSafe, L1IngestLatest} {
+		config := validDaemonConfig(t)
+		config.L1IngestHead = head
+		if err := config.Validate(); err != nil {
+			t.Fatalf("head %q: %v", head, err)
+		}
+		got, err := head.Normalize()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if head == "" && got != L1IngestFinalized {
+			t.Fatal("omitted head must default to finalized")
+		}
+	}
+	for _, head := range []L1IngestHead{"unsafe", "SAFE", " safe", "unknown"} {
+		config := validDaemonConfig(t)
+		config.L1IngestHead = head
+		if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "l1_ingest_head") {
+			t.Fatalf("head %q accepted: %v", head, err)
+		}
+	}
+}
+
 func TestLoadDaemonConfigResolvesStatePathAndLoadsNitroEndpoints(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "attestor.json")
 	data := `{
 		"grpc_listen_address":"127.0.0.1:50051",
+		"metrics_listen_address":"127.0.0.1:9090",
 		"runtime_poll_interval":"2s",
 		"attestation_head":"unsafe",
+		"l1_ingest_head":"safe",
 		"disable_derived_roots":true,
 		"derived_attestation_gap_blocks":12,
 		"max_derived_roots":34,
@@ -42,6 +68,9 @@ func TestLoadDaemonConfigResolvesStatePathAndLoadsNitroEndpoints(t *testing.T) {
 	config, err := LoadDaemonConfig(path)
 	if err != nil {
 		t.Fatalf("load daemon config: %v", err)
+	}
+	if config.L1IngestHead != L1IngestSafe {
+		t.Fatalf("L1 ingest head: %s", config.L1IngestHead)
 	}
 	if config.AttestorStatePath != filepath.Join(dir, "data", "attested-roots.json") {
 		t.Fatalf("attestor state path: got %q", config.AttestorStatePath)
@@ -114,6 +143,14 @@ func TestDaemonConfigRejectsInvalidGRPCAddress(t *testing.T) {
 	config.GRPCListenAddress = "127.0.0.1"
 	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "grpc_listen_address") {
 		t.Fatalf("validate gRPC address: got %v", err)
+	}
+}
+
+func TestDaemonConfigRejectsInvalidMetricsAddress(t *testing.T) {
+	config := validDaemonConfig(t)
+	config.MetricsListenAddress = "127.0.0.1"
+	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "metrics_listen_address") {
+		t.Fatalf("validate metrics address: got %v", err)
 	}
 }
 
@@ -215,6 +252,7 @@ func TestDaemonConfigValidationFailureMatrix(t *testing.T) {
 		want   string
 	}{
 		{name: "missing gRPC listener", mutate: func(c *DaemonConfig) { c.GRPCListenAddress = "" }, want: "grpc_listen_address"},
+		{name: "missing metrics listener", mutate: func(c *DaemonConfig) { c.MetricsListenAddress = "" }, want: "metrics_listen_address"},
 		{name: "invalid runtime interval", mutate: func(c *DaemonConfig) { c.RuntimePollInterval = "0s" }, want: "runtime_poll_interval"},
 		{name: "invalid attestation head", mutate: func(c *DaemonConfig) { c.AttestationHead = "unknown" }, want: "attestation_head"},
 		{name: "missing source chain", mutate: func(c *DaemonConfig) { c.SrcChain = "" }, want: "src_chain"},
@@ -272,6 +310,7 @@ func validDaemonConfig(t *testing.T) DaemonConfig {
 	dir := t.TempDir()
 	return DaemonConfig{
 		GRPCListenAddress:     "127.0.0.1:50051",
+		MetricsListenAddress:  "127.0.0.1:9090",
 		SrcChain:              "arbitrum-one",
 		L1RPCURL:              "https://ethereum.example",
 		L1ChainID:             1,

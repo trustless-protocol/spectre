@@ -10,6 +10,7 @@ interface IRateLimit {
     ///      escrow, present and future, because escrows are created per client at runtime and a
     ///      per-target grant could not exist before the escrow does. See
     ///      `RateLimitUpgradeable.setRateLimit` for why this is not the `restricted` modifier.
+    ///      Usage that has decayed under the previous limit is settled before the new limit applies.
     /// @param token The token address
     /// @param rateLimit The rate limit to set, where 0 means no limit
     function setRateLimit(address token, uint256 rateLimit) external;

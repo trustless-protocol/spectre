@@ -7,41 +7,83 @@ import (
 	"sync"
 )
 
+// RecoveryCursorsFileName is the cursor file inside a process's state
+// directory. The directory is chosen by the composition root (cmd), which is
+// the only place that knows the config path this process was started with.
 const (
-	recoveryStateFileEnv     = "RELAYER_RECOVERY_STATE_FILE"
-	defaultRecoveryStateFile = ".relayer-state/recovery-cursors.json"
-	recoveryStateVersion     = 1
+	RecoveryCursorsFileName = "cursors.json"
+	// recoveryStateVersion is 2 because the record changed shape in this commit:
+	// a per-source map of chain-named fields became one map keyed by stream name.
+	//
+	// The bump is the whole safety mechanism. A version-1 file carries "sources"
+	// and no "cursors", so it unmarshals WITHOUT error into the new struct, leaves
+	// Cursors nil, passes a version check that still said 1, and is stored as
+	// "loaded with no cursors" -- every stream then misses its key and silently
+	// falls back to the startup lookback. That is exactly the event loss a durable
+	// cursor exists to prevent, arriving quietly at the moment of upgrade.
+	//
+	// Bumping makes the existing check reject it by name instead. There is no
+	// converter: nothing is deployed outside devnets, and a converter for a shape
+	// with no users is machinery that would itself never be exercised.
+	recoveryStateVersion = 2
 )
 
-// RecoveryCursors stores the next height/block each recovery stream must scan.
-// Zero means that stream has no durable cursor yet and must use its lookback.
-type RecoveryCursors struct {
-	CosmosHeight   uint64 `json:"cosmos_height"`
-	EthSendBlock   uint64 `json:"eth_send_block"`
-	EthWriteAckBlk uint64 `json:"eth_write_ack_block"`
+// RecoveryCursors maps a scan stream to the next height or block it must scan.
+// A missing key means that stream has no durable cursor yet and must use its
+// lookback; a zero value means the same and is never written.
+//
+// Keys belong to the streams, not to this package. The fields were named for
+// chains -- CosmosHeight, EthSendBlock, EthWriteAckBlk -- so every new chain
+// added a field here, and a fourth would have added another. B6 put the
+// direction in the DIRECTORY path, so what is left to distinguish is the stream
+// within one process, and a string does that without this package learning any
+// chain's name.
+type RecoveryCursors map[string]uint64
+
+// clone returns a copy, so a caller cannot reach into the store's own map and a
+// stored map cannot be mutated behind the mutex that guards it.
+func (c RecoveryCursors) clone() RecoveryCursors {
+	if c == nil {
+		return nil
+	}
+	out := make(RecoveryCursors, len(c))
+	for stream, cursor := range c {
+		out[stream] = cursor
+	}
+	return out
 }
 
+func (c RecoveryCursors) equal(other RecoveryCursors) bool {
+	if len(c) != len(other) {
+		return false
+	}
+	for stream, cursor := range c {
+		if other[stream] != cursor {
+			return false
+		}
+	}
+	return true
+}
+
+// recoveryStateFile is one process's cursors. It used to carry a map keyed by
+// source id, from when one process served several sources. A1 ended that: a
+// process serves exactly one source -> destination pair, so the map could only
+// ever hold one entry, and a shared file keyed by id is precisely the shape that
+// lets two processes overwrite each other.
 type recoveryStateFile struct {
-	Version uint32                     `json:"version"`
-	Sources map[string]RecoveryCursors `json:"sources"`
+	Version uint32          `json:"version"`
+	Cursors RecoveryCursors `json:"cursors"`
 }
 
-// RecoveryStateStore persists per-source recovery cursors in one small JSON
-// file. One process shares one store instance per path so multi-source saves do
-// not overwrite each other's in-memory view.
+// RecoveryStateStore persists this process's recovery cursors in one small JSON
+// file. Instances are memoized per path so the Cosmos and ETH recovery streams,
+// which own different fields of the same record, share one in-memory view.
 type RecoveryStateStore struct {
 	path string
 
 	mtx     sync.Mutex
-	sources map[string]RecoveryCursors
-}
-
-// RecoveryStatePath returns the configured recovery-state path.
-func RecoveryStatePath() string {
-	if path := os.Getenv(recoveryStateFileEnv); path != "" {
-		return path
-	}
-	return defaultRecoveryStateFile
+	cursors RecoveryCursors
+	loaded  bool
 }
 
 var loadedRecoveryStores = struct {
@@ -72,7 +114,7 @@ func resetLoadedRecoveryStoresForTest() {
 }
 
 func loadRecoveryStateFile(path string) (*RecoveryStateStore, error) {
-	store := &RecoveryStateStore{path: path, sources: map[string]RecoveryCursors{}}
+	store := &RecoveryStateStore{path: path}
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return store, nil
@@ -86,20 +128,23 @@ func loadRecoveryStateFile(path string) (*RecoveryStateStore, error) {
 		return nil, fmt.Errorf("parse recovery state %q (delete it to resume from the lookback window, accepting that older events may be lost): %w", path, err)
 	}
 	if file.Version != recoveryStateVersion {
-		return nil, fmt.Errorf("recovery state %q has version %d, want %d", path, file.Version, recoveryStateVersion)
+		return nil, fmt.Errorf(
+			"recovery state %q has version %d, want %d (delete it to resume from the lookback window, "+
+				"accepting that older events may be lost): the record shape changed and the old cursors "+
+				"cannot be read", path, file.Version, recoveryStateVersion)
 	}
-	if file.Sources != nil {
-		store.sources = file.Sources
-	}
+	store.cursors = file.Cursors
+	store.loaded = true
 	return store, nil
 }
 
-// Get returns one source's cursors.
-func (s *RecoveryStateStore) Get(sourceID string) (RecoveryCursors, bool) {
+// Get returns this process's cursors. The second result is false on a first
+// run, which is a legitimate state meaning "use the lookback" -- distinct from a
+// corrupt file, which never reaches here because loading fails outright.
+func (s *RecoveryStateStore) Get() (RecoveryCursors, bool) {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
-	cursors, ok := s.sources[sourceID]
-	return cursors, ok
+	return s.cursors.clone(), s.loaded
 }
 
 // SaveCheckpoint atomically persists each supplied non-zero cursor exactly.
@@ -107,42 +152,47 @@ func (s *RecoveryStateStore) Get(sourceID string) (RecoveryCursors, bool) {
 // still queued or in flight: that conservative rewind is what makes a restart
 // rescan work that only exists in memory. Zero fields remain unchanged so
 // independently-owned streams can share one source record.
-func (s *RecoveryStateStore) SaveCheckpoint(sourceID string, cursors RecoveryCursors) error {
+func (s *RecoveryStateStore) SaveCheckpoint(cursors RecoveryCursors) error {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 
-	previous := s.sources[sourceID]
+	previous := s.cursors
 	merged := mergeRecoveryCursors(previous, cursors)
-	if merged == previous {
+	if merged.equal(previous) && s.loaded {
 		return nil
 	}
 
-	snapshot := recoveryStateFile{Version: recoveryStateVersion, Sources: make(map[string]RecoveryCursors, len(s.sources))}
-	for id, value := range s.sources {
-		snapshot.Sources[id] = value
-	}
-	snapshot.Sources[sourceID] = merged
-	if err := writeRecoveryState(s.path, snapshot); err != nil {
+	if err := writeRecoveryState(s.path, recoveryStateFile{Version: recoveryStateVersion, Cursors: merged}); err != nil {
 		return err
 	}
 	// Publish the new in-memory cursor only after the atomic file replacement
 	// succeeds. Otherwise an identical retry would look like a no-op and leave the
 	// durable file permanently behind the value reported by Get.
-	s.sources[sourceID] = merged
+	s.cursors = merged
+	s.loaded = true
 	return nil
 }
 
+// mergeRecoveryCursors overlays the non-zero entries of next onto previous.
+//
+// Zero means "this stream has nothing to say", not "rewind to zero": the two
+// streams sharing one record each write only their own keys, and a save that
+// carried the whole map would erase the other's progress. Note this is an
+// overlay, not a maximum -- a cursor is ALLOWED to move backwards, because it
+// is clamped to the lowest packet still queued or in flight, and a newly queued
+// packet at a lower height is a legitimate reason to rescan. Forcing it to only
+// advance looks safe and reopens the gap it exists to close.
 func mergeRecoveryCursors(previous, next RecoveryCursors) RecoveryCursors {
-	merged := previous
-	merge := func(current, candidate uint64) uint64 {
-		if candidate == 0 {
-			return current
-		}
-		return candidate
+	merged := previous.clone()
+	if merged == nil {
+		merged = RecoveryCursors{}
 	}
-	merged.CosmosHeight = merge(previous.CosmosHeight, next.CosmosHeight)
-	merged.EthSendBlock = merge(previous.EthSendBlock, next.EthSendBlock)
-	merged.EthWriteAckBlk = merge(previous.EthWriteAckBlk, next.EthWriteAckBlk)
+	for stream, cursor := range next {
+		if cursor == 0 {
+			continue
+		}
+		merged[stream] = cursor
+	}
 	return merged
 }
 
@@ -151,6 +201,8 @@ func writeRecoveryState(path string, file recoveryStateFile) error {
 	if err != nil {
 		return fmt.Errorf("encode recovery state: %w", err)
 	}
+	// Wrapped: writeStateFile names the temp file or the directory, not which
+	// state this was, and both callers write different files through it.
 	if err := writeStateFile(path, data); err != nil {
 		return fmt.Errorf("write recovery state %q: %w", path, err)
 	}

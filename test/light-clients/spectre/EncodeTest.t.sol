@@ -7,16 +7,20 @@ import { Test, console } from "forge-std/Test.sol";
 
 import { Encode } from "contracts/light-clients/spectre/libraries/Encode.sol";
 import { Header } from "contracts/light-clients/spectre/libraries/Header.sol";
-import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { ISpectreTendermintMsgs } from "contracts/light-clients/spectre/messages/ISpectreTendermintMsgs.sol";
 
 /// @title EncodeTest
-/// @notice Cross-validates Encode.sol output against Go proto.Marshal() reference data.
-///         Go proto.Marshal() is the SOURCE OF TRUTH.
-///         Run Go reference: cd operator && go run ./cmd/encode_debug/
+/// @notice Checks Encode.sol and Header.sol against CometBFT.
+///         - `test_goVectors_*` read test/fixtures/encode_vectors.json, which `TestEncodeVectors`
+///           (relayer/client) computes with CometBFT's own types. Regenerate it with
+///           `cd relayer && go test ./client -run TestEncodeVectors -update`.
+///         - The remaining tests use hard-coded vectors whose generator is not in this repository
+///           (SUP-06 in #288). The fixture-driven tests are the authoritative cross-check; these
+///           are kept as readable examples.
+///         One known gap: a header with an empty last_block_id is hashed differently on-chain and by
+///         CometBFT, so no such header is in the fixture (see TestEmptyBlockIDMarshalsToTwoBytes).
 contract EncodeTest is Test {
-    // ─── Test data (same as Go cmd/encode_debug/main.go) ───
-
-    uint128 private constant VOTE_TIMESTAMP_NANOS = 1_704_067_200_000_000_000;
+    // ─── Test data (hard-coded; see the contract NatSpec for provenance) ───
 
     function _pubKey() internal pure returns (bytes32) {
         bytes32 pk;
@@ -54,84 +58,28 @@ contract EncodeTest is Test {
         return bytes32(0x707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f);
     }
 
-    // ─── encodeVarint tests ───
-
-    function test_encodeVarint_zero() public pure {
-        assertEq(Encode.encodeVarint(0), hex"00");
-    }
-
-    function test_encodeVarint_one() public pure {
-        assertEq(Encode.encodeVarint(1), hex"01");
-    }
-
-    function test_encodeVarint_127() public pure {
-        assertEq(Encode.encodeVarint(127), hex"7f");
-    }
-
-    function test_encodeVarint_128() public pure {
-        assertEq(Encode.encodeVarint(128), hex"8001");
-    }
-
-    function test_encodeVarint_255() public pure {
-        assertEq(Encode.encodeVarint(255), hex"ff01");
-    }
-
-    function test_encodeVarint_256() public pure {
-        assertEq(Encode.encodeVarint(256), hex"8002");
-    }
-
-    function test_encodeVarint_300() public pure {
-        assertEq(Encode.encodeVarint(300), hex"ac02");
-    }
-
-    function test_encodeVarint_16384() public pure {
-        assertEq(Encode.encodeVarint(16_384), hex"808001");
-    }
-
-    function test_encodeVarint_1000000() public pure {
-        assertEq(Encode.encodeVarint(1_000_000), hex"c0843d");
-    }
-
-    // ─── encodeString tests ───
-
-    function test_encodeString_empty() public pure {
-        assertEq(Encode.encodeString(""), hex"00");
-    }
-
-    function test_encodeString_cosmoshub4() public pure {
-        assertEq(Encode.encodeString("cosmoshub-4"), hex"0b636f736d6f736875622d34");
-    }
-
-    function test_encodeString_testChain() public pure {
-        assertEq(Encode.encodeString("test-chain"), hex"0a746573742d636861696e");
-    }
-
-    function test_encodeString_singleChar() public pure {
-        assertEq(Encode.encodeString("a"), hex"0161");
-    }
-
     // ─── encodeValidator tests ───
     // Go reference: proto.Marshal(SimpleValidator{PubKey: &PublicKey{Ed25519: pubKey}, VotingPower: vp})
 
     function test_encodeValidator_power100() public pure {
-        IICS07TendermintMsgs.SimpleValidator memory v =
-            IICS07TendermintMsgs.SimpleValidator({ pubKey: _pubKey(), votingPower: 100 });
+        ISpectreTendermintMsgs.SimpleValidator memory v =
+            ISpectreTendermintMsgs.SimpleValidator({ pubKey: _pubKey(), votingPower: 100 });
         assertEq(
             Encode.encodeValidator(v), hex"0a220a20aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c91064"
         );
     }
 
     function test_encodeValidator_power1() public pure {
-        IICS07TendermintMsgs.SimpleValidator memory v =
-            IICS07TendermintMsgs.SimpleValidator({ pubKey: _pubKey(), votingPower: 1 });
+        ISpectreTendermintMsgs.SimpleValidator memory v =
+            ISpectreTendermintMsgs.SimpleValidator({ pubKey: _pubKey(), votingPower: 1 });
         assertEq(
             Encode.encodeValidator(v), hex"0a220a20aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c91001"
         );
     }
 
     function test_encodeValidator_power0() public pure {
-        IICS07TendermintMsgs.SimpleValidator memory v =
-            IICS07TendermintMsgs.SimpleValidator({ pubKey: _pubKey(), votingPower: 0 });
+        ISpectreTendermintMsgs.SimpleValidator memory v =
+            ISpectreTendermintMsgs.SimpleValidator({ pubKey: _pubKey(), votingPower: 0 });
         // Go proto.Marshal skips votingPower=0
         assertEq(
             Encode.encodeValidator(v), hex"0a220a20aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9"
@@ -139,8 +87,8 @@ contract EncodeTest is Test {
     }
 
     function test_encodeValidator_power1000000() public pure {
-        IICS07TendermintMsgs.SimpleValidator memory v =
-            IICS07TendermintMsgs.SimpleValidator({ pubKey: _pubKey(), votingPower: 1_000_000 });
+        ISpectreTendermintMsgs.SimpleValidator memory v =
+            ISpectreTendermintMsgs.SimpleValidator({ pubKey: _pubKey(), votingPower: 1_000_000 });
         assertEq(
             Encode.encodeValidator(v),
             hex"0a220a20aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c910c0843d"
@@ -150,26 +98,26 @@ contract EncodeTest is Test {
     // ─── encodeVersion tests ───
 
     function test_encodeVersion_11_0() public pure {
-        IICS07TendermintMsgs.Version memory v = IICS07TendermintMsgs.Version({ blockVersion: 11, appVersion: 0 });
+        ISpectreTendermintMsgs.Version memory v = ISpectreTendermintMsgs.Version({ blockVersion: 11, appVersion: 0 });
         // Go proto.Marshal: appVersion=0 is skipped
         assertEq(Encode.encodeVersion(v), hex"080b");
     }
 
     function test_encodeVersion_11_2() public pure {
-        IICS07TendermintMsgs.Version memory v = IICS07TendermintMsgs.Version({ blockVersion: 11, appVersion: 2 });
+        ISpectreTendermintMsgs.Version memory v = ISpectreTendermintMsgs.Version({ blockVersion: 11, appVersion: 2 });
         assertEq(Encode.encodeVersion(v), hex"080b1002");
     }
 
     function test_encodeVersion_1_1() public pure {
-        IICS07TendermintMsgs.Version memory v = IICS07TendermintMsgs.Version({ blockVersion: 1, appVersion: 1 });
+        ISpectreTendermintMsgs.Version memory v = ISpectreTendermintMsgs.Version({ blockVersion: 1, appVersion: 1 });
         assertEq(Encode.encodeVersion(v), hex"08011001");
     }
 
     // ─── encodePartSetHeader tests ───
 
     function test_encodePartSetHeader() public pure {
-        IICS07TendermintMsgs.PartSetHeader memory psh =
-            IICS07TendermintMsgs.PartSetHeader({ total: 1, hashData: _hash1() });
+        ISpectreTendermintMsgs.PartSetHeader memory psh =
+            ISpectreTendermintMsgs.PartSetHeader({ total: 1, hashData: _hash1() });
         assertEq(
             Encode.encodePartSetHeader(psh),
             hex"08011220101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f"
@@ -179,8 +127,8 @@ contract EncodeTest is Test {
     // ─── encodeBlockId tests ───
 
     function test_encodeBlockId() public pure {
-        IICS07TendermintMsgs.BlockId memory bid = IICS07TendermintMsgs.BlockId({
-            hashData: _hash2(), partSetHeader: IICS07TendermintMsgs.PartSetHeader({ total: 1, hashData: _hash1() })
+        ISpectreTendermintMsgs.BlockId memory bid = ISpectreTendermintMsgs.BlockId({
+            hashData: _hash2(), partSetHeader: ISpectreTendermintMsgs.PartSetHeader({ total: 1, hashData: _hash1() })
         });
         assertEq(
             Encode.encodeBlockId(bid),
@@ -206,6 +154,41 @@ contract EncodeTest is Test {
 
     function test_cdcEncodeInt64_zero() public pure {
         assertEq(Encode.cdcEncodeInt64(0), hex"");
+    }
+
+    // cdcEncodeInt64(v) is tag 0x08 followed by the protobuf varint of v, so these cases also pin
+    // _varintLen/_writeVarint at every varint width boundary. Every encoder in this library shares them.
+
+    function test_cdcEncodeInt64_one() public pure {
+        assertEq(Encode.cdcEncodeInt64(1), hex"0801");
+    }
+
+    function test_cdcEncodeInt64_127() public pure {
+        assertEq(Encode.cdcEncodeInt64(127), hex"087f");
+    }
+
+    function test_cdcEncodeInt64_128() public pure {
+        assertEq(Encode.cdcEncodeInt64(128), hex"088001");
+    }
+
+    function test_cdcEncodeInt64_255() public pure {
+        assertEq(Encode.cdcEncodeInt64(255), hex"08ff01");
+    }
+
+    function test_cdcEncodeInt64_256() public pure {
+        assertEq(Encode.cdcEncodeInt64(256), hex"088002");
+    }
+
+    function test_cdcEncodeInt64_300() public pure {
+        assertEq(Encode.cdcEncodeInt64(300), hex"08ac02");
+    }
+
+    function test_cdcEncodeInt64_16384() public pure {
+        assertEq(Encode.cdcEncodeInt64(16_384), hex"08808001");
+    }
+
+    function test_cdcEncodeInt64_1000000() public pure {
+        assertEq(Encode.cdcEncodeInt64(1_000_000), hex"08c0843d");
     }
 
     function test_cdcEncodeBytes32() public pure {
@@ -243,21 +226,21 @@ contract EncodeTest is Test {
     // ─── hashValSet tests ───
 
     function test_hashValSet() public pure {
-        IICS07TendermintMsgs.ValidatorInfo[] memory vals = new IICS07TendermintMsgs.ValidatorInfo[](2);
-        vals[0] = IICS07TendermintMsgs.ValidatorInfo({
+        ISpectreTendermintMsgs.ValidatorInfo[] memory vals = new ISpectreTendermintMsgs.ValidatorInfo[](2);
+        vals[0] = ISpectreTendermintMsgs.ValidatorInfo({
             valAddress: hex"", pubKey: _pubKey(), votingPower: 100, proposerPriority: 0
         });
-        vals[1] = IICS07TendermintMsgs.ValidatorInfo({
+        vals[1] = ISpectreTendermintMsgs.ValidatorInfo({
             valAddress: hex"",
             pubKey: bytes32(0xbbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9da),
             votingPower: 200,
             proposerPriority: 0
         });
 
-        IICS07TendermintMsgs.ValidatorSet memory valSet = IICS07TendermintMsgs.ValidatorSet({
+        ISpectreTendermintMsgs.ValidatorSet memory valSet = ISpectreTendermintMsgs.ValidatorSet({
             validators: vals,
             hasProposer: false,
-            proposer: IICS07TendermintMsgs.ValidatorInfo({
+            proposer: ISpectreTendermintMsgs.ValidatorInfo({
                 valAddress: hex"", pubKey: bytes32(0), votingPower: 0, proposerPriority: 0
             }),
             totalVotingPower: 300
@@ -270,14 +253,15 @@ contract EncodeTest is Test {
     // ─── hashHeader test ───
 
     function test_hashHeader() public pure {
-        IICS07TendermintMsgs.BlockHeader memory header = IICS07TendermintMsgs.BlockHeader({
-            version: IICS07TendermintMsgs.Version({ blockVersion: 11, appVersion: 0 }),
+        ISpectreTendermintMsgs.BlockHeader memory header = ISpectreTendermintMsgs.BlockHeader({
+            version: ISpectreTendermintMsgs.Version({ blockVersion: 11, appVersion: 0 }),
             chainId: "cosmoshub-4",
             height: 12_345,
             time: uint128(1_700_000_000) * 1e9,
             hasLastBlockId: true,
-            lastBlockId: IICS07TendermintMsgs.BlockId({
-                hashData: _hash2(), partSetHeader: IICS07TendermintMsgs.PartSetHeader({ total: 1, hashData: _hash1() })
+            lastBlockId: ISpectreTendermintMsgs.BlockId({
+                hashData: _hash2(),
+                partSetHeader: ISpectreTendermintMsgs.PartSetHeader({ total: 1, hashData: _hash1() })
             }),
             hasLastCommitHash: true,
             lastCommitHash: _hash3(),
@@ -299,14 +283,15 @@ contract EncodeTest is Test {
     }
 
     function test_hashHeaderWithCachedChainId_matchesHashHeader() public pure {
-        IICS07TendermintMsgs.BlockHeader memory header = IICS07TendermintMsgs.BlockHeader({
-            version: IICS07TendermintMsgs.Version({ blockVersion: 11, appVersion: 0 }),
+        ISpectreTendermintMsgs.BlockHeader memory header = ISpectreTendermintMsgs.BlockHeader({
+            version: ISpectreTendermintMsgs.Version({ blockVersion: 11, appVersion: 0 }),
             chainId: "cosmoshub-4",
             height: 12_345,
             time: uint128(1_700_000_000) * 1e9,
             hasLastBlockId: true,
-            lastBlockId: IICS07TendermintMsgs.BlockId({
-                hashData: _hash2(), partSetHeader: IICS07TendermintMsgs.PartSetHeader({ total: 1, hashData: _hash1() })
+            lastBlockId: ISpectreTendermintMsgs.BlockId({
+                hashData: _hash2(),
+                partSetHeader: ISpectreTendermintMsgs.PartSetHeader({ total: 1, hashData: _hash1() })
             }),
             hasLastCommitHash: true,
             lastCommitHash: _hash3(),
@@ -330,14 +315,15 @@ contract EncodeTest is Test {
     }
 
     function test_hashHeaderWithCachedLeaves_matchesHashHeader() public pure {
-        IICS07TendermintMsgs.BlockHeader memory header = IICS07TendermintMsgs.BlockHeader({
-            version: IICS07TendermintMsgs.Version({ blockVersion: 11, appVersion: 0 }),
+        ISpectreTendermintMsgs.BlockHeader memory header = ISpectreTendermintMsgs.BlockHeader({
+            version: ISpectreTendermintMsgs.Version({ blockVersion: 11, appVersion: 0 }),
             chainId: "cosmoshub-4",
             height: 12_345,
             time: uint128(1_700_000_000) * 1e9,
             hasLastBlockId: true,
-            lastBlockId: IICS07TendermintMsgs.BlockId({
-                hashData: _hash2(), partSetHeader: IICS07TendermintMsgs.PartSetHeader({ total: 1, hashData: _hash1() })
+            lastBlockId: ISpectreTendermintMsgs.BlockId({
+                hashData: _hash2(),
+                partSetHeader: ISpectreTendermintMsgs.PartSetHeader({ total: 1, hashData: _hash1() })
             }),
             hasLastCommitHash: true,
             lastCommitHash: _hash3(),
@@ -370,133 +356,201 @@ contract EncodeTest is Test {
         );
     }
 
-    // ─── voteSignBytes golden-vector tests ───
-    // Golden vectors derived from Go/CometBFT types.Commit.VoteSignBytes().
-    // These MUST be kept in sync with Go — a divergence indicates a serious
-    // encoding bug that would break mainnet relaying.
+    // ─── CometBFT cross-check vectors ───
+    // test/fixtures/encode_vectors.json is written by relayer/client TestEncodeVectors, which computes every
+    // expected value with CometBFT's own types. A failure here with a passing Go test means Encode.sol or
+    // Header.sol drifted from CometBFT; a failing Go test means the fixture is stale (rerun it with -update).
 
-    function _makeBlockCommit(
-        uint64 height,
-        uint32 round,
-        IICS07TendermintMsgs.CommitSigFlag flag
+    string private constant VECTORS = "test/fixtures/encode_vectors.json";
+
+    function _path(string memory array, uint256 i, string memory field) private pure returns (string memory) {
+        return string.concat(".", array, "[", vm.toString(i), "].", field);
+    }
+
+    function _count(string memory raw, string memory name) private view returns (uint256 n) {
+        n = vm.parseJsonUint(raw, string.concat(".counts.", name));
+        assertGt(n, 0, name);
+    }
+
+    function test_goVectors_versions() public view {
+        string memory raw = vm.readFile(VECTORS);
+        for (uint256 i = 0; i < _count(raw, "versions"); i++) {
+            ISpectreTendermintMsgs.Version memory v = ISpectreTendermintMsgs.Version({
+                blockVersion: uint64(vm.parseJsonUint(raw, _path("versions", i, "block"))),
+                appVersion: uint64(vm.parseJsonUint(raw, _path("versions", i, "app")))
+            });
+            assertEq(Encode.encodeVersion(v), vm.parseJsonBytes(raw, _path("versions", i, "encoded")), "version");
+        }
+    }
+
+    function test_goVectors_validators() public view {
+        string memory raw = vm.readFile(VECTORS);
+        for (uint256 i = 0; i < _count(raw, "validators"); i++) {
+            ISpectreTendermintMsgs.SimpleValidator memory v = ISpectreTendermintMsgs.SimpleValidator({
+                pubKey: vm.parseJsonBytes32(raw, _path("validators", i, "pubKey")),
+                votingPower: uint64(vm.parseJsonUint(raw, _path("validators", i, "votingPower")))
+            });
+            assertEq(Encode.encodeValidator(v), vm.parseJsonBytes(raw, _path("validators", i, "encoded")), "validator");
+        }
+    }
+
+    function test_goVectors_blockIds() public view {
+        string memory raw = vm.readFile(VECTORS);
+        for (uint256 i = 0; i < _count(raw, "blockIds"); i++) {
+            ISpectreTendermintMsgs.BlockId memory id = ISpectreTendermintMsgs.BlockId({
+                hashData: vm.parseJsonBytes32(raw, _path("blockIds", i, "hash")),
+                partSetHeader: ISpectreTendermintMsgs.PartSetHeader({
+                    total: uint32(vm.parseJsonUint(raw, _path("blockIds", i, "total"))),
+                    hashData: vm.parseJsonBytes32(raw, _path("blockIds", i, "partSetHash"))
+                })
+            });
+            assertEq(Encode.encodeBlockId(id), vm.parseJsonBytes(raw, _path("blockIds", i, "encoded")), "blockId");
+        }
+    }
+
+    function test_goVectors_partSetHeaders() public view {
+        string memory raw = vm.readFile(VECTORS);
+        for (uint256 i = 0; i < _count(raw, "partSetHeaders"); i++) {
+            ISpectreTendermintMsgs.PartSetHeader memory psh = ISpectreTendermintMsgs.PartSetHeader({
+                total: uint32(vm.parseJsonUint(raw, _path("partSetHeaders", i, "total"))),
+                hashData: vm.parseJsonBytes32(raw, _path("partSetHeaders", i, "hash"))
+            });
+            assertEq(
+                Encode.encodePartSetHeader(psh), vm.parseJsonBytes(raw, _path("partSetHeaders", i, "encoded")), "psh"
+            );
+        }
+    }
+
+    function test_goVectors_timestamps() public view {
+        string memory raw = vm.readFile(VECTORS);
+        for (uint256 i = 0; i < _count(raw, "timestamps"); i++) {
+            uint128 nanos = uint128(vm.parseJsonUint(raw, _path("timestamps", i, "nanos")));
+            assertEq(Encode.encodeTimestamp(nanos), vm.parseJsonBytes(raw, _path("timestamps", i, "encoded")), "ts");
+        }
+    }
+
+    function test_goVectors_cdcEncode() public view {
+        string memory raw = vm.readFile(VECTORS);
+        for (uint256 i = 0; i < _count(raw, "cdcStrings"); i++) {
+            assertEq(
+                Encode.cdcEncodeString(vm.parseJsonString(raw, _path("cdcStrings", i, "value"))),
+                vm.parseJsonBytes(raw, _path("cdcStrings", i, "encoded")),
+                "cdcString"
+            );
+        }
+        for (uint256 i = 0; i < _count(raw, "cdcInt64s"); i++) {
+            assertEq(
+                Encode.cdcEncodeInt64(vm.parseJsonUint(raw, _path("cdcInt64s", i, "value"))),
+                vm.parseJsonBytes(raw, _path("cdcInt64s", i, "encoded")),
+                "cdcInt64"
+            );
+        }
+        for (uint256 i = 0; i < _count(raw, "cdcBytes"); i++) {
+            assertEq(
+                Encode.cdcEncodeBytes(vm.parseJsonBytes(raw, _path("cdcBytes", i, "value"))),
+                vm.parseJsonBytes(raw, _path("cdcBytes", i, "encoded")),
+                "cdcBytes"
+            );
+        }
+        for (uint256 i = 0; i < _count(raw, "cdcBytes32s"); i++) {
+            assertEq(
+                Encode.cdcEncodeBytes32(vm.parseJsonBytes32(raw, _path("cdcBytes32s", i, "value"))),
+                vm.parseJsonBytes(raw, _path("cdcBytes32s", i, "encoded")),
+                "cdcBytes32"
+            );
+        }
+    }
+
+    function test_goVectors_validatorSetHashes() public view {
+        string memory raw = vm.readFile(VECTORS);
+        for (uint256 i = 0; i < _count(raw, "valSets"); i++) {
+            bytes32[] memory pubKeys = vm.parseJsonBytes32Array(raw, _path("valSets", i, "pubKeys"));
+            uint256[] memory powers = vm.parseJsonUintArray(raw, _path("valSets", i, "votingPowers"));
+            assertEq(pubKeys.length, powers.length, "length");
+
+            ISpectreTendermintMsgs.ValidatorSet memory valSet;
+            valSet.validators = new ISpectreTendermintMsgs.ValidatorInfo[](pubKeys.length);
+            for (uint256 j = 0; j < pubKeys.length; j++) {
+                valSet.validators[j].pubKey = pubKeys[j];
+                valSet.validators[j].votingPower = uint64(powers[j]);
+            }
+
+            assertEq(
+                Header.hashValSet(valSet),
+                vm.parseJsonBytes32(raw, _path("valSets", i, "hash")),
+                vm.parseJsonString(raw, _path("valSets", i, "name"))
+            );
+        }
+    }
+
+    function test_goVectors_headerHashes() public view {
+        string memory raw = vm.readFile(VECTORS);
+        for (uint256 i = 0; i < _count(raw, "headers"); i++) {
+            ISpectreTendermintMsgs.BlockHeader memory header = _headerVector(raw, i);
+            bytes32 want = vm.parseJsonBytes32(raw, _path("headers", i, "hash"));
+            string memory name = vm.parseJsonString(raw, _path("headers", i, "name"));
+
+            assertEq(Header.hashHeader(header), want, name);
+            assertEq(Header.hashHeaderWithCachedChainId(header, Header.chainIdLeafHash(header.chainId)), want, name);
+        }
+    }
+
+    function _headerVector(
+        string memory raw,
+        uint256 i
     )
-        internal
-        pure
-        returns (IICS07TendermintMsgs.BlockCommit memory)
+        private
+        view
+        returns (ISpectreTendermintMsgs.BlockHeader memory h)
     {
-        IICS07TendermintMsgs.CommitSig[] memory sigs = new IICS07TendermintMsgs.CommitSig[](1);
-        // Canonical-vote encoding does not cover validatorAddress.
-        sigs[0] = IICS07TendermintMsgs.CommitSig({ flag: flag, validatorAddress: bytes20(0) });
-
-        return IICS07TendermintMsgs.BlockCommit({
-            height: height,
-            round: round,
-            blockId: IICS07TendermintMsgs.BlockId({
-                hashData: _hash2(), partSetHeader: IICS07TendermintMsgs.PartSetHeader({ total: 1, hashData: _hash1() })
-            }),
-            commitSigs: sigs
+        h.version = ISpectreTendermintMsgs.Version({
+            blockVersion: uint64(vm.parseJsonUint(raw, _path("headers", i, "versionBlock"))),
+            appVersion: uint64(vm.parseJsonUint(raw, _path("headers", i, "versionApp")))
         });
-    }
+        h.chainId = vm.parseJsonString(raw, _path("headers", i, "chainId"));
+        h.height = uint64(vm.parseJsonUint(raw, _path("headers", i, "height")));
+        h.time = uint128(vm.parseJsonUint(raw, _path("headers", i, "timeNanos")));
 
-    function test_voteSignBytes_full() public pure {
-        IICS07TendermintMsgs.BlockCommit memory commit =
-            _makeBlockCommit(100, 0, IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT);
-        assertEq(
-            Encode.voteSignBytes(commit, "test-chain", 0, VOTE_TIMESTAMP_NANOS),
-            hex"69080211640000000000000022480a20202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f122408011220101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f2a06088081c8ac06320a746573742d636861696e"
-        );
-    }
-
-    function test_voteSignBytes_zeroHeightZeroRound() public pure {
-        // When height and round are 0 the fields are omitted entirely.
-        IICS07TendermintMsgs.BlockCommit memory commit =
-            _makeBlockCommit(0, 0, IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT);
-        assertEq(
-            Encode.voteSignBytes(commit, "test-chain", 0, VOTE_TIMESTAMP_NANOS),
-            hex"60080222480a20202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f122408011220101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f2a06088081c8ac06320a746573742d636861696e"
-        );
-    }
-
-    function test_voteSignBytes_zeroHeightNonZeroRound() public pure {
-        IICS07TendermintMsgs.BlockCommit memory commit =
-            _makeBlockCommit(0, 5, IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT);
-        assertEq(
-            Encode.voteSignBytes(commit, "test-chain", 0, VOTE_TIMESTAMP_NANOS),
-            hex"69080219050000000000000022480a20202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f122408011220101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f2a06088081c8ac06320a746573742d636861696e"
-        );
-    }
-
-    function test_voteSignBytes_nonZeroHeightZeroRound() public pure {
-        IICS07TendermintMsgs.BlockCommit memory commit =
-            _makeBlockCommit(10, 0, IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT);
-        assertEq(
-            Encode.voteSignBytes(commit, "test-chain", 0, VOTE_TIMESTAMP_NANOS),
-            hex"690802110a0000000000000022480a20202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f122408011220101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f2a06088081c8ac06320a746573742d636861696e"
-        );
-    }
-
-    function test_voteSignBytes_absentFlag() public pure {
-        // Absent flag => block_id is omitted.
-        IICS07TendermintMsgs.BlockCommit memory commit =
-            _makeBlockCommit(100, 0, IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT);
-        assertEq(
-            Encode.voteSignBytes(commit, "test-chain", 0, VOTE_TIMESTAMP_NANOS),
-            hex"1f08021164000000000000002a06088081c8ac06320a746573742d636861696e"
-        );
-    }
-
-    function test_voteSignBytes_noChainId() public pure {
-        IICS07TendermintMsgs.BlockCommit memory commit =
-            _makeBlockCommit(100, 0, IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT);
-        assertEq(
-            Encode.voteSignBytes(commit, "", 0, VOTE_TIMESTAMP_NANOS),
-            hex"5d080211640000000000000022480a20202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f122408011220101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f2a06088081c8ac06"
-        );
-    }
-
-    function test_voteSignBytes_zeroTimestamp() public pure {
-        // Zero timestamp is encoded as an empty length-delimited message (2a00),
-        // matching Go/CometBFT CanonicalVote behavior.
-        IICS07TendermintMsgs.BlockCommit memory commit =
-            _makeBlockCommit(100, 0, IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT);
-        assertEq(
-            Encode.voteSignBytes(commit, "test-chain", 0, 0),
-            hex"63080211640000000000000022480a20202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f122408011220101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f2a00320a746573742d636861696e"
-        );
-    }
-
-    function test_voteSignBytes_nonZeroHeightAndRound() public pure {
-        IICS07TendermintMsgs.BlockCommit memory commit =
-            _makeBlockCommit(128, 127, IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT);
-        assertEq(
-            Encode.voteSignBytes(commit, "test-chain", 0, VOTE_TIMESTAMP_NANOS),
-            hex"720802118000000000000000197f0000000000000022480a20202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f122408011220101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f2a06088081c8ac06320a746573742d636861696e"
-        );
+        h.hasLastBlockId = vm.parseJsonBool(raw, _path("headers", i, "hasLastBlockId"));
+        h.lastBlockId = ISpectreTendermintMsgs.BlockId({
+            hashData: vm.parseJsonBytes32(raw, _path("headers", i, "lastBlockIdHash")),
+            partSetHeader: ISpectreTendermintMsgs.PartSetHeader({
+                total: uint32(vm.parseJsonUint(raw, _path("headers", i, "lastPartSetTotal"))),
+                hashData: vm.parseJsonBytes32(raw, _path("headers", i, "lastPartSetHash"))
+            })
+        });
+        h.hasLastCommitHash = vm.parseJsonBool(raw, _path("headers", i, "hasLastCommitHash"));
+        h.lastCommitHash = vm.parseJsonBytes32(raw, _path("headers", i, "lastCommitHash"));
+        h.hasDataHash = vm.parseJsonBool(raw, _path("headers", i, "hasDataHash"));
+        h.dataHash = vm.parseJsonBytes32(raw, _path("headers", i, "dataHash"));
+        h.validatorsHash = vm.parseJsonBytes32(raw, _path("headers", i, "validatorsHash"));
+        h.nextValidatorsHash = vm.parseJsonBytes32(raw, _path("headers", i, "nextValidatorsHash"));
+        h.consensusHash = vm.parseJsonBytes32(raw, _path("headers", i, "consensusHash"));
+        h.appHash = vm.parseJsonBytes32(raw, _path("headers", i, "appHash"));
+        h.hasLastResultsHash = vm.parseJsonBool(raw, _path("headers", i, "hasLastResultsHash"));
+        h.lastResultsHash = vm.parseJsonBytes32(raw, _path("headers", i, "lastResultsHash"));
+        h.hasEvidenceHash = vm.parseJsonBool(raw, _path("headers", i, "hasEvidenceHash"));
+        h.evidenceHash = vm.parseJsonBytes32(raw, _path("headers", i, "evidenceHash"));
+        h.proposerAddress = vm.parseJsonBytes(raw, _path("headers", i, "proposerAddress"));
     }
 
     // ─── Debug: emit encoded bytes for manual inspection ───
 
     function test_debug_printEncodings() public pure {
-        console.log("=== encodeVarint ===");
-        console.logBytes(Encode.encodeVarint(0));
-        console.logBytes(Encode.encodeVarint(128));
-        console.logBytes(Encode.encodeVarint(300));
-        console.logBytes(Encode.encodeVarint(1_000_000));
-
         console.log("=== encodeVersion ===");
-        console.logBytes(Encode.encodeVersion(IICS07TendermintMsgs.Version({ blockVersion: 11, appVersion: 0 })));
+        console.logBytes(Encode.encodeVersion(ISpectreTendermintMsgs.Version({ blockVersion: 11, appVersion: 0 })));
 
         console.log("=== encodeValidator ===");
         console.logBytes(
-            Encode.encodeValidator(IICS07TendermintMsgs.SimpleValidator({ pubKey: _pubKey(), votingPower: 100 }))
+            Encode.encodeValidator(ISpectreTendermintMsgs.SimpleValidator({ pubKey: _pubKey(), votingPower: 100 }))
         );
 
         console.log("=== encodeBlockId ===");
         console.logBytes(
             Encode.encodeBlockId(
-                IICS07TendermintMsgs.BlockId({
+                ISpectreTendermintMsgs.BlockId({
                     hashData: _hash2(),
-                    partSetHeader: IICS07TendermintMsgs.PartSetHeader({ total: 1, hashData: _hash1() })
+                    partSetHeader: ISpectreTendermintMsgs.PartSetHeader({ total: 1, hashData: _hash1() })
                 })
             )
         );

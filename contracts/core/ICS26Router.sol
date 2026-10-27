@@ -169,15 +169,10 @@ contract ICS26Router is
     // NOTE: Reentrancy disabled for this function via the `nonReentrant` modifier.
     // slither-disable-next-line reentrancy-no-eth
     function recvPacket(IICS26RouterMsgs.MsgRecvPacket calldata msg_) external whenNotPaused nonReentrant restricted {
-        // TODO: Support multi-payload packets (#93)
-        require(msg_.packet.payloads.length == 1, IBCMultiPayloadPacketNotSupported());
-        IICS26RouterMsgs.Payload calldata payload = msg_.packet.payloads[0];
+        IICS26RouterMsgs.Payload calldata payload = _singlePayload(msg_.packet);
 
         IICS02ClientMsgs.CounterpartyInfo memory cInfo = getCounterparty(msg_.packet.destClient);
-        require(
-            keccak256(bytes(cInfo.clientId)) == keccak256(bytes(msg_.packet.sourceClient)),
-            IBCInvalidCounterparty(cInfo.clientId, msg_.packet.sourceClient)
-        );
+        _requireCounterparty(cInfo, msg_.packet.sourceClient);
 
         require(
             msg_.packet.timeoutTimestamp > block.timestamp,
@@ -213,12 +208,12 @@ contract ICS26Router is
         try getIBCApp(payload.destPort)
             .onRecvPacket(
                 IIBCAppCallbacks.OnRecvPacketCallback({
-                sourceClient: msg_.packet.sourceClient,
-                destinationClient: msg_.packet.destClient,
-                sequence: msg_.packet.sequence,
-                payload: payload,
-                relayer: _msgSender()
-            })
+                    sourceClient: msg_.packet.sourceClient,
+                    destinationClient: msg_.packet.destClient,
+                    sequence: msg_.packet.sequence,
+                    payload: payload,
+                    relayer: _msgSender()
+                })
             ) returns (
             bytes memory ack
         ) {
@@ -239,15 +234,10 @@ contract ICS26Router is
     // NOTE: Reentrancy disabled for this function via the `nonReentrant` modifier.
     // slither-disable-next-line reentrancy-no-eth
     function ackPacket(IICS26RouterMsgs.MsgAckPacket calldata msg_) external nonReentrant restricted {
-        // TODO: Support multi-payload packets #93
-        require(msg_.packet.payloads.length == 1, IBCMultiPayloadPacketNotSupported());
-        IICS26RouterMsgs.Payload calldata payload = msg_.packet.payloads[0];
+        IICS26RouterMsgs.Payload calldata payload = _singlePayload(msg_.packet);
 
         IICS02ClientMsgs.CounterpartyInfo memory cInfo = getCounterparty(msg_.packet.sourceClient);
-        require(
-            keccak256(bytes(cInfo.clientId)) == keccak256(bytes(msg_.packet.destClient)),
-            IBCInvalidCounterparty(cInfo.clientId, msg_.packet.destClient)
-        );
+        _requireCounterparty(cInfo, msg_.packet.destClient);
 
         bytes memory commitmentPath =
             ICS24Host.packetAcknowledgementCommitmentPathCalldata(msg_.packet.destClient, msg_.packet.sequence);
@@ -274,13 +264,13 @@ contract ICS26Router is
         getIBCApp(payload.sourcePort)
             .onAcknowledgementPacket(
                 IIBCAppCallbacks.OnAcknowledgementPacketCallback({
-                sourceClient: msg_.packet.sourceClient,
-                destinationClient: msg_.packet.destClient,
-                sequence: msg_.packet.sequence,
-                payload: payload,
-                acknowledgement: msg_.acknowledgement,
-                relayer: _msgSender()
-            })
+                    sourceClient: msg_.packet.sourceClient,
+                    destinationClient: msg_.packet.destClient,
+                    sequence: msg_.packet.sequence,
+                    payload: payload,
+                    acknowledgement: msg_.acknowledgement,
+                    relayer: _msgSender()
+                })
             );
 
         emit AckPacket(msg_.packet.sourceClient, msg_.packet.sequence, msg_.packet, msg_.acknowledgement);
@@ -288,15 +278,10 @@ contract ICS26Router is
 
     /// @inheritdoc IICS26RouterAccessControlled
     function timeoutPacket(IICS26RouterMsgs.MsgTimeoutPacket calldata msg_) external nonReentrant restricted {
-        // TODO: Support multi-payload packets #93
-        require(msg_.packet.payloads.length == 1, IBCMultiPayloadPacketNotSupported());
-        IICS26RouterMsgs.Payload calldata payload = msg_.packet.payloads[0];
+        IICS26RouterMsgs.Payload calldata payload = _singlePayload(msg_.packet);
 
         IICS02ClientMsgs.CounterpartyInfo memory cInfo = getCounterparty(msg_.packet.sourceClient);
-        require(
-            keccak256(bytes(cInfo.clientId)) == keccak256(bytes(msg_.packet.destClient)),
-            IBCInvalidCounterparty(cInfo.clientId, msg_.packet.destClient)
-        );
+        _requireCounterparty(cInfo, msg_.packet.destClient);
 
         bytes memory receiptPath =
             ICS24Host.packetReceiptCommitmentPathCalldata(msg_.packet.destClient, msg_.packet.sequence);
@@ -321,15 +306,44 @@ contract ICS26Router is
         getIBCApp(payload.sourcePort)
             .onTimeoutPacket(
                 IIBCAppCallbacks.OnTimeoutPacketCallback({
-                sourceClient: msg_.packet.sourceClient,
-                destinationClient: msg_.packet.destClient,
-                sequence: msg_.packet.sequence,
-                payload: payload,
-                relayer: _msgSender()
-            })
+                    sourceClient: msg_.packet.sourceClient,
+                    destinationClient: msg_.packet.destClient,
+                    sequence: msg_.packet.sequence,
+                    payload: payload,
+                    relayer: _msgSender()
+                })
             );
 
         emit TimeoutPacket(msg_.packet.sourceClient, msg_.packet.sequence, msg_.packet);
+    }
+
+    /// @notice Returns the only payload of a packet
+    /// @dev TODO: Support multi-payload packets (#93)
+    /// @param packet The packet
+    /// @return The payload of the packet
+    function _singlePayload(IICS26RouterMsgs.Packet calldata packet)
+        private
+        pure
+        returns (IICS26RouterMsgs.Payload calldata)
+    {
+        require(packet.payloads.length == 1, IBCMultiPayloadPacketNotSupported());
+        return packet.payloads[0];
+    }
+
+    /// @notice Reverts unless the packet's counterparty client is the one registered for the local client
+    /// @param cInfo The counterparty registered for the local client
+    /// @param packetClient The counterparty client id carried by the packet
+    function _requireCounterparty(
+        IICS02ClientMsgs.CounterpartyInfo memory cInfo,
+        string calldata packetClient
+    )
+        private
+        pure
+    {
+        require(
+            keccak256(bytes(cInfo.clientId)) == keccak256(bytes(packetClient)),
+            IBCInvalidCounterparty(cInfo.clientId, packetClient)
+        );
     }
 
     /// @notice Returns the storage of the ICS26Router contract

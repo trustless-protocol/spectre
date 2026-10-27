@@ -2,7 +2,7 @@ name: E2E suite (reusable)
 
 # Reusable matrix runner for one interchaintest suite. Per-suite caller
 # workflows (e2e-<suite>.yml) invoke this via `workflow_call`, so the heavy
-# setup (submodules, Garaga FFI, Kurtosis pin, prover artifacts) lives in one
+# setup (private gnark modules, Garaga FFI, Kurtosis pin, prover artifacts) lives in one
 # place instead of being copy-pasted per suite.
 #
 # Every method of the chosen suite (TestWith<Suite>/Test_*) rebuilds its own
@@ -84,38 +84,39 @@ jobs:
       matrix:
         test: ${{ fromJson(needs.discover.outputs.tests) }}
     name: ${{ matrix.test }}
+    env:
+      # The gnark forks are private Go modules; keep them off the public proxy and
+      # checksum DB. libgaraga_rs lives in .artifacts/native (see scripts/build-garaga-ffi.sh).
+      GOPRIVATE: github.com/decentrio/*
+      CGO_LDFLAGS: -L${{ github.workspace }}/.artifacts/native
     steps:
-      # Private gnark submodules need a token with read access to
-      # decentrio/gnark + decentrio/ecip-gnark (SUBMODULE_TOKEN secret, passed
-      # down via `secrets: inherit` from the caller workflow).
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.ref }}
 
-      - name: Checkout private gnark submodules
+      # The private gnark modules need a token with read access to
+      # decentrio/gnark + decentrio/ecip-gnark (SUBMODULE_TOKEN secret, passed
+      # down via `secrets: inherit` from the caller workflow).
+      - name: Authenticate private gnark modules
         run: |
           git config --global url."https://x-access-token:${{ secrets.SUBMODULE_TOKEN }}@github.com/decentrio/gnark".insteadOf "https://github.com/decentrio/gnark"
           git config --global url."https://x-access-token:${{ secrets.SUBMODULE_TOKEN }}@github.com/decentrio/ecip-gnark".insteadOf "https://github.com/decentrio/ecip-gnark"
-          git submodule update --init --recursive
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Build Garaga FFI (libgaraga_rs)
-        working-directory: third_party/ecip-gnark/ffi/garaga_rs
-        run: |
-          cargo build --release
-          cp target/release/libgaraga_rs.so ../..
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: relayer/go.mod
           cache: true
 
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Garaga FFI (libgaraga_rs)
+        run: scripts/build-garaga-ffi.sh
+
       - uses: foundry-rs/foundry-toolchain@v1
         with:
           # Pinning avoids foundryup's "latest stable" GitHub API lookup, which
           # has intermittently failed CI with 504s before tests even start.
-          version: v1.7.1
+          version: v1.8.5
 
       - uses: oven-sh/setup-bun@v2
 
@@ -150,7 +151,7 @@ jobs:
           # Pin the CLI to the engine API version the interchaintest SDK expects
           # (kurtosis/api/golang in e2e/interchaintestv8/go.mod); a newer/older CLI
           # starts an engine whose API version mismatches and the suite aborts.
-          sudo apt install -y kurtosis-cli=1.16.6
+          sudo apt install -y kurtosis-cli=1.20.0
           kurtosis analytics disable
           # The interchaintest suite connects to a running local Kurtosis engine
           # (127.0.0.1:9710); the CLI does not auto-start it.
@@ -164,7 +165,7 @@ jobs:
         # relayer/prover subprocesses dlopen libgaraga_rs.so, so it must be on
         # the loader path.
         env:
-          LD_LIBRARY_PATH: ${{ github.workspace }}/third_party/ecip-gnark
+          LD_LIBRARY_PATH: ${{ github.workspace }}/.artifacts/native
           ETH_TESTNET_TYPE: pos
           E2E_PROOF_TYPE: ${{ inputs.proof_type || 'groth16' }}
         run: just test-e2e '${{ matrix.test }}'

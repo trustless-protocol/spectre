@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { ISpectreTendermintMsgs } from "contracts/light-clients/spectre/messages/ISpectreTendermintMsgs.sol";
 import { ISpectreClientErrors } from "contracts/light-clients/spectre/errors/ISpectreClientErrors.sol";
 
 /// @title SpectreStore
@@ -27,7 +27,7 @@ library SpectreStore {
     /// @notice The SpectreClient on-chain state.
     /// @custom:storage-location erc7201:spectre.storage.SpectreClient
     struct Store {
-        IICS07TendermintMsgs.ClientState clientState;
+        ISpectreTendermintMsgs.ClientState clientState;
         mapping(uint64 height => bytes32 hash) consensusStateHashes;
         bytes32 pinnedValidatorsHash;
         address pinnedValidatorSetPointer;

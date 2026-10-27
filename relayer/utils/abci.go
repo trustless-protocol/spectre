@@ -12,11 +12,11 @@ func BytesToBytes32(data []byte) [32]byte {
 	return result
 }
 
-func IbcCommitmentPath(packet channeltypesv2.Packet, appendByte []byte) [][]byte {
-	return IbcPath(packet.SourceClient, packet.Sequence, appendByte)
+func IBCCommitmentPath(packet channeltypesv2.Packet, appendByte []byte) [][]byte {
+	return IBCPath(packet.SourceClient, packet.Sequence, appendByte)
 }
 
-func IbcPath(clientID string, sequence uint64, appendByte []byte) [][]byte {
+func IBCPath(clientID string, sequence uint64, appendByte []byte) [][]byte {
 	sequenceBytes := make([]byte, 8)
 	binary.BigEndian.PutUint64(sequenceBytes, sequence)
 	path := []byte(clientID)

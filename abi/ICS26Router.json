@@ -1719,12 +1719,28 @@
         "name": "expectedModuleId",
         "type": "bytes32",
         "internalType": "bytes32"
+      },
+      {
+        "name": "actualModuleId",
+        "type": "bytes32",
+        "internalType": "bytes32"
       }
     ]
   },
   {
     "type": "error",
     "name": "IBCClientMigrationModuleMissing",
+    "inputs": [
+      {
+        "name": "module",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "IBCClientMigrationModuleNotResponding",
     "inputs": [
       {
         "name": "module",
@@ -1799,6 +1815,11 @@
   },
   {
     "type": "error",
+    "name": "IBCInvalidClientAddress",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "IBCInvalidClientId",
     "inputs": [
       {
@@ -1827,6 +1848,11 @@
   {
     "type": "error",
     "name": "IBCInvalidCounterpartyClientId",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "IBCInvalidCounterpartyMerklePrefix",
     "inputs": []
   },
   {

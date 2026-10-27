@@ -22,7 +22,7 @@ func execute(ctx context.Context, args []string) error {
 func newRootCommand(run startRunner) *cobra.Command {
 	command := &cobra.Command{
 		Use:           "attestor",
-		Short:         "Run the Fast IBC Arbitrum attestor",
+		Short:         "Run the Spectre Arbitrum attestor",
 		SilenceErrors: true,
 		SilenceUsage:  true,
 	}

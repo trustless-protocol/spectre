@@ -13,7 +13,7 @@ alloy_sol_types::sol!("../../contracts/core/messages/IICS02ClientMsgs.sol");
 alloy_sol_types::sol!("../../contracts/apps/ics20/messages/IICS20TransferMsgs.sol");
 alloy_sol_types::sol!("../../contracts/core/messages/IIBCAppCallbacks.sol");
 
-alloy_sol_types::sol!("../../contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol");
+alloy_sol_types::sol!("../../contracts/light-clients/spectre/messages/ISpectreTendermintMsgs.sol");
 alloy_sol_types::sol!("../../contracts/light-clients/spectre/messages/IGroth16Msgs.sol");
 alloy_sol_types::sol!("../../contracts/light-clients/spectre/messages/IMembershipMsgs.sol");
 
@@ -39,7 +39,7 @@ impl IGroth16Msgs::Groth16Proof {
 }
 
 #[allow(clippy::fallible_impl_from)]
-impl From<ICS07TendermintConsensusState> for IICS07TendermintMsgs::ConsensusState {
+impl From<ICS07TendermintConsensusState> for ISpectreTendermintMsgs::ConsensusState {
     fn from(ics07_tendermint_consensus_state: ICS07TendermintConsensusState) -> Self {
         let root: [u8; 32] = ics07_tendermint_consensus_state
             .root
@@ -63,8 +63,8 @@ impl From<ICS07TendermintConsensusState> for IICS07TendermintMsgs::ConsensusStat
 }
 
 #[allow(clippy::fallible_impl_from)]
-impl From<IICS07TendermintMsgs::ConsensusState> for ICS07TendermintConsensusState {
-    fn from(consensus_state: IICS07TendermintMsgs::ConsensusState) -> Self {
+impl From<ISpectreTendermintMsgs::ConsensusState> for ICS07TendermintConsensusState {
+    fn from(consensus_state: ISpectreTendermintMsgs::ConsensusState) -> Self {
         let time = OffsetDateTime::from_unix_timestamp_nanos(
             consensus_state.timestamp.try_into().unwrap(),
         )

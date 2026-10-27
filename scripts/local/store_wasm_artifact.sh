@@ -20,12 +20,24 @@ fi
 
 chain_id="test-ibc-eth"
 keyring="test"
+# The shared voting helpers use uppercase shell variables. Keep the local names
+# above for this script's own CLI calls and initialise the helpers explicitly.
+CHAIN_ID=$chain_id
+KEYRING=$keyring
 signer="cosmos10d07y265gmmuvt4z0w9aw880jnsr700j6zn9kn"
-wasm_byte_code="$(gzip -n -c "$artifact_path" | base64 -w 0)"
+# GNU base64 spells this `-w 0`, whereas macOS/BSD base64 uses `-b`.  Remove
+# wrapping explicitly so the proposal payload is portable across both hosts.
+#
+# The payload goes to jq through a file (--rawfile), never through --arg. The gzipped, base64 wasm is
+# about 300 KB, and Linux caps a single command-line argument at 128 KiB (MAX_ARG_STRLEN), so
+# `jq --arg` fails with "Argument list too long" there even though it happens to work on macOS.
+wasm_byte_code_file="$(mktemp)"
+trap 'rm -f "$wasm_byte_code_file"' EXIT
+gzip -n -c "$artifact_path" | base64 | tr -d '\n' > "$wasm_byte_code_file"
 
 jq -n \
   --arg signer "$signer" \
-  --arg wasm_byte_code "$wasm_byte_code" \
+  --rawfile wasm_byte_code "$wasm_byte_code_file" \
   --arg title "$proposal_title" \
   --arg summary "$proposal_summary" \
   '{
@@ -56,8 +68,18 @@ proposal_id="$(
 )"
 sleep 5
 vote_default_validators "$proposal_id"
-sleep 30
 
 checksum="$(wasm_checksum_from_proposal proposal.json)"
+# The local Cosmos network produces a block roughly every 30 seconds and its
+# governance voting period is one minute.  Poll the chain rather than assuming
+# a fixed delay, so this works reliably on slower developer machines too.
+for _ in $(seq 1 45); do
+  if wasm_checksum_is_stored "$checksum"; then
+    echo "Checksum: 0x$checksum"
+    exit 0
+  fi
+  sleep 2
+done
+
 assert_wasm_checksum_stored "$checksum"
 echo "Checksum: 0x$checksum"

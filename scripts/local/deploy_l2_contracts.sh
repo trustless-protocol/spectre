@@ -9,7 +9,7 @@ set -euxo pipefail
 # module (a SpectreClient on the L2), and it runs E2ETestDeployL2 (no ERC20 faucet).
 #
 # Like the L1 flow it is DEPLOY-ONLY: the SpectreClient itself is created afterwards
-# by `relayer create-clients-eth --source <ics26_client_id>`, which reads a fresh
+# by `relayer create-clients-eth --config <that-path>.json`, which reads a fresh
 # Cosmos genesis and writes spectre_client back into the module.
 #
 # Endpoint source (in priority order):
@@ -182,6 +182,12 @@ else
     fi
 fi
 
+# The relayer proves with relayer/bin/n*/pk.bin; the verifier deployed below is compiled
+# from contracts/verifiers/Groth16Verifier_N*.sol. A pk from another setup deploys fine
+# and then fails every Cosmos -> L2 update with a bare ProofVerificationFailed().
+# PROVER_PAIRING=warn downgrades a mismatch to a warning.
+scripts/local/check_prover_pairing.sh
+
 # ------------------------------------------------------------------ deploy ---
 DEPLOY_OUT=$REPO_ROOT/.l2-deployment.json
 export E2E_L2_DEPLOYMENT_OUT=$DEPLOY_OUT
@@ -275,4 +281,4 @@ else
     echo "         The return direction will not relay until you add one." >&2
 fi
 
-echo "Next: relayer create-clients-eth --source <ics26_client_id>  (deploys the SpectreClient on the L2)."
+echo "Next: relayer create-clients-eth --config <that-path>.json  (deploys the SpectreClient on the L2)."

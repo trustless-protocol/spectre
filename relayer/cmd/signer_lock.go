@@ -10,7 +10,7 @@ import (
 // be derived from a relay's state or working directory: those are deliberately
 // per-path values, so a lock located under either would let two processes take
 // different files.
-const signerLockDirName = "fast-ibc-relayer"
+const signerLockDirName = "spectre-relayer"
 
 // signerLockRoot is a literal on purpose: every stdlib helper that would name a
 // directory for us reads an environment variable (TMPDIR for os.TempDir,

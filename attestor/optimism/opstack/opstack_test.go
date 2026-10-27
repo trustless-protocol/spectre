@@ -158,9 +158,9 @@ func TestRunOnceMatchAttests(t *testing.T) {
 	if got := a.store.Pending(); len(got) != 0 {
 		t.Fatalf("pending = %d entries, want 0", len(got))
 	}
-	cur, ok := a.AttestedUpTo()
+	cur, ok := a.ConfirmedUpTo()
 	if !ok || cur.Height != 100 || cur.ID != claim {
-		t.Fatalf("AttestedUpTo = (%+v, %t), want height 100 root %x", cur, ok, claim)
+		t.Fatalf("ConfirmedUpTo = (%+v, %t), want height 100 root %x", cur, ok, claim)
 	}
 	if len(hook.calls) != 0 {
 		t.Fatalf("hook called %d times on a match, want 0", len(hook.calls))
@@ -188,6 +188,20 @@ func TestIngestUsesOnlyTheFinalizedFactoryView(t *testing.T) {
 	}
 	if _, found := a.store.HighestAttestedAtOrBelow(100, true); found {
 		t.Fatal("latest-only game was published before its L1 evidence finalized")
+	}
+	// A latest-L1 reorg can replace the still-unfinalized object repeatedly.
+	// Neither replacement may advance the cursor or become provenance for the
+	// feed while the finalized view remains unchanged.
+	latestReplacement := root(0xbb)
+	games.games = []ProposedRoot{game(0, 0, 100, latestReplacement)}
+	if err := a.runOnce(context.Background()); err != nil {
+		t.Fatalf("runOnce after latest-only factory reorg: %v", err)
+	}
+	if got := a.store.NextGameIndex(); got != 0 {
+		t.Fatalf("cursor after latest-only factory reorg = %d, want 0", got)
+	}
+	if _, found := a.store.HighestAttestedAtOrBelow(100, true); found {
+		t.Fatal("latest-only replacement became provenance for the feed before finalization")
 	}
 
 	// Advancing the finalized view makes the exact game available once.
@@ -247,7 +261,7 @@ func TestRunOnceMismatchRecordsAndHooks(t *testing.T) {
 	if err := a.runOnce(context.Background()); err != nil {
 		t.Fatalf("runOnce: %v", err)
 	}
-	if _, ok := a.AttestedUpTo(); ok {
+	if _, ok := a.ConfirmedUpTo(); ok {
 		t.Fatal("mismatch must not enter the attested feed")
 	}
 	if len(a.store.Pending()) != 0 {
@@ -313,8 +327,8 @@ func TestIngestErrorStopsCursor(t *testing.T) {
 	if got := a.store.NextGameIndex(); got != 3 {
 		t.Fatalf("ingest cursor = %d after recovery, want 3", got)
 	}
-	if cur, ok := a.AttestedUpTo(); !ok || cur.Height != 300 {
-		t.Fatalf("AttestedUpTo = (%+v, %t), want height 300", cur, ok)
+	if cur, ok := a.ConfirmedUpTo(); !ok || cur.Height != 300 {
+		t.Fatalf("ConfirmedUpTo = (%+v, %t), want height 300", cur, ok)
 	}
 }
 
@@ -375,7 +389,7 @@ func TestReplicaLagKeepsPending(t *testing.T) {
 	if got := a.store.Pending(); len(got) != 1 {
 		t.Fatalf("pending = %d entries, want 1 (undecided while safe head lags)", len(got))
 	}
-	if _, ok := a.AttestedUpTo(); ok {
+	if _, ok := a.ConfirmedUpTo(); ok {
 		t.Fatal("nothing may be affirmed while the safe head lags")
 	}
 }
@@ -395,7 +409,7 @@ func TestReplicaErrorKeepsPendingAndFails(t *testing.T) {
 	if got := a.store.Pending(); len(got) != 1 {
 		t.Fatalf("pending = %d entries, want 1 (no verdict on error)", len(got))
 	}
-	if _, ok := a.AttestedUpTo(); ok {
+	if _, ok := a.ConfirmedUpTo(); ok {
 		t.Fatal("nothing may be affirmed on a replica error")
 	}
 }
@@ -429,9 +443,9 @@ func TestUnrespectedGameTypeSkipped(t *testing.T) {
 	if got := a.store.NextGameIndex(); got != 2 {
 		t.Fatalf("cursor = %d, want 2 (skipped game still advances ingest)", got)
 	}
-	cur, ok := a.AttestedUpTo()
+	cur, ok := a.ConfirmedUpTo()
 	if !ok || cur.Height != 200 {
-		t.Fatalf("AttestedUpTo = (%+v, %t), want height 200 only", cur, ok)
+		t.Fatalf("ConfirmedUpTo = (%+v, %t), want height 200 only", cur, ok)
 	}
 }
 
@@ -445,7 +459,7 @@ func TestUnsafeProvisionalThenConfirmed(t *testing.T) {
 	if err := a.runOnce(context.Background()); err != nil {
 		t.Fatalf("runOnce: %v", err)
 	}
-	if _, ok := a.AttestedUpTo(); ok {
+	if _, ok := a.ConfirmedUpTo(); ok {
 		t.Fatal("provisional roots must not count as attested by default")
 	}
 	if cur, ok := a.store.AttestedUpTo(true); !ok || cur.Height != 500 {
@@ -461,8 +475,8 @@ func TestUnsafeProvisionalThenConfirmed(t *testing.T) {
 	if err := a.runOnce(context.Background()); err != nil {
 		t.Fatalf("runOnce (recheck): %v", err)
 	}
-	if cur, ok := a.AttestedUpTo(); !ok || cur.Height != 500 {
-		t.Fatalf("AttestedUpTo after confirmation = (%+v, %t), want height 500", cur, ok)
+	if cur, ok := a.ConfirmedUpTo(); !ok || cur.Height != 500 {
+		t.Fatalf("ConfirmedUpTo after confirmation = (%+v, %t), want height 500", cur, ok)
 	}
 	if got := a.store.RecheckList(); len(got) != 0 {
 		t.Fatalf("recheck list not drained: %+v", got)
@@ -524,9 +538,9 @@ func TestUnsafeProvisionalMismatchConfirmedLegitAtSafe(t *testing.T) {
 	if err := a.runOnce(context.Background()); err != nil {
 		t.Fatalf("runOnce (recheck): %v", err)
 	}
-	cur, ok := a.AttestedUpTo()
+	cur, ok := a.ConfirmedUpTo()
 	if !ok || cur.Height != 500 || cur.ID != claim {
-		t.Fatalf("AttestedUpTo = (%+v, %t), want confirmed height 500", cur, ok)
+		t.Fatalf("ConfirmedUpTo = (%+v, %t), want confirmed height 500", cur, ok)
 	}
 	if len(a.store.state.Mismatches) != 0 {
 		t.Fatalf("provisional mismatch must be superseded, got %+v", a.store.state.Mismatches)
@@ -596,7 +610,7 @@ func TestSafeVerdictAboveFinalizedIsProvisional(t *testing.T) {
 	if err := a.runOnce(context.Background()); err != nil {
 		t.Fatalf("runOnce: %v", err)
 	}
-	if _, ok := a.AttestedUpTo(); ok {
+	if _, ok := a.ConfirmedUpTo(); ok {
 		t.Fatal("safe verdict above finalized must not count as confirmed")
 	}
 	if cur, ok := a.store.AttestedUpTo(true); !ok || cur.Height != 500 {
@@ -611,8 +625,8 @@ func TestSafeVerdictAboveFinalizedIsProvisional(t *testing.T) {
 	if err := a.runOnce(context.Background()); err != nil {
 		t.Fatalf("runOnce (recheck): %v", err)
 	}
-	if cur, ok := a.AttestedUpTo(); !ok || cur.Height != 500 {
-		t.Fatalf("AttestedUpTo after confirmation = (%+v, %t), want height 500", cur, ok)
+	if cur, ok := a.ConfirmedUpTo(); !ok || cur.Height != 500 {
+		t.Fatalf("ConfirmedUpTo after confirmation = (%+v, %t), want height 500", cur, ok)
 	}
 }
 
@@ -629,9 +643,9 @@ func TestDerivedAttestationConfirmedAtFinalized(t *testing.T) {
 	if err := a.runOnce(context.Background()); err != nil {
 		t.Fatalf("runOnce: %v", err)
 	}
-	cur, ok := a.AttestedUpTo()
+	cur, ok := a.ConfirmedUpTo()
 	if !ok || cur.Height != 1000 || cur.ID != rootA {
-		t.Fatalf("AttestedUpTo = (%+v, %t), want confirmed derived root at 1000", cur, ok)
+		t.Fatalf("ConfirmedUpTo = (%+v, %t), want confirmed derived root at 1000", cur, ok)
 	}
 
 	// Head advances less than the gap: no new derived root.
@@ -639,7 +653,7 @@ func TestDerivedAttestationConfirmedAtFinalized(t *testing.T) {
 	if err := a.runOnce(context.Background()); err != nil {
 		t.Fatalf("runOnce (below gap): %v", err)
 	}
-	if cur, _ := a.AttestedUpTo(); cur.Height != 1000 {
+	if cur, _ := a.ConfirmedUpTo(); cur.Height != 1000 {
 		t.Fatalf("derived attested below the gap: %+v", cur)
 	}
 
@@ -648,8 +662,8 @@ func TestDerivedAttestationConfirmedAtFinalized(t *testing.T) {
 	if err := a.runOnce(context.Background()); err != nil {
 		t.Fatalf("runOnce (past gap): %v", err)
 	}
-	if cur, _ := a.AttestedUpTo(); cur.Height != 1200 || cur.ID != rootB {
-		t.Fatalf("AttestedUpTo = %+v, want derived root at 1200", cur)
+	if cur, _ := a.ConfirmedUpTo(); cur.Height != 1200 || cur.ID != rootB {
+		t.Fatalf("ConfirmedUpTo = %+v, want derived root at 1200", cur)
 	}
 }
 
@@ -667,7 +681,7 @@ func TestDerivedProvisionalReverify(t *testing.T) {
 	if err := a.runOnce(context.Background()); err != nil {
 		t.Fatalf("runOnce: %v", err)
 	}
-	if _, ok := a.AttestedUpTo(); ok {
+	if _, ok := a.ConfirmedUpTo(); ok {
 		t.Fatal("provisional derived root must not count as confirmed")
 	}
 	if cur, ok := a.store.AttestedUpTo(true); !ok || cur.Height != 1000 {
@@ -679,8 +693,8 @@ func TestDerivedProvisionalReverify(t *testing.T) {
 	if err := a.runOnce(context.Background()); err != nil {
 		t.Fatalf("runOnce (reverify): %v", err)
 	}
-	if cur, ok := a.AttestedUpTo(); !ok || cur.Height != 1000 || cur.ID != rootA {
-		t.Fatalf("AttestedUpTo after reverify = (%+v, %t), want confirmed 1000", cur, ok)
+	if cur, ok := a.ConfirmedUpTo(); !ok || cur.Height != 1000 || cur.ID != rootA {
+		t.Fatalf("ConfirmedUpTo after reverify = (%+v, %t), want confirmed 1000", cur, ok)
 	}
 }
 
@@ -703,9 +717,9 @@ func TestDerivedDivergenceCorrected(t *testing.T) {
 	if err := a.runOnce(context.Background()); err != nil {
 		t.Fatalf("runOnce (reverify): %v", err)
 	}
-	cur, ok := a.AttestedUpTo()
+	cur, ok := a.ConfirmedUpTo()
 	if !ok || cur.Height != 1000 || cur.ID != finalRoot {
-		t.Fatalf("AttestedUpTo = (%+v, %t), want corrected finalized root %x", cur, ok, finalRoot)
+		t.Fatalf("ConfirmedUpTo = (%+v, %t), want corrected finalized root %x", cur, ok, finalRoot)
 	}
 	if got := a.store.DerivedProvisionalAtOrBelow(1000); len(got) != 0 {
 		t.Fatalf("provisional derived entries not drained: %+v", got)

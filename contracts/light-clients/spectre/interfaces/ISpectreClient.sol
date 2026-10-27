@@ -2,7 +2,7 @@
 pragma solidity ^0.8.28;
 
 /// @title ISpectreClient
-/// @notice Interface for the SpectreClient ICS-07 Tendermint light client.
+/// @notice Interface for the Spectre light client.
 interface ISpectreClient {
     /// @notice Emitted when the application state (appHash / latest height) advances.
     /// @param height The new latest revision height.
@@ -45,4 +45,21 @@ interface ISpectreClient {
     ///      state (updateApplicationState).
     /// @return The pinned validators hash.
     function getPinnedValidatorsHash() external view returns (bytes32);
+
+    /// @notice Returns the hash of the consensus state trusted at `revisionHeight`.
+    /// @dev Reverts when the client has no consensus state at that height.
+    ///      This lets an operator verify that a live chain still matches the state this client
+    ///      stored before reusing the client after a restart.
+    /// @param revisionHeight The Cosmos revision height of the trusted consensus state.
+    /// @return The `keccak256(abi.encode(consensusState))` stored by the client.
+    function getConsensusStateHash(uint64 revisionHeight) external view returns (bytes32);
+
+    /// @notice Returns the height and consensus timestamp of the currently pinned validator-set snapshot.
+    /// @dev Both update paths reject the client once `block.timestamp - timestamp / 1e9` reaches the
+    ///      trusting period, and only `updateConsensusState` refreshes it — `updateApplicationState`
+    ///      advances `latestHeight` without touching the snapshot. Off-chain expiry tracking must
+    ///      therefore anchor here, not on the latest height's header time.
+    /// @return height    The revision height the snapshot was pinned at.
+    /// @return timestamp The pinned consensus state's timestamp, in nanoseconds.
+    function getPinnedSnapshot() external view returns (uint64 height, uint128 timestamp);
 }

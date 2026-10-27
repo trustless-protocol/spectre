@@ -50,7 +50,7 @@ objects and arrays are deliberately empty):
 
 ```json
 {
-  "client_id": "client-0",
+  "client_id": "eth-main",
   "header_1": {
     "signed_header": { "header": {}, "commit": {} },
     "validator_set": { "validators": [], "proposer": {}, "total_voting_power": "0" },
@@ -128,7 +128,6 @@ export PROVER_BIN_DIR='./bin'
 cd relayer
 ./relayer submit-misbehaviour \
   --config config.json \
-  --source client-0 \
   --evidence evidence.json \
   --dry-run
 ```
@@ -148,7 +147,6 @@ export MISBEHAVIOUR_PRIVATE_KEY='<dedicated-key>'
 cd relayer
 ./relayer submit-misbehaviour \
   --config config.json \
-  --source client-0 \
   --evidence evidence.json
 ```
 

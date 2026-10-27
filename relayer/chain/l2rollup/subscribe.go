@@ -10,6 +10,7 @@ import (
 
 	"relayer/chain"
 	relayerclient "relayer/client"
+	"relayer/services"
 	"relayer/subscriber"
 
 	contractICS26Router "relayer/bindings/ICS26Router"
@@ -27,19 +28,37 @@ import (
 // gap-recovery-safe: it only advances past a range that scanned successfully, so an RPC
 // hiccup re-scans rather than skips (mistake #11).
 //
-// The cursor is NOT persisted across runs — it lives only in Subscribe's stack frame.
-// A restart resumes one startup window below the head (see below), so anything older
-// than that window is never re-scanned, and a packet whose acknowledgement fell outside
-// it stays pending forever with nothing in the log to say why. The window is a
-// DURATION converted to blocks at the chain's measured block time, so a fast chain gets
-// more blocks for the same amount of recovery time rather than less time for the same
-// number of blocks.
+// The cursor is persisted across runs in the process's own cursors.json, beside the
+// pending trackers (B6), so a restart resumes where the last successful scan ended
+// rather than one startup window below the head. That window remains the FIRST-RUN
+// start and the floor for a resumed cursor, so a restart still rescans it.
+//
+// Without the durable cursor a restart later than the window never rescanned the
+// blocks before it, and a packet whose acknowledgement fell outside stayed pending
+// forever with nothing in the log to say why (#308). Sources built without a store
+// still behave that way, which is right for one-shot and test callers.
+//
+// The window itself is a DURATION converted to blocks at the chain's measured block
+// time, so a fast chain gets more blocks for the same amount of recovery time rather
+// than less time for the same number of blocks.
 //
 // LIMITATION (unsafe head-kind): the cursor only moves FORWARD — it never rewinds on an
 // L2 reorg. With head_kind=unsafe a scanned block can be reorged out and replaced; an
 // event only present on the losing branch is then missed (the cursor already passed
 // it). This is a non-issue for safe/finalized head-kinds (the relayable frontier is
 // post-reorg), which is the reason unsafe is the lowest-trust setting.
+// cursorL2 keys this source's scan cursor inside the process's shared
+// cursors.json. It shares that namespace with the keys subscriber/ declares for
+// the Cosmos and ETH scans, so it must stay distinct from them.
+//
+// LIMITATION, restated here because this is where the cursor is defined and an
+// operator picking head_kind will not go looking in the loop below: the cursor
+// only moves FORWARD across restarts. It is never rewound on an L2 reorg, so with
+// head_kind=unsafe a scanned block can be reorged out and an event that existed
+// only on the losing branch is missed. Safe and finalized are unaffected: their
+// frontier is post-reorg by construction.
+const cursorL2 = "l2"
+
 // l2SubscribeInterval is a var, not a const, purely so tests can shorten the poll
 // period; nothing outside the package reassigns it.
 var l2SubscribeInterval = 4 * time.Second
@@ -64,6 +83,10 @@ const (
 	// changes is that every chain now gets the same amount of TIME instead of the
 	// same number of blocks.
 	//
+	// What the durable cursor changes about this: it is now the FIRST-RUN start
+	// rather than the resume point (#308). Neither reaches a packet whose only
+	// event predates the window, because reconciliation is a filter applied AFTER
+	// the scan and its reach is the scan's reach.
 	// That distinction is the whole point of the constant. 256 blocks is ~8.5
 	// minutes on OP and ~64 SECONDS on Arbitrum Nitro, so the chain that produces
 	// blocks fastest -- and therefore emits packets fastest -- had the shortest
@@ -147,7 +170,7 @@ func startupWindowFromEnv(raw string) time.Duration {
 	}
 	window, err := time.ParseDuration(raw)
 	if err != nil || window < 0 {
-		log.Printf("[start] ignoring invalid %s=%q; using the default window", l2StartupLookbackEnv, raw)
+		log.Printf("WARN [start] ignoring invalid %s=%q; using the default window", l2StartupLookbackEnv, raw)
 		return 0
 	}
 	return window
@@ -198,7 +221,7 @@ func (s *Source) startupLookback(ctx context.Context, head uint64) uint64 {
 	window := startupWindow(startupWindowFromEnv(os.Getenv(l2StartupLookbackEnv)))
 	blockTime, err := s.measureBlockTime(ctx, head)
 	if err != nil {
-		log.Printf("[l2->cosmos Subscribe] block time unmeasurable (%v); sizing the %s startup window at %s per block",
+		log.Printf("WARN [l2->cosmos Subscribe] block time unmeasurable (%v); sizing the %s startup window at %s per block",
 			err, window, fallbackBlockTime)
 		blockTime = fallbackBlockTime
 	}
@@ -238,6 +261,15 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 		from    uint64
 		seeded  bool
 		pending []chain.Event // events the handler re-queued (not yet relayable)
+		// rescan marks the FIRST successful scan of this run, the one that covers
+		// the resume window rather than fresh blocks. Its events are historical,
+		// so each is reconciled against Cosmos before being relayed. Later scans
+		// cover blocks produced while this process was watching, where a query
+		// would only confirm what the scan just saw.
+		rescan = true
+		// lastReconcile paces the re-check of the pending buffer; the zero time
+		// makes the first tick with anything pending reconcile immediately.
+		lastReconcile time.Time
 	)
 	// Owned by this goroutine for the life of the loop, so a span the provider
 	// refuses is narrowed once rather than on every tick.
@@ -251,7 +283,7 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 
 		head, err := s.head(ctx)
 		if err != nil {
-			log.Printf("[l2->cosmos Subscribe] head: %v", err)
+			log.Printf("WARN [l2->cosmos Subscribe] head: %v", err)
 			continue // do NOT advance the cursor on failure
 		}
 		if !seeded {
@@ -262,6 +294,7 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 			if head > lookback {
 				from = head - lookback
 			}
+			from = s.resumeCursor(from, head)
 			seeded = true
 			log.Printf("[l2->cosmos Subscribe] polling ICS26Router %s from block %d (%d block lookback, client_id=%s)",
 				s.router.Hex(), from, lookback, s.l2ClientID)
@@ -282,11 +315,32 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 		if head >= from {
 			fresh, settled, err = s.scanPacketLogs(ctx, filterer, from, head, &span)
 			if err != nil {
-				log.Printf("[l2->cosmos Subscribe] scan [%d,%d]: %v", from, head, err)
+				log.Printf("WARN [l2->cosmos Subscribe] scan [%d,%d]: %v", from, head, err)
 				continue // do NOT advance the cursor on failure (re-scan next tick)
 			}
 			from = head + 1 // range consumed; fresh events are now carried in the batch
+			if rescan {
+				fresh = s.dropAlreadyHandled(ctx, fresh, "startup rescan")
+				rescan = false
+			}
 		}
+
+		// Re-check what the handler could not relay yet. These are the events a
+		// second relayer can settle underneath us: they sit here for as long as
+		// the destination is behind, and nothing else in the loop would ever ask
+		// again whether the work is still outstanding.
+		if len(pending) > 0 && time.Since(lastReconcile) >= l2ReconcileInterval {
+			pending = s.dropAlreadyHandled(ctx, pending, "pending recheck")
+			lastReconcile = time.Now()
+		}
+
+		// Persist BEFORE handing the batch to the handler, and never past the
+		// lowest event still waiting to be relayed. A packet the handler re-queues
+		// exists only in `pending`, in memory: if the cursor advanced past it and
+		// the process died, the restart would scan from beyond its block and the
+		// packet would never be seen again. The cursor is therefore allowed to
+		// move backwards, which is why the store overlays rather than maximises.
+		s.persistCursor(from, pending, fresh)
 
 		// Filter BEFORE the handler, and filter the whole batch. A packet settled
 		// by this very scan must not reach handleBatch: it would be relayed for
@@ -303,6 +357,48 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 	}
 }
 
+// resumeCursor prefers a durable cursor over the lookback start, on the same
+// terms as the Cosmos and ETH mirrors: a cursor older than the lookback extends
+// recovery backwards, a newer one still rescans the lookback because events it
+// scanned may only have reached memory.
+func (s *Source) resumeCursor(lookbackStart, head uint64) uint64 {
+	if s.recovery == nil {
+		return lookbackStart
+	}
+	cursors, ok := s.recovery.Get()
+	if !ok {
+		return lookbackStart
+	}
+	start, resumed, behind := services.ResumeCursor(cursors[cursorL2], lookbackStart, head)
+	if resumed {
+		log.Printf("[l2->cosmos Subscribe] resuming from persisted block %d (%d behind head %d)", start, behind, head)
+	}
+	return start
+}
+
+// persistCursor records how far the scan has got, clamped to the lowest block of
+// any event not yet relayed. A failure is logged and NOT fatal: the scan is still
+// correct in memory, and killing a working relayer because one write failed
+// trades a recoverable degradation for an outage.
+func (s *Source) persistCursor(next uint64, batches ...[]chain.Event) {
+	if s.recovery == nil || next == 0 {
+		return
+	}
+	for _, batch := range batches {
+		for _, event := range batch {
+			if event.Height > 0 && event.Height < next {
+				next = event.Height
+			}
+		}
+	}
+	if err := s.recovery.SaveCheckpoint(services.RecoveryCursors{cursorL2: next}); err != nil {
+		log.Printf("WARN [l2->cosmos Subscribe] failed to persist scan cursor (block %d): %v", next, err)
+	}
+}
+
+// scanPacketLogs fetches the SendPacket + WriteAcknowledgement logs of this source's
+// client id in [from,to] and maps them to chain.Events, splitting the request into
+// log_scan_chunk-sized spans when one is configured.
 // chunkSpans splits [from,to] into chunk-sized pieces. A chunk of 0, or one at
 // least as wide as the range, means one piece.
 //
@@ -387,7 +483,7 @@ func scanNarrowing(
 			return nil, nil, bottom
 		}
 		span.Chunk = next.To
-		log.Printf("[l2->cosmos Subscribe] provider refused a %d-block log range; narrowing to %d and rescanning [%d,%d]: %v",
+		log.Printf("WARN [l2->cosmos Subscribe] provider refused a %d-block log range; narrowing to %d and rescanning [%d,%d]: %v",
 			width, next.To, from, to, failed)
 	}
 }
@@ -545,7 +641,7 @@ func (s *Source) settleTerminal(kind string, acknowledged bool, packet contractI
 		// The packet came from the chain's own log, so this cannot happen without
 		// the binding and the proto type having diverged. Say so rather than
 		// settling a packet identity nobody can reproduce.
-		log.Printf("[l2->cosmos Subscribe] %s seq=%d: marshal for settlement: %v", kind, cosmosPacket.Sequence, err)
+		log.Printf("ERROR [l2->cosmos Subscribe] %s seq=%d: marshal for settlement: %v", kind, cosmosPacket.Sequence, err)
 		return
 	}
 	log.Printf("[l2->cosmos Subscribe] %s seq=%d settled; dropped from the pending tracker", kind, cosmosPacket.Sequence)

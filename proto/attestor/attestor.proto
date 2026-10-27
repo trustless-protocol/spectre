@@ -10,11 +10,12 @@ service AttestorService {
   rpc Info(InfoRequest) returns (InfoResponse);
 
   // AttestedUpTo returns the highest independently verified L2 commitment for
-  // a source chain.
+  // the required source chain. Production callers must always set src_chain.
   rpc AttestedUpTo(AttestedUpToRequest) returns (AttestedUpToResponse);
 
   // AttestedRootAtOrBelow returns the highest independently verified L2
-  // commitment at or below the requested block number.
+  // commitment at or below the requested block number for the required source
+  // chain.
   rpc AttestedRootAtOrBelow(AttestedRootAtOrBelowRequest) returns (AttestedRootAtOrBelowResponse);
 
   // WatchAttested streams the current frontier, then a message whenever its
@@ -25,7 +26,8 @@ service AttestorService {
   rpc WatchAttested(WatchAttestedRequest) returns (stream WatchAttestedResponse);
 
   // VerifyStateRoot compares an expected root, and optionally a block hash,
-  // with the replica's canonical block at the requested L2 height.
+  // with the replica's canonical block at the requested L2 height. src_chain
+  // is required for production callers.
   rpc VerifyStateRoot(VerifyStateRootRequest) returns (VerifyStateRootResponse);
 }
 
@@ -41,9 +43,10 @@ message AttestedRoot {
   // or "assertion".
   string source = 3;
 
+  reserved 8;
+
   // Provenance carries the chain-specific on-chain object that the relayer
   // must prove. At most one identifier can be present.
-  reserved 8;
   oneof provenance {
     // GameIndex identifies an OP dispute game when source is "game".
     uint64 game_index = 4;
@@ -54,7 +57,15 @@ message AttestedRoot {
   }
 
   // Provisional is true while the commitment still awaits the chain-specific
-  // irreversible-finality check.
+  // irreversible-finality check. What that check is, and so what a provisional
+  // root can still lose, depends on source:
+  //   - "game" (OP) and "derived" (OP, Arbitrum): provisional until the
+  //     finalized head reaches the L2 block. An L1 reorg, or a sequencer
+  //     divergence at the unsafe head, can still replace the root.
+  //   - "assertion" (Arbitrum): provisional until the BoLD assertion is
+  //     confirmed at finalized L1 and Nitro's finalized head reaches the L2
+  //     block. While pending, the assertion can still lose a challenge.
+  // See docs/L2_CLIENTS.md, "Provisional attestations".
   bool provisional = 5;
 
   // AttestedAt is the Unix timestamp when the local verifier accepted it.
@@ -66,7 +77,7 @@ message InfoRequest {}
 
 // ChainInfo reports one configured attestor.
 message ChainInfo {
-  // SrcChain is the configured source-chain identifier.
+  // SrcChain is the required configured source-chain routing identifier.
   string src_chain = 1;
 
   // AttestationHead is the configured gating head.
@@ -96,12 +107,13 @@ message ChainInfo {
 
 // InfoResponse reports every configured chain.
 message InfoResponse {
+  // Chains has one entry per configured source chain.
   repeated ChainInfo chains = 1;
 }
 
 // AttestedUpToRequest selects one source-chain frontier.
 message AttestedUpToRequest {
-  // SrcChain is the configured source-chain identifier.
+  // SrcChain is the required configured source-chain routing identifier.
   string src_chain = 1;
 
   // IncludeProvisional allows locally verified commitments that still await
@@ -120,7 +132,7 @@ message AttestedUpToResponse {
 
 // AttestedRootAtOrBelowRequest selects an inclusive L2-height bound.
 message AttestedRootAtOrBelowRequest {
-  // SrcChain is the configured source-chain identifier.
+  // SrcChain is the required configured source-chain routing identifier.
   string src_chain = 1;
 
   // L2BlockNumber is the inclusive upper bound.
@@ -142,7 +154,7 @@ message AttestedRootAtOrBelowResponse {
 
 // WatchAttestedRequest selects a source-chain frontier stream.
 message WatchAttestedRequest {
-  // SrcChain is the configured source-chain identifier.
+  // SrcChain is the required configured source-chain routing identifier.
   string src_chain = 1;
 
   // IncludeProvisional allows provisional entries to advance the stream.
@@ -160,9 +172,18 @@ message WatchAttestedResponse {
 
 // RunMode selects which replica head must include a requested block.
 enum RunMode {
+  // Unspecified is not a valid request value; VerifyStateRoot rejects it with
+  // INVALID_ARGUMENT.
   RUN_MODE_UNSPECIFIED = 0;
+
+  // Unsafe requires the block to be included in the replica's unsafe L2 head.
   RUN_MODE_UNSAFE = 1;
+
+  // Safe requires the block to be included in the replica's safe L2 head.
   RUN_MODE_SAFE = 2;
+
+  // Finalized requires the block to be included in the replica's finalized L2
+  // head.
   RUN_MODE_FINALIZED = 3;
 }
 
@@ -182,13 +203,13 @@ message VerifyStateRootRequest {
   RunMode run_mode = 4;
 
   // SrcChain names the chain to verify against, matching the src_chain of the
-  // oracle requests. It was missing while this RPC had a single caller, which
-  // left a daemon serving several chains unable to tell which replica was
-  // meant — and guessing answers valid=false for a perfectly good header,
-  // which the caller reads as a divergence rather than a misroute.
+  // oracle requests. A daemon serving several chains uses it to pick the
+  // replica.
   //
-  // Optional for compatibility: an empty value is accepted when the attestor
-  // serves exactly one chain, and rejected otherwise.
+  // Required for production callers. An empty value is rejected rather than
+  // inferred from a configured route: a guessed route would answer valid=false
+  // for a good header, which the caller reads as a divergence rather than a
+  // misroute.
   string src_chain = 5;
 
   // L2Router is the 20-byte ICS26Router address in the receiving wasm client

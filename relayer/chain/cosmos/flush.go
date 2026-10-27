@@ -3,19 +3,21 @@ package cosmos
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"log"
 	"time"
 
 	"relayer/chain"
+	"relayer/chain/evmflush"
+	"relayer/services"
+	"relayer/subscriber"
 
-	"github.com/cosmos/cosmos-sdk/types/query"
 	"github.com/cosmos/gogoproto/proto"
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 
 	abcitypes "github.com/cometbft/cometbft/abci/types"
+	coretypes "github.com/cometbft/cometbft/rpc/core/types"
 )
 
 // flushQueryTimeout bounds one enumeration pass. It is generous because the pass
@@ -23,12 +25,6 @@ import (
 // is legitimately slow; the point of the bound is that a hung endpoint cannot
 // wedge the flush worker, not to enforce a latency target.
 const flushQueryTimeout = 60 * time.Second
-
-// flushCommitmentPageSize caps one page of the commitment query. The healthy
-// answer is a handful of sequences, so the page size only matters on a chain
-// with a real backlog -- where paging is exactly what stops one query from
-// returning everything at once.
-const flushCommitmentPageSize = 100
 
 // flushSequenceCap bounds how many outstanding sequences one pass will resolve
 // into packets. Each sequence costs a TxSearch, so an unbounded backlog would
@@ -72,8 +68,6 @@ const flushTxSearchResults = 10
 // index and the operator is the only one who can fix it.
 const flushTxSearchMaxResults = 100
 
-const packetCommitmentsQueryPath = "/ibc.core.channel.v2.Query/PacketCommitments"
-
 // UnrelayedPackets enumerates the packets this Cosmos source has sent that are
 // still outstanding, so the relay module can find work it never observed.
 //
@@ -87,16 +81,35 @@ const packetCommitmentsQueryPath = "/ibc.core.channel.v2.Query/PacketCommitments
 // which is why the caller filters on the destination's receipt rather than this
 // query pretending to know.
 //
-// Only the send leg is enumerated. The ack leg needs the same treatment and is
-// not implemented here: enumerating acknowledgements Cosmos has written says
-// nothing on its own about whether the counterparty consumed them, and
-// establishing that needs a counterparty-side commitment query this adapter does
-// not have. Tracked as the remaining half of the enumeration work.
+// Two legs, both answering "is it still open on the SENDING chain and not yet
+// settled on this one":
+//
+//   - sends: this chain still holds the packet's commitment (above);
+//   - acknowledgements: the EVM router still holds a send's commitment AND
+//     this chain has written an acknowledgement for it. Enumerating the acks
+//     this chain wrote says nothing on its own about whether the counterparty
+//     consumed them; the router's commitment is what says that, so the router
+//     is probed (evmflush) and this chain is asked only about those sequences.
+//
+// A leg whose query fails is reported and skipped rather than failing the pass:
+// the other leg's packets are exactly what the pass exists to recover.
 func (s *Source) UnrelayedPackets(ctx context.Context) ([]chain.Event, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, flushQueryTimeout)
 	defer cancel()
 
-	window, err := s.outstandingCommitments(queryCtx)
+	sends, err := s.unrelayedSends(queryCtx)
+	if err != nil {
+		return nil, err
+	}
+	acks, err := s.unrelayedAcks(queryCtx)
+	if err != nil {
+		s.logger.Printf("WARN [FlushCosmos] acknowledgement leg: %v; the send leg's %d packet(s) still stand", err, len(sends))
+	}
+	return append(sends, acks...), nil
+}
+
+func (s *Source) unrelayedSends(ctx context.Context) ([]chain.Event, error) {
+	window, err := s.outstandingCommitments(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -107,11 +120,11 @@ func (s *Source) UnrelayedPackets(ctx context.Context) ([]chain.Event, error) {
 
 	events := make([]chain.Event, 0, len(window))
 	for _, commitment := range window {
-		event, found, err := s.sendEventForCommitment(queryCtx, commitment)
+		event, found, err := s.sendEventForCommitment(ctx, commitment)
 		if err != nil {
 			// One unresolvable sequence must not discard the rest: the others are
 			// exactly the packets this pass exists to recover.
-			s.logger.Printf("[FlushCosmos] resolve send packet seq=%d: %v", commitment.sequence, err)
+			s.logger.Printf("WARN [FlushCosmos] resolve send packet seq=%d: %v", commitment.sequence, err)
 			continue
 		}
 		if !found {
@@ -119,8 +132,66 @@ func (s *Source) UnrelayedPackets(ctx context.Context) ([]chain.Event, error) {
 			// it commits to. On a pruned node that is expected for an old packet, and
 			// it is worth saying so once per pass rather than silently returning a
 			// shorter list.
-			s.logger.Printf("[FlushCosmos] commitment for seq=%d has no indexed send_packet tx matching it (pruned history?)",
+			s.logger.Printf("WARN [FlushCosmos] commitment for seq=%d has no indexed send_packet tx matching it (pruned history?)",
 				commitment.sequence)
+			continue
+		}
+		events = append(events, event)
+	}
+	return events, nil
+}
+
+// unrelayedAcks lists the acknowledgements this chain has written for EVM sends
+// whose commitment the router still holds -- acks the router has not received
+// back.
+//
+// The router's commitments are the enumerable side here, by probe: an EVM->Cosmos
+// packet is committed on the router under ITS client for Cosmos, and
+// acknowledged here under THIS chain's client for the EVM. Only the sequences
+// the probe finds still open are asked about, so the pass costs one batched
+// storage read plus one ABCI query per open send.
+func (s *Source) unrelayedAcks(ctx context.Context) ([]chain.Event, error) {
+	if s.evm.EthClient() == nil || s.evm.RouterContract() == nil {
+		return nil, nil
+	}
+	router := evmflush.Router{Client: s.evm.EthClient(), Address: *s.evm.RouterContract(), Label: "[FlushCosmos]", Logger: s.logger}
+	prev, err := router.PrevSequenceSend(ctx, s.ids.CosmosOnEVM)
+	if err != nil {
+		return nil, err
+	}
+	lo, hi, ok := evmflush.Window(prev, s.ackProbeCursor, flushSequenceCap)
+	if !ok {
+		return nil, nil
+	}
+	open, err := router.OutstandingSlots(ctx, evmflush.Sequences(lo, hi), func(seq uint64) []byte {
+		return services.EthPath(s.ids.CosmosOnEVM, seq, services.EthPathCommitment)
+	})
+	if err != nil {
+		return nil, err
+	}
+	// The cursor moves only once the probe has answered. A failed probe leaves
+	// the window to the next pass; advancing first would skip these sequences
+	// for a whole rotation on one RPC blip.
+	s.ackProbeCursor = lo
+
+	var events []chain.Event
+	for _, slot := range open {
+		written, err := subscriber.HasCosmosPacketAcknowledgementFor(ctx, s.cosmos, s.ids.EVMOnCosmos, slot.Sequence)
+		if err != nil {
+			s.logger.Printf("WARN [FlushCosmos] ack seq=%d: %v", slot.Sequence, err)
+			continue
+		}
+		if !written {
+			continue // not received here yet, or received and not acknowledged: the other direction's work
+		}
+		event, found, err := s.ackEventForCommitment(ctx, slot)
+		if err != nil {
+			s.logger.Printf("WARN [FlushCosmos] resolve ack seq=%d: %v", slot.Sequence, err)
+			continue
+		}
+		if !found {
+			s.logger.Printf("WARN [FlushCosmos] acknowledgement for seq=%d has no indexed write_acknowledgement tx matching the router's commitment (pruned history?)",
+				slot.Sequence)
 			continue
 		}
 		events = append(events, event)
@@ -144,36 +215,24 @@ type flushCommitment struct {
 // outstandingCommitments returns at most flushSequenceCap commitments, starting
 // after the sequence the previous pass stopped at and wrapping to the oldest.
 //
-// It ASKS FOR THE WINDOW rather than paging the whole set and slicing it. The
-// difference is the whole cost of the pass. The commitment store is keyed by the
-// big-endian sequence, and the SDK's paginator starts its iterator at the key it
-// is given, so "the 200 sequences after N" is two page queries -- against a
-// backlog of any size. Paging everything first made the query cost proportional
-// to the backlog: a chain with 100k outstanding commitments spent a thousand
-// serial ABCI round-trips, and could burn the whole pass timeout before relaying
-// a single packet. The cap advertised on flushSequenceCap only ever bounded the
-// TxSearch half; this is the half that was unbounded.
+// The window query itself lives in services.CosmosCommitmentWindow, because the
+// EVM and L2 sources page the same store for the acknowledgements they owe --
+// and the reason it asks for a WINDOW rather than paging everything is recorded
+// there. What this keeps is the cost of the pass: the cap bounds the query and
+// the TxSearch half alike.
 //
 // What it gives up is the backlog total, which used to be logged. Counting is
 // exactly the unbounded work being removed, and a number nobody can act on is
 // not worth a thousand queries.
 func (s *Source) outstandingCommitments(ctx context.Context) ([]flushCommitment, error) {
-	// After the cursor: the packets this pass has not looked at most recently.
-	window, err := s.pageCommitments(ctx, sequenceKey(s.flushCursor+1), flushSequenceCap, 0)
+	page, err := services.CosmosCommitmentWindow(ctx, s.cosmos, s.commitmentQueryClientID(), s.flushCursor, flushSequenceCap)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("cosmos source: %w", err)
 	}
-
-	// Short means the tail ran out, so wrap to the oldest. Bounded by the cursor
-	// so the two segments cannot overlap: everything taken above is beyond it.
-	if len(window) < flushSequenceCap && s.flushCursor > 0 {
-		head, err := s.pageCommitments(ctx, nil, flushSequenceCap-len(window), s.flushCursor)
-		if err != nil {
-			return nil, err
-		}
-		window = append(window, head...)
+	window := make([]flushCommitment, 0, len(page))
+	for _, c := range page {
+		window = append(window, flushCommitment{sequence: c.Sequence, data: c.Data})
 	}
-
 	if len(window) == flushSequenceCap {
 		s.logger.Printf("[FlushCosmos] resolving %d outstanding commitments on %s this pass (seq %d..%d); "+
 			"the window is full, so more may remain for the next pass",
@@ -182,68 +241,8 @@ func (s *Source) outstandingCommitments(ctx context.Context) ([]flushCommitment,
 	return window, nil
 }
 
-// pageCommitments reads up to want commitments starting at startKey, stopping
-// early at stopAfter when that is non-zero.
-//
-// stopAfter is what keeps the wrap segment from re-reading what the segment
-// after the cursor already took.
-func (s *Source) pageCommitments(ctx context.Context, startKey []byte, want int, stopAfter uint64) ([]flushCommitment, error) {
-	if want <= 0 {
-		return nil, nil
-	}
-	var (
-		out     []flushCommitment
-		nextKey = startKey
-	)
-	for {
-		limit := want - len(out)
-		if limit > flushCommitmentPageSize {
-			limit = flushCommitmentPageSize
-		}
-		request := &channeltypesv2.QueryPacketCommitmentsRequest{
-			ClientId:   s.commitmentQueryClientID(),
-			Pagination: &query.PageRequest{Key: nextKey, Limit: uint64(limit)},
-		}
-		raw, err := proto.Marshal(request)
-		if err != nil {
-			return nil, fmt.Errorf("cosmos source: marshal packet-commitments request: %w", err)
-		}
-		result, err := s.cosmos.CosmosClient().ABCIQuery(ctx, packetCommitmentsQueryPath, raw)
-		if err != nil {
-			return nil, fmt.Errorf("cosmos source: packet commitments: %w", err)
-		}
-		if result.Response.Code != 0 {
-			return nil, fmt.Errorf("cosmos source: packet commitments: code %d: %s",
-				result.Response.Code, result.Response.Log)
-		}
-		var response channeltypesv2.QueryPacketCommitmentsResponse
-		if err := proto.Unmarshal(result.Response.Value, &response); err != nil {
-			return nil, fmt.Errorf("cosmos source: decode packet-commitments response: %w", err)
-		}
-		for _, commitment := range response.Commitments {
-			if stopAfter > 0 && commitment.Sequence > stopAfter {
-				return out, nil
-			}
-			out = append(out, flushCommitment{sequence: commitment.Sequence, data: commitment.Data})
-			if len(out) == want {
-				return out, nil
-			}
-		}
-		if response.Pagination == nil || len(response.Pagination.NextKey) == 0 {
-			return out, nil
-		}
-		nextKey = response.Pagination.NextKey
-	}
-}
-
-// sequenceKey renders a sequence as the paginator key for it: the commitment
-// store is prefixed per client and keyed by the 8-byte big-endian sequence, so
-// this is the "start here" the SDK iterator understands.
-func sequenceKey(sequence uint64) []byte {
-	key := make([]byte, 8)
-	binary.BigEndian.PutUint64(key, sequence)
-	return key
-}
+// sequenceKey is the paginator key for a sequence; see services.SequenceKey.
+func sequenceKey(sequence uint64) []byte { return services.SequenceKey(sequence) }
 
 // sendEventForCommitment finds the indexed send_packet transaction for one
 // outstanding commitment and rebuilds the event the subscriber would have
@@ -257,6 +256,49 @@ func sequenceKey(sequence uint64) []byte {
 func (s *Source) sendEventForCommitment(ctx context.Context, commitment flushCommitment) (chain.Event, bool, error) {
 	q := fmt.Sprintf("send_packet.packet_sequence=%d AND send_packet.packet_source_client='%s'",
 		commitment.sequence, s.commitmentQueryClientID())
+	return s.findIndexedEvent(ctx, q, commitment.sequence, func(tx *coretypes.ResultTx) (chain.Event, bool) {
+		packet, ok := matchSendEvent(tx.TxResult.Events, s.commitmentQueryClientID(), commitment)
+		if !ok {
+			return chain.Event{}, false
+		}
+		return chain.Event{
+			Type:     chain.SendPacket,
+			Height:   uint64(tx.Height),
+			Sequence: packet.Sequence,
+			ClientID: packet.DestinationClient,
+			Raw:      mustMarshalPacket(packet),
+		}, true
+	})
+}
+
+// ackEventForCommitment finds the indexed write_acknowledgement transaction for
+// an EVM send the router still holds a commitment for, and rebuilds the event
+// the subscriber would have delivered. Same search shape as the send leg, same
+// three checks -- sequence, client, and the commitment the ROUTER holds, which
+// is the same hash this chain computed when it verified the packet.
+func (s *Source) ackEventForCommitment(ctx context.Context, slot evmflush.Slot) (chain.Event, bool, error) {
+	destClient := s.ids.EVMOnCosmos
+	q := fmt.Sprintf("write_acknowledgement.packet_sequence=%d AND write_acknowledgement.packet_dest_client='%s'",
+		slot.Sequence, destClient)
+	return s.findIndexedEvent(ctx, q, slot.Sequence, func(tx *coretypes.ResultTx) (chain.Event, bool) {
+		packet, acks, ok := matchWriteAckEvent(tx.TxResult.Events, destClient, slot)
+		if !ok {
+			return chain.Event{}, false
+		}
+		return chain.Event{
+			Type:     chain.AckPacket,
+			Height:   uint64(tx.Height),
+			Sequence: packet.Sequence,
+			ClientID: packet.DestinationClient,
+			Raw:      mustMarshalPacket(packet),
+			AckBytes: acks,
+		}, true
+	})
+}
+
+// findIndexedEvent pages one TxSearch until match accepts a transaction, with
+// the bounds flushTxSearchResults and flushTxSearchMaxResults explain.
+func (s *Source) findIndexedEvent(ctx context.Context, q string, sequence uint64, match func(*coretypes.ResultTx) (chain.Event, bool)) (chain.Event, bool, error) {
 	perPage := flushTxSearchResults
 	scanned := 0
 	for page := 1; ; page++ {
@@ -265,17 +307,9 @@ func (s *Source) sendEventForCommitment(ctx context.Context, commitment flushCom
 			return chain.Event{}, false, fmt.Errorf("tx search page %d: %w", page, err)
 		}
 		for _, tx := range result.Txs {
-			packet, ok := matchSendEvent(tx.TxResult.Events, s.commitmentQueryClientID(), commitment)
-			if !ok {
-				continue
+			if event, ok := match(tx); ok {
+				return event, true, nil
 			}
-			return chain.Event{
-				Type:     chain.SendPacket,
-				Height:   uint64(tx.Height),
-				Sequence: packet.Sequence,
-				ClientID: packet.DestinationClient,
-				Raw:      mustMarshalPacket(packet),
-			}, true, nil
 		}
 		scanned += len(result.Txs)
 		// An empty page ends it regardless of what TotalCount claims: a node that
@@ -284,14 +318,64 @@ func (s *Source) sendEventForCommitment(ctx context.Context, commitment flushCom
 			return chain.Event{}, false, nil
 		}
 		if scanned >= flushTxSearchMaxResults {
-			log.Printf("[FlushCosmos] sequence %d on %s: scanned %d of %d indexed transactions without "+
+			log.Printf("WARN [FlushCosmos] sequence %d on %s: scanned %d of %d indexed transactions without "+
 				"finding the commitment the chain holds; giving up on this sequence for this pass. "+
 				"That many matches for one (sequence, client) pair means the node's transaction "+
 				"index is conflating events -- a psql index, or kv entries in the legacy format",
-				commitment.sequence, s.commitmentQueryClientID(), scanned, result.TotalCount)
+				sequence, s.commitmentQueryClientID(), scanned, result.TotalCount)
 			return chain.Event{}, false, nil
 		}
 	}
+}
+
+// matchWriteAckEvent returns the write_acknowledgement event whose packet is the
+// one the router's commitment names, with its application acknowledgements.
+// The three checks are the send leg's (see matchSendEvent); the commitment here
+// is the ROUTER's, read from its storage, and it is the same hash this chain
+// computed when it verified the packet's membership proof.
+func matchWriteAckEvent(events []abcitypes.Event, destClient string, slot evmflush.Slot) (channeltypesv2.Packet, [][]byte, bool) {
+	for _, event := range events {
+		if event.Type != "write_acknowledgement" {
+			continue
+		}
+		packet, ok := packetFromSendEvent(event.Attributes) // same encoded_packet_hex attribute
+		if !ok || packet.Sequence != slot.Sequence || packet.DestinationClient != destClient {
+			continue
+		}
+		if !bytes.Equal(channeltypesv2.CommitPacket(packet), slot.Value[:]) {
+			continue
+		}
+		acks, ok := acknowledgementsFromEvent(event.Attributes)
+		if !ok {
+			continue
+		}
+		return packet, acks, true
+	}
+	return channeltypesv2.Packet{}, nil, false
+}
+
+// acknowledgementsFromEvent decodes the hex-encoded Acknowledgement an ibc-go v2
+// write_acknowledgement event carries into its application acknowledgements.
+// An empty list is not an acknowledgement the EVM can consume, so it is a miss.
+func acknowledgementsFromEvent(attributes []abcitypes.EventAttribute) ([][]byte, bool) {
+	for _, attribute := range attributes {
+		if attribute.Key != "encoded_acknowledgement_hex" {
+			continue
+		}
+		raw, err := hex.DecodeString(attribute.Value)
+		if err != nil {
+			return nil, false
+		}
+		var ack channeltypesv2.Acknowledgement
+		if err := proto.Unmarshal(raw, &ack); err != nil {
+			return nil, false
+		}
+		if len(ack.AppAcknowledgements) == 0 {
+			return nil, false
+		}
+		return ack.AppAcknowledgements, true
+	}
+	return nil, false
 }
 
 // matchSendEvent returns the send_packet event whose packet is the one this

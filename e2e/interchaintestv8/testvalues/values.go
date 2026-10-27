@@ -14,7 +14,7 @@ import (
 
 	"github.com/cosmos/interchaintest/v10/chain/ethereum"
 
-	"github.com/decentrio/fast-ibc/packages/go-abigen/ics26router"
+	"github.com/decentrio/spectre/packages/go-abigen/ics26router"
 )
 
 const (
@@ -59,8 +59,8 @@ const (
 	EthTestnetTypeNone = "none"
 	// EnvKeyEthTestnetType The Ethereum testnet type (pow|pos).
 	EnvKeyEthTestnetType = "ETH_TESTNET_TYPE"
-	// EnvE2EFacuetAddress The address of the faucet
-	EnvKeyE2EFacuetAddress = "E2E_FAUCET_ADDRESS"
+	// EnvKeyE2EFaucetAddress The address of the faucet
+	EnvKeyE2EFaucetAddress = "E2E_FAUCET_ADDRESS"
 	// EnvKeyEthereumPosNetworkPreset The environment variable name to configure the Kurtosis network preset
 	EnvKeyEthereumPosNetworkPreset = "ETHEREUM_POS_NETWORK_PRESET"
 	// EnvKeyE2EProofType is the environment variable name to configure the proof type. (groth16|plonk)

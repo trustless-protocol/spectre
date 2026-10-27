@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
@@ -50,6 +51,19 @@ type pendingPacketInfo struct {
 	// The age matters as much as the count: a count says a timeout gave up, the
 	// age says how long nobody has looked (RLY-02).
 	DeadLetteredAt time.Time
+}
+
+// settledPacketInfo is a durable terminal tombstone.  Unlike a dead-letter,
+// this says the packet has already completed its lifecycle on-chain and must
+// never be tracked or relayed again when a source replay offers it back.
+//
+// It is keyed by the full packet identity rather than source-client/sequence:
+// client migration is allowed to reuse a sequence, and a terminal event for
+// the old packet must never suppress the replacement.
+type settledPacketInfo struct {
+	Packet    channeltypesv2.Packet
+	SettledAt time.Time
+	identity  packetIdentity
 }
 
 // packetIdentity states exactly which packet value owns retry state. The
@@ -120,6 +134,13 @@ const (
 	// permanently invisible to timeout recovery.
 	deadLetterRetention = 30 * 24 * time.Hour
 
+	// settledPacketRetention bounds terminal tombstones. It is deliberately as
+	// long as dead-letter retention: a source restart can replay a substantial
+	// recovery window, while an unbounded terminal set would grow for the life of
+	// a busy relayer. Full packet identity makes retaining an old tombstone safe
+	// across a client migration that reuses a sequence.
+	settledPacketRetention = 30 * 24 * time.Hour
+
 	// deferralAlertThreshold is how many un-charged back-offs a packet may take
 	// before the scanner says so out loud, and how often it repeats after that.
 	//
@@ -174,21 +195,29 @@ type PendingPacketTracker struct {
 	// before deduplicating, so a client re-creation that reuses a sequence does
 	// not let an old tombstone shadow a different packet forever.
 	deadLetteredByKey map[packetKey]pendingPacketInfo
+
+	// settled records terminal source events independently of active packets.
+	// A terminal event can arrive while its send is in a handed-off batch, before
+	// Add has made an active record. Keeping the terminal fact separately is what
+	// lets that later Add refuse the already-settled packet.
+	settled map[packetIdentity]settledPacketInfo
 }
 
 func NewPendingPacketTracker() *PendingPacketTracker {
 	return &PendingPacketTracker{
 		packets:           make(map[packetKey]pendingPacketInfo),
 		deadLetteredByKey: make(map[packetKey]pendingPacketInfo),
+		settled:           make(map[packetIdentity]settledPacketInfo),
 	}
 }
 
-const pendingPacketStateVersion = 1
+const pendingPacketStateVersion = 2
 
 type pendingPacketState struct {
 	Version      int                 `json:"version"`
 	Packets      []pendingPacketInfo `json:"packets"`
 	DeadLettered []pendingPacketInfo `json:"dead_lettered"`
+	Settled      []settledPacketInfo `json:"settled,omitempty"`
 }
 
 // NewPersistentPendingPacketTracker restores the complete active and tombstone
@@ -225,7 +254,7 @@ func (t *PendingPacketTracker) load() error {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return fmt.Errorf("decode pending packet state %s: %w", t.statePath, err)
 	}
-	if state.Version != pendingPacketStateVersion {
+	if state.Version != 1 && state.Version != pendingPacketStateVersion {
 		return fmt.Errorf("decode pending packet state %s: unsupported version %d", t.statePath, state.Version)
 	}
 	for _, info := range state.Packets {
@@ -248,6 +277,13 @@ func (t *PendingPacketTracker) load() error {
 		t.deadLettered = append(t.deadLettered, info)
 		t.deadLetteredByKey[key] = info
 	}
+	for _, info := range state.Settled {
+		info.identity = identifyPacket(info.Packet)
+		if _, duplicate := t.settled[info.identity]; duplicate {
+			return fmt.Errorf("decode pending packet state %s: duplicate settled packet %s/%d", t.statePath, info.Packet.SourceClient, info.Packet.Sequence)
+		}
+		t.settled[info.identity] = info
+	}
 	return nil
 }
 
@@ -260,9 +296,13 @@ func (t *PendingPacketTracker) persistLocked() error {
 		Version:      pendingPacketStateVersion,
 		Packets:      make([]pendingPacketInfo, 0, len(t.packets)),
 		DeadLettered: append([]pendingPacketInfo(nil), t.deadLettered...),
+		Settled:      make([]settledPacketInfo, 0, len(t.settled)),
 	}
 	for _, info := range t.packets {
 		state.Packets = append(state.Packets, info)
+	}
+	for _, info := range t.settled {
+		state.Settled = append(state.Settled, info)
 	}
 	sort.Slice(state.Packets, func(i, j int) bool {
 		a, b := state.Packets[i].Packet, state.Packets[j].Packet
@@ -270,6 +310,23 @@ func (t *PendingPacketTracker) persistLocked() error {
 			return a.SourceClient < b.SourceClient
 		}
 		return a.Sequence < b.Sequence
+	})
+	sort.Slice(state.Settled, func(i, j int) bool {
+		a, b := state.Settled[i].Packet, state.Settled[j].Packet
+		if a.SourceClient != b.SourceClient {
+			return a.SourceClient < b.SourceClient
+		}
+		if a.Sequence != b.Sequence {
+			return a.Sequence < b.Sequence
+		}
+		if a.DestinationClient != b.DestinationClient {
+			return a.DestinationClient < b.DestinationClient
+		}
+		if a.TimeoutTimestamp != b.TimeoutTimestamp {
+			return a.TimeoutTimestamp < b.TimeoutTimestamp
+		}
+		ai, bi := identifyPacket(a), identifyPacket(b)
+		return bytes.Compare(ai.payloadsDigest[:], bi.payloadsDigest[:]) < 0
 	})
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err == nil {
@@ -286,10 +343,19 @@ type pendingTrackerSnapshot struct {
 	packets           map[packetKey]pendingPacketInfo
 	deadLettered      []pendingPacketInfo
 	deadLetteredByKey map[packetKey]pendingPacketInfo
+	settled           map[packetIdentity]settledPacketInfo
 }
 
 func clonePendingPacketMap(source map[packetKey]pendingPacketInfo) map[packetKey]pendingPacketInfo {
 	cloned := make(map[packetKey]pendingPacketInfo, len(source))
+	for key, info := range source {
+		cloned[key] = info
+	}
+	return cloned
+}
+
+func cloneSettledPacketMap(source map[packetIdentity]settledPacketInfo) map[packetIdentity]settledPacketInfo {
+	cloned := make(map[packetIdentity]settledPacketInfo, len(source))
 	for key, info := range source {
 		cloned[key] = info
 	}
@@ -301,6 +367,7 @@ func (t *PendingPacketTracker) snapshotLocked() pendingTrackerSnapshot {
 		packets:           clonePendingPacketMap(t.packets),
 		deadLettered:      append([]pendingPacketInfo(nil), t.deadLettered...),
 		deadLetteredByKey: clonePendingPacketMap(t.deadLetteredByKey),
+		settled:           cloneSettledPacketMap(t.settled),
 	}
 }
 
@@ -319,8 +386,9 @@ func (t *PendingPacketTracker) commitLocked(mutate func()) error {
 		t.packets = before.packets
 		t.deadLettered = before.deadLettered
 		t.deadLetteredByKey = before.deadLetteredByKey
+		t.settled = before.settled
 		t.persistenceErr = fmt.Errorf("persist pending packet state %s: %w", t.statePath, err)
-		log.Printf("[PendingTracker][ATTENTION] %v; mutation rolled back and timeout retries are paused", t.persistenceErr)
+		log.Printf("ERROR [PendingTracker][ATTENTION] %v; mutation rolled back and timeout retries are paused", t.persistenceErr)
 		return t.persistenceErr
 	}
 	if t.persistenceErr != nil {
@@ -343,6 +411,14 @@ func (t *PendingPacketTracker) Add(packet channeltypesv2.Packet, blockNumber uin
 	defer t.mtx.Unlock()
 	key := packetKey{sourceClient: packet.SourceClient, sequence: packet.Sequence}
 	identity := identifyPacket(packet)
+	// A terminal event may have won the race while this packet sat in a handed-off
+	// batch. Treat that as a successful no-op: false means a durable write failed
+	// and makes the caller re-queue, which would otherwise turn a settled packet
+	// into a retry loop. The relay module asks IsSettled after Add and skips proof
+	// and submission in this case.
+	if _, settled := t.settled[identity]; settled {
+		return true
+	}
 	// The relay module offers the same source event again on every retry. Once a
 	// packet is tracked, its timeout attempts, deferrals and NotBefore deadline
 	// are authoritative retry state; replacing the record here would erase that
@@ -369,6 +445,42 @@ func (t *PendingPacketTracker) Add(packet channeltypesv2.Packet, blockNumber uin
 			identity:    identity,
 		}
 	}) == nil
+}
+
+// MarkSettled records that packet's lifecycle has completed and removes its
+// matching active pending record in one durable mutation. It records the
+// terminal fact even when no active record exists: that is the handoff race,
+// where the packet is between the queue and the eventual Add call.
+func (t *PendingPacketTracker) MarkSettled(packet channeltypesv2.Packet) error {
+	t.mtx.Lock()
+	defer t.mtx.Unlock()
+	identity := identifyPacket(packet)
+	key := packetKey{sourceClient: packet.SourceClient, sequence: packet.Sequence}
+	active, activeExists := t.packets[key]
+	_, alreadySettled := t.settled[identity]
+	if alreadySettled && (!activeExists || active.identity != identity) {
+		return nil
+	}
+	return t.commitLocked(func() {
+		t.settled[identity] = settledPacketInfo{
+			Packet:    packet,
+			SettledAt: time.Now(),
+			identity:  identity,
+		}
+		if activeExists && active.identity == identity {
+			delete(t.packets, key)
+		}
+	})
+}
+
+// IsSettled reports whether an exact packet identity has a durable terminal
+// tombstone. It intentionally does not look at source-client/sequence alone:
+// a client migration can reuse that pair for a new packet that must still relay.
+func (t *PendingPacketTracker) IsSettled(packet channeltypesv2.Packet) bool {
+	t.mtx.Lock()
+	defer t.mtx.Unlock()
+	_, settled := t.settled[identifyPacket(packet)]
+	return settled
 }
 
 // removeDeadLettered clears a tombstone that belongs to a different packet
@@ -722,9 +834,25 @@ func (t *PendingPacketTracker) OldestDeadLetteredTimeout(now time.Time) time.Dur
 	return now.Sub(t.deadLettered[0].DeadLetteredAt)
 }
 
+// DeadLetterEntry is one packet that stopped being retried, with what an
+// operator needs to decide about it: which packet, how long it has been
+// stranded, and how many attempts were spent before giving up.
+//
+// The packet alone was not enough. "Three packets are dead-lettered" and "three
+// packets have been dead-lettered since Tuesday" call for different actions, and
+// the attempt count is the difference between a deterministic failure and a
+// ladder that merely ran out during an outage.
+type DeadLetterEntry struct {
+	Packet         channeltypesv2.Packet `json:"-"`
+	SourceClient   string                `json:"source_client"`
+	Sequence       uint64                `json:"sequence"`
+	DeadLetteredAt time.Time             `json:"dead_lettered_at"`
+	Attempts       int                   `json:"attempts"`
+}
+
 // DeadLetteredTimeoutPackets returns the dead-lettered packets without removing
-// them, so an operator can see WHICH packets need intervention rather than only
-// how many.
+// them, so a status endpoint can list WHICH packets need intervention rather
+// than only how many.
 //
 // The count and the age (DeadLetteredTimeouts, OldestDeadLetteredTimeout) answer
 // "is something stuck" and "for how long". Neither answers "which", and the
@@ -736,14 +864,59 @@ func (t *PendingPacketTracker) OldestDeadLetteredTimeout(now time.Time) time.Dur
 //
 // Returned by value: the caller gets a copy it cannot use to mutate tracker
 // state, and reading is not allowed to clear the alarm.
-func (t *PendingPacketTracker) DeadLetteredTimeoutPackets() []channeltypesv2.Packet {
+func (t *PendingPacketTracker) DeadLetteredTimeoutPackets() []DeadLetterEntry {
 	t.mtx.Lock()
 	defer t.mtx.Unlock()
-	out := make([]channeltypesv2.Packet, 0, len(t.deadLettered))
+	out := make([]DeadLetterEntry, 0, len(t.deadLettered))
 	for _, info := range t.deadLettered {
-		out = append(out, info.Packet)
+		out = append(out, DeadLetterEntry{
+			Packet:         info.Packet,
+			SourceClient:   info.Packet.SourceClient,
+			Sequence:       info.Packet.Sequence,
+			DeadLetteredAt: info.DeadLetteredAt,
+			Attempts:       info.TimeoutAttempts,
+		})
 	}
 	return out
+}
+
+// ReactivateDeadLetteredTimeout returns one dead-lettered packet to the timeout
+// scan set. It is the ONLY way out of that set, deliberately: the dead-letter
+// log tells an operator to intervene, and until now the only mechanism for
+// intervening was unreachable Go.
+//
+// The retry budget is reset rather than resumed. A packet reaches the
+// dead-letter set by exhausting the ladder, so returning it with the ladder
+// still exhausted would spend one scan re-discovering that. Reactivating means a
+// person decided the cause is gone -- a client repaired, an endpoint replaced --
+// and the packet deserves the same budget a fresh one gets.
+//
+// It refuses an unknown packet rather than succeeding quietly: an operator who
+// mistyped a sequence must learn that here, not by watching nothing happen.
+func (t *PendingPacketTracker) ReactivateDeadLetteredTimeout(sourceClient string, sequence uint64) error {
+	t.mtx.Lock()
+	defer t.mtx.Unlock()
+
+	key := packetKey{sourceClient: sourceClient, sequence: sequence}
+	info, dead := t.deadLetteredByKey[key]
+	if !dead {
+		return fmt.Errorf("no dead-lettered packet for client %s sequence %d", sourceClient, sequence)
+	}
+	if _, active := t.packets[key]; active {
+		// Both sets holding one key is the invalid state the snapshot decoder
+		// already refuses to load. Reactivating into it would make the duplicate
+		// permanent instead of visible.
+		return fmt.Errorf("packet %s/%d is both active and dead-lettered; refusing to reactivate into an inconsistent tracker",
+			sourceClient, sequence)
+	}
+
+	return t.commitLocked(func() {
+		t.removeDeadLettered(key)
+		info.TimeoutAttempts = 0
+		info.NotBefore = time.Time{}      // due on the next scan
+		info.DeadLetteredAt = time.Time{} // no longer given up on
+		t.packets[key] = info
+	})
 }
 
 func (t *PendingPacketTracker) Len() int {
@@ -752,10 +925,11 @@ func (t *PendingPacketTracker) Len() int {
 	return len(t.packets)
 }
 
-// PurgeStaleWithoutTimeout removes stale packets without a timeout obligation
-// and renews dead letters that have remained visible for deadLetterRetention.
-// Renewing, rather than merely deleting their tombstones, keeps a timeout
-// recoverable even when the subscriber no longer replays its source event.
+// PurgeStaleWithoutTimeout removes stale packets without a timeout obligation,
+// expires old terminal tombstones, and renews dead letters that have remained
+// visible for deadLetterRetention. Renewing, rather than merely deleting their
+// tombstones, keeps a timeout recoverable even when the subscriber no longer
+// replays its source event.
 func (t *PendingPacketTracker) PurgeStaleWithoutTimeout(maxAge time.Duration) error {
 	t.mtx.Lock()
 	defer t.mtx.Unlock()
@@ -765,6 +939,14 @@ func (t *PendingPacketTracker) PurgeStaleWithoutTimeout(maxAge time.Duration) er
 		if info.Packet.TimeoutTimestamp == 0 && now.Sub(info.ObservedAt) > maxAge {
 			changed = true
 			break
+		}
+	}
+	if !changed {
+		for _, info := range t.settled {
+			if now.Sub(info.SettledAt) >= settledPacketRetention {
+				changed = true
+				break
+			}
 		}
 	}
 	if !changed {
@@ -787,6 +969,11 @@ func (t *PendingPacketTracker) purgeStaleWithoutTimeoutLocked(now time.Time, max
 	for key, info := range t.packets {
 		if info.Packet.TimeoutTimestamp == 0 && now.Sub(info.ObservedAt) > maxAge {
 			delete(t.packets, key)
+		}
+	}
+	for identity, info := range t.settled {
+		if now.Sub(info.SettledAt) >= settledPacketRetention {
+			delete(t.settled, identity)
 		}
 	}
 	if len(t.deadLettered) == 0 {

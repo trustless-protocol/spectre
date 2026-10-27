@@ -7,6 +7,7 @@ package transaction
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -452,6 +453,31 @@ func isCosmosDuplicatePacketError(codespace string, code uint32) bool {
 		(codespace == "channel" && code == 22)
 }
 
+// isCosmosClientNotActiveError matches ibc-go's 02-client refusals that are about
+// the light client, not the message:
+//
+//	codespace "client", code 5  = ErrClientFrozen
+//	codespace "client", code 29 = ErrClientNotActive -- raised by 04-channel/v2
+//	  RecvPacket/Acknowledgement and by the membership and update paths whenever
+//	  the client's status is not Active (Frozen or Expired)
+//
+// Neither says anything about the packet: it succeeds once the client is
+// recovered. Classifying them as permanent made the relay module drop every
+// in-flight packet (#402).
+func isCosmosClientNotActiveError(codespace string, code uint32) bool {
+	return codespace == "client" && (code == 5 || code == 29)
+}
+
+// classifyCosmosFailure picks the sentinel a deterministic ABCI failure carries:
+// ErrClientNotActive for a client that cannot accept anything, otherwise
+// fallback.
+func classifyCosmosFailure(codespace string, code uint32, fallback error) error {
+	if isCosmosClientNotActiveError(codespace, code) {
+		return services.ErrClientNotActive
+	}
+	return fallback
+}
+
 // duplicateDropIsSafe reports whether a duplicate response establishes that
 // the entire submitted batch is already complete. A Cosmos transaction is
 // atomic, so this is only true for a single-message batch.
@@ -472,6 +498,9 @@ func newCosmosPreDeliverFailure(stage string, code uint32, codespace, failureLog
 	}
 	if isCosmosDuplicatePacketError(codespace, code) {
 		failure.Err = services.ErrPermanentRelayFailure
+	}
+	if isCosmosClientNotActiveError(codespace, code) {
+		failure.Err = services.ErrClientNotActive
 	}
 	return failure
 }
@@ -515,7 +544,7 @@ func splitCosmosBatchAfterDuplicateWith(
 		stdCtx, svcCtx, sdkMsgs[:mid], accountNumber, sequence, true,
 	)
 	if err != nil {
-		log.Printf("[SendCosmosTx] first half after duplicate split failed: %v", err)
+		log.Printf("WARN [SendCosmosTx] first half after duplicate split failed: %v", err)
 		return nextSequence, succeeded, err
 	}
 	finalSequence, succeededSecond, err := send(
@@ -594,7 +623,7 @@ func (h *Handler) simulateMsgs(stdCtx context.Context, svcCtx services.CosmosEnd
 
 	if result.Response.Code != 0 {
 		return 0, newCosmosPreDeliverFailure(
-			"Simulation", result.Response.Code, result.Response.Codespace, result.Response.Log, nil,
+			services.CosmosStageSimulation, result.Response.Code, result.Response.Codespace, result.Response.Log, nil,
 		)
 	}
 
@@ -645,7 +674,13 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 	if len(sdkMsgs) > 0 {
 		simulatedGas, err := h.simulateMsgs(stdCtx, svcCtx, sdkMsgs, sequence)
 		if err != nil {
-			log.Printf("[SendCosmosTx] Simulation failed for batch of size %d: %v", len(sdkMsgs), err)
+			log.Printf("WARN [SendCosmosTx] Simulation failed for batch of size %d: %v", len(sdkMsgs), err)
+			// A client that is not Active rejects every message in the batch, so
+			// splitting or broadcasting on fallback gas only pays fees to hear the
+			// same answer from DeliverTx.
+			if errors.Is(err, services.ErrClientNotActive) {
+				return sequence, 0, err
+			}
 			if !allowSplit {
 				return sequence, 0, fmt.Errorf("[SendCosmosTx] simulation failed; refusing to split atomic batch: %w", err)
 			}
@@ -658,7 +693,7 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 			unscaledGasLimit = simulatedGas
 			adjustedGas := applyCosmosGasHeadroom(simulatedGas, headroomStep)
 			if maxBlockGas > 0 && adjustedGas >= maxBlockGas {
-				log.Printf("[SendCosmosTx] Adjusted gas %d exceeds max block gas %d for batch of size %d", adjustedGas, maxBlockGas, len(sdkMsgs))
+				log.Printf("WARN [SendCosmosTx] Adjusted gas %d exceeds max block gas %d for batch of size %d", adjustedGas, maxBlockGas, len(sdkMsgs))
 				if len(sdkMsgs) > 1 {
 					if !allowSplit {
 						return sequence, 0, fmt.Errorf("[SendCosmosTx] adjusted gas %d exceeds max block gas %d; refusing to split atomic batch", adjustedGas, maxBlockGas)
@@ -851,7 +886,7 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 		return sequence, 0, fmt.Errorf("failed to broadcast transaction: %w", err)
 	}
 	if syncResult.Code != 0 {
-		log.Printf("[SendCosmosTx] CheckTx FAILED: code=%d codespace=%s log=%s data=%x",
+		log.Printf("WARN [SendCosmosTx] CheckTx FAILED: code=%d codespace=%s log=%s data=%x",
 			syncResult.Code, syncResult.Codespace, syncResult.Log, syncResult.Data)
 		if cosmosOutOfGas(syncResult.Codespace, syncResult.Code) {
 			// CheckTx rejects the transaction before inclusion, so its sequence
@@ -868,7 +903,7 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 			plan, at := planCosmosOutOfGas(cause, len(sdkMsgs), headroomStep, unscaledGasLimit, maxBlockGas, allowSplit)
 			next, bottom, ok := chain.Climb(plan, at)
 			if !ok {
-				log.Printf("[SendCosmosTx] CheckTx out-of-gas batch cannot receive more gas; reporting permanent")
+				log.Printf("ERROR [SendCosmosTx] CheckTx out-of-gas batch cannot receive more gas; reporting permanent")
 				return sequence, 0, bottom
 			}
 			switch next.What {
@@ -906,7 +941,7 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 	}
 
 	if txResult.TxResult.Code != 0 {
-		log.Printf("[SendCosmosTx] DeliverTx FAILED: code=%d codespace=%s log=%s data=%x",
+		log.Printf("WARN [SendCosmosTx] DeliverTx FAILED: code=%d codespace=%s log=%s data=%x",
 			txResult.TxResult.Code, txResult.TxResult.Codespace, txResult.TxResult.Log, txResult.TxResult.Data)
 		if isCosmosDuplicatePacketError(txResult.TxResult.Codespace, txResult.TxResult.Code) {
 			if duplicateDropIsSafe(len(sdkMsgs)) {
@@ -935,7 +970,7 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 			plan, at := planCosmosOutOfGas(cause, len(sdkMsgs), headroomStep, unscaledGasLimit, maxBlockGas, allowSplit)
 			next, bottom, ok := chain.Climb(plan, at)
 			if !ok {
-				log.Printf("[SendCosmosTx] out-of-gas batch cannot receive more gas; reporting permanent")
+				log.Printf("ERROR [SendCosmosTx] out-of-gas batch cannot receive more gas; reporting permanent")
 				return nextSequence, 0, bottom
 			}
 			switch next.What {
@@ -953,7 +988,8 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 			Codespace: txResult.TxResult.Codespace,
 			Log:       txResult.TxResult.Log,
 			Data:      txResult.TxResult.Data,
-			Err:       services.ErrPermanentRelayFailure,
+			Err: classifyCosmosFailure(txResult.TxResult.Codespace, txResult.TxResult.Code,
+				services.ErrPermanentRelayFailure),
 		}
 	}
 

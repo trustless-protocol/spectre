@@ -36,7 +36,7 @@ func l2ChainIDFromProfile(profile json.RawMessage) (uint64, error) {
 	return pc.Common.L2ChainID, nil
 }
 
-// validateL2ChainIDs checks each l2_to_cosmos module's declared l2_chain_id
+// validateL2ChainID checks the l2_to_cosmos module's declared l2_chain_id
 // against the chain its l2_rpc_url actually serves.
 //
 // Until this existed the field was inert: nothing in the relayer read it, and
@@ -58,36 +58,32 @@ func l2ChainIDFromProfile(profile json.RawMessage) (uint64, error) {
 // definite disagreement here — the endpoint answered, and answered with a
 // different chain — is a configuration error, because no amount of retrying
 // fixes it and every packet relayed meanwhile is relayed against the wrong chain.
-func validateL2ChainIDs(stdCtx context.Context, sources []l2ToCosmosConfig) error {
-	for i := range sources {
-		src := sources[i]
-
-		want, err := l2ChainIDFromProfile(src.RollupProfile)
-		if err != nil {
-			return fmt.Errorf("l2_to_cosmos config (attestor_src_chain %q): %w", src.AttestorSrcChain, err)
-		}
-
-		verified, err := verifyL2ChainID(stdCtx, l2ChainIDCheck{
-			label:            fmt.Sprintf("l2_to_cosmos config (attestor_src_chain %q)", src.AttestorSrcChain),
-			rpcURL:           src.L2RpcUrl,
-			want:             want,
-			tolerateNoAnswer: true,
-		})
-		if err != nil {
-			return err
-		}
-		// Exactly one of these two lines. Reporting the skip and then reporting
-		// success unconditionally left an operator reading "skipping the
-		// l2_chain_id check" immediately followed by "l2_chain_id verified",
-		// which is the one thing the log must not say.
-		if !verified {
-			log.Printf("[start] could not read eth_chainId from %s; skipping the l2_chain_id check for %q "+
-				"(declared %d). The EVM signer lock still needs that answer, so startup will stop rather than run without its nonce guard.",
-				src.L2RpcUrl, src.AttestorSrcChain, want)
-			continue
-		}
-		log.Printf("[start] l2_chain_id verified for %q: %d", src.AttestorSrcChain, want)
+func validateL2ChainID(stdCtx context.Context, src l2ToCosmosConfig) error {
+	want, err := l2ChainIDFromProfile(src.RollupProfile)
+	if err != nil {
+		return fmt.Errorf("l2_to_cosmos config (attestor_src_chain %q): %w", src.AttestorSrcChain, err)
 	}
+
+	verified, err := verifyL2ChainID(stdCtx, l2ChainIDCheck{
+		label:            fmt.Sprintf("l2_to_cosmos config (attestor_src_chain %q)", src.AttestorSrcChain),
+		rpcURL:           src.L2RpcUrl,
+		want:             want,
+		tolerateNoAnswer: true,
+	})
+	if err != nil {
+		return err
+	}
+	// Exactly one of these two lines. Reporting the skip and then reporting
+	// success unconditionally left an operator reading "skipping the
+	// l2_chain_id check" immediately followed by "l2_chain_id verified",
+	// which is the one thing the log must not say.
+	if !verified {
+		log.Printf("WARN [start] could not read eth_chainId from %s; skipping the l2_chain_id check for %q "+
+			"(declared %d). The EVM signer lock still needs that answer, so startup will stop rather than run without its nonce guard.",
+			src.L2RpcUrl, src.AttestorSrcChain, want)
+		return nil
+	}
+	log.Printf("[start] l2_chain_id verified for %q: %d", src.AttestorSrcChain, want)
 	return nil
 }
 

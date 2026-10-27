@@ -80,6 +80,7 @@ pub mod v1_2_0 {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn test_migrate_from_v1_2_0() {
         // Initialize v1_2_0
         let mut deps = mk_deps_v1_2();
@@ -143,7 +144,14 @@ pub mod v1_2_0 {
         for header_bz in client_msgs {
             let header: Header = serde_json::from_slice(&header_bz).unwrap();
             env.block.time = Timestamp::from_seconds(
-                header.consensus_update.attested_header.execution.timestamp + 1000,
+                header
+                    .consensus_update
+                    .attested_header
+                    .execution
+                    .as_ref()
+                    .unwrap()
+                    .timestamp
+                    + 1000,
             );
 
             let query_verify_client_msg =
@@ -183,7 +191,14 @@ pub mod v1_2_0 {
         for header_bz in client_msgs {
             let header: Header = serde_json::from_slice(&header_bz).unwrap();
             env.block.time = Timestamp::from_seconds(
-                header.consensus_update.attested_header.execution.timestamp + 1000,
+                header
+                    .consensus_update
+                    .attested_header
+                    .execution
+                    .as_ref()
+                    .unwrap()
+                    .timestamp
+                    + 1000,
             );
 
             let query_verify_client_msg =

@@ -3,13 +3,13 @@ package cosmos
 import (
 	"context"
 	"encoding/json"
-	"strings"
-	"testing"
-	"time"
-
+	"errors"
 	"relayer/chain"
 	relayerclient "relayer/client"
 	"relayer/services"
+	"strings"
+	"testing"
+	"time"
 
 	ibcwasmtypes "github.com/cosmos/ibc-go/modules/light-clients/08-wasm/v10/types"
 	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
@@ -17,6 +17,17 @@ import (
 )
 
 type atomicTestTxHandler struct{ services.TransactionHandler }
+
+// partialTestTxHandler returns whatever a split batch would: a plain failure, or
+// a partial one carrying how many messages landed first.
+type partialTestTxHandler struct {
+	services.TransactionHandler
+	err error
+}
+
+func (h *partialTestTxHandler) SendCosmosTxBatch(context.Context, services.CosmosEndpoint, []any) error {
+	return h.err
+}
 
 func (*atomicTestTxHandler) SendCosmosTxBatchAtomic(context.Context, services.CosmosEndpoint, []any) error {
 	return nil
@@ -49,30 +60,32 @@ func mustBeaconHeader(t *testing.T, signatureSlot string) []byte {
 	return payload
 }
 
-func TestHighestBeaconSignatureSlot_UsesLatestHeader(t *testing.T) {
-	slot, err := highestBeaconSignatureSlot([][]byte{
-		mustBeaconHeader(t, "123"),
-		mustBeaconHeader(t, "130"),
-		mustBeaconHeader(t, "127"),
+func TestHighestBeaconSignatureSlot(t *testing.T) {
+	t.Run("uses latest header", func(t *testing.T) {
+		slot, err := highestBeaconSignatureSlot([][]byte{
+			mustBeaconHeader(t, "123"),
+			mustBeaconHeader(t, "130"),
+			mustBeaconHeader(t, "127"),
+		})
+		if err != nil {
+			t.Fatalf("highest slot: %v", err)
+		}
+		if slot != 130 {
+			t.Fatalf("slot = %d, want 130", slot)
+		}
 	})
-	if err != nil {
-		t.Fatalf("highest slot: %v", err)
-	}
-	if slot != 130 {
-		t.Fatalf("slot = %d, want 130", slot)
-	}
-}
 
-func TestHighestBeaconSignatureSlot_RejectsMalformedPayload(t *testing.T) {
-	if _, err := highestBeaconSignatureSlot([][]byte{[]byte("not-json")}); err == nil {
-		t.Fatal("malformed header must fail")
-	}
-}
+	t.Run("rejects malformed payload", func(t *testing.T) {
+		if _, err := highestBeaconSignatureSlot([][]byte{[]byte("not-json")}); err == nil {
+			t.Fatal("malformed header must fail")
+		}
+	})
 
-func TestHighestBeaconSignatureSlot_RejectsInvalidSlot(t *testing.T) {
-	if _, err := highestBeaconSignatureSlot([][]byte{mustBeaconHeader(t, "not-a-slot")}); err == nil {
-		t.Fatal("invalid signature slot must fail")
-	}
+	t.Run("rejects invalid slot", func(t *testing.T) {
+		if _, err := highestBeaconSignatureSlot([][]byte{mustBeaconHeader(t, "not-a-slot")}); err == nil {
+			t.Fatal("invalid signature slot must fail")
+		}
+	})
 }
 
 func TestHighestBeaconFinalizedSlot_UsesLatestHeader(t *testing.T) {
@@ -192,7 +205,7 @@ func TestDestination(t *testing.T) {
 		d := &Destination{}
 		packets := []chain.RelayPacket{{Type: chain.SendPacket, Packet: mustMarshalCosmosPacket(t)}}
 
-		if err := d.RelayPackets(cancelledCtx(), packets); err == nil {
+		if _, err := d.RelayPackets(cancelledCtx(), packets); err == nil {
 			t.Error("RelayPackets started a packet tx during shutdown")
 		}
 		if err := d.UpdateClient(cancelledCtx(), "", chain.ClientUpdate{Payloads: [][]byte{{1}}}); err == nil {
@@ -203,12 +216,64 @@ func TestDestination(t *testing.T) {
 		}
 	})
 
+	// SendCosmosTxBatch may split a batch, commit the leading sub-batches and then
+	// fail. Those messages are on chain; dropping the count here is what made the
+	// module re-queue -- and re-submit -- packets it had already delivered, and
+	// report them as DROPPED on the permanent ending.
+	t.Run("reports the prefix a split batch committed", func(t *testing.T) {
+		for _, tc := range []struct {
+			name      string
+			err       error
+			want      int
+			permanent bool
+		}{
+			{
+				name: "a partial failure reports what landed",
+				err:  &services.BatchPartialError{SucceededCount: 2, Err: errors.New("node went away")},
+				want: 2,
+			},
+			{
+				name: "a whole-batch failure reports nothing",
+				err:  errors.New("broadcast failed"),
+				want: 0,
+			},
+			{
+				// The prefix is a fact about the chain, not about the class of the
+				// failure: a deterministic revert in the LAST sub-batch does not
+				// un-commit the ones before it.
+				name:      "a permanent partial failure still reports its prefix",
+				err:       &services.BatchPartialError{SucceededCount: 2, Err: services.ErrPermanentRelayFailure},
+				want:      2,
+				permanent: true,
+			},
+			{
+				name: "every message landed",
+				err:  nil,
+				want: 3,
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				d := &Destination{worker: services.NewWorker(&partialTestTxHandler{err: tc.err}, nil)}
+				committed, err := d.sendPacketBatch(context.Background(), []any{1, 2, 3})
+				if committed != tc.want {
+					t.Fatalf("committed = %d, want %d", committed, tc.want)
+				}
+				if (err != nil) != (tc.err != nil) {
+					t.Fatalf("error = %v, want an error: %v", err, tc.err != nil)
+				}
+				if got := chain.IsPermanent(err); got != tc.permanent {
+					t.Fatalf("permanent = %v, want %v", got, tc.permanent)
+				}
+			})
+		}
+	})
+
 	// An empty packet list is a no-op, not an error: the module can hand over a batch
 	// that emptied out after filtering, and turning that into an error would fail a
 	// relay cycle that had nothing wrong with it.
 	t.Run("treats an empty packet list as a no-op", func(t *testing.T) {
 		d := &Destination{}
-		if err := d.RelayPackets(context.Background(), nil); err != nil {
+		if committed, err := d.RelayPackets(context.Background(), nil); err != nil || committed != 0 {
 			t.Fatalf("empty packet list must be a no-op, got %v", err)
 		}
 	})
@@ -272,17 +337,17 @@ func TestDestination(t *testing.T) {
 		}
 	})
 
-	// HasPacketReceipt is deliberately unimplemented on this side. It must report that
-	// loudly rather than answering "no receipt", which a caller would read as "safe to
+	// A receipt check with no Cosmos client behind it must report that loudly
+	// rather than answering "no receipt", which a caller would read as "safe to
 	// time this packet out" — refunding a packet that was in fact delivered.
-	t.Run("reports that HasPacketReceipt is not wired", func(t *testing.T) {
+	t.Run("refuses to answer HasPacketReceipt without a client", func(t *testing.T) {
 		d := &Destination{}
 		ok, err := d.HasPacketReceipt(context.Background(), nil)
 		if err == nil {
-			t.Fatal("an unimplemented receipt check must error, not answer")
+			t.Fatal("a receipt check with nothing to query must error, not answer")
 		}
 		if ok {
-			t.Fatal("an unimplemented receipt check must never report a receipt")
+			t.Fatal("a receipt check with nothing to query must never report a receipt")
 		}
 	})
 }

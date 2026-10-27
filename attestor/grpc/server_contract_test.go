@@ -80,7 +80,7 @@ func newContractClient(t *testing.T, service *Server) attestorpb.AttestorService
 
 func newContractServer(t *testing.T, ports core.Ports) *Server {
 	t.Helper()
-	service, err := New(map[string]core.Ports{"chain-a": ports}, Options{})
+	service, err := New(map[string]core.Ports{"chain-a": ports})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -88,10 +88,10 @@ func newContractServer(t *testing.T, ports core.Ports) *Server {
 }
 
 func TestNewRejectsEmptyOrIncompleteRoutes(t *testing.T) {
-	if _, err := New(nil, Options{}); err == nil {
+	if _, err := New(nil); err == nil {
 		t.Fatal("New accepted an empty routing table")
 	}
-	if _, err := New(map[string]core.Ports{"chain-a": {}}, Options{}); err == nil {
+	if _, err := New(map[string]core.Ports{"chain-a": {}}); err == nil {
 		t.Fatal("New accepted a route without StatusReader")
 	}
 }
@@ -124,9 +124,9 @@ func TestAdapterContractQueriesAndProvenance(t *testing.T) {
 	}
 }
 
-// src_chain is a routing and trust-boundary input. The default server must
-// never infer it from a single configured route: production relayers are
-// required to name the attestor feed they intend to consume.
+// src_chain is a routing and trust-boundary input. The server never infers it
+// from a configured route: production relayers must name the attestor feed they
+// intend to consume.
 func TestAdapterContractRequiresSrcChainByDefault(t *testing.T) {
 	ports := &fakePorts{
 		status:   core.FeedStatus{SrcChain: "chain-a", AttestationHead: core.RunModeFinalized, Ready: true},
@@ -136,17 +136,20 @@ func TestAdapterContractRequiresSrcChainByDefault(t *testing.T) {
 	}
 	client := newContractClient(t, newContractServer(t, core.Ports{Feed: ports, Verifier: ports, Status: ports}))
 
-	if _, err := client.AttestedUpTo(context.Background(), &attestorpb.AttestedUpToRequest{}); status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("AttestedUpTo without src_chain code = %v, want InvalidArgument", status.Code(err))
-	}
-	if _, err := client.AttestedRootAtOrBelow(context.Background(), &attestorpb.AttestedRootAtOrBelowRequest{}); status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("AttestedRootAtOrBelow without src_chain code = %v, want InvalidArgument", status.Code(err))
-	}
-	if _, err := client.VerifyStateRoot(context.Background(), &attestorpb.VerifyStateRootRequest{
-		ExpectedStateRoot: make([]byte, 32),
-		RunMode:           attestorpb.RunMode_RUN_MODE_FINALIZED,
-	}); status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("VerifyStateRoot without src_chain code = %v, want InvalidArgument", status.Code(err))
+	for _, srcChain := range []string{"", " \t"} {
+		if _, err := client.AttestedUpTo(context.Background(), &attestorpb.AttestedUpToRequest{SrcChain: srcChain}); status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("AttestedUpTo src_chain %q code = %v, want InvalidArgument", srcChain, status.Code(err))
+		}
+		if _, err := client.AttestedRootAtOrBelow(context.Background(), &attestorpb.AttestedRootAtOrBelowRequest{SrcChain: srcChain}); status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("AttestedRootAtOrBelow src_chain %q code = %v, want InvalidArgument", srcChain, status.Code(err))
+		}
+		if _, err := client.VerifyStateRoot(context.Background(), &attestorpb.VerifyStateRootRequest{
+			SrcChain:          srcChain,
+			ExpectedStateRoot: make([]byte, 32),
+			RunMode:           attestorpb.RunMode_RUN_MODE_FINALIZED,
+		}); status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("VerifyStateRoot src_chain %q code = %v, want InvalidArgument", srcChain, status.Code(err))
+		}
 	}
 }
 
@@ -272,7 +275,7 @@ func TestCapabilityAndRouteFailuresDoNotLookLikeReplicaLag(t *testing.T) {
 	// A route wired with a Status reader but no Feed or Verifier: reachable, and
 	// unable to answer, permanently.
 	partial := core.Ports{Status: ports}
-	service, err := New(map[string]core.Ports{"chain-a": partial}, Options{})
+	service, err := New(map[string]core.Ports{"chain-a": partial})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -326,22 +329,5 @@ func TestCapabilityAndRouteFailuresDoNotLookLikeReplicaLag(t *testing.T) {
 					"so the relayer would retry this configuration mistake forever", got, tc.want, codes.FailedPrecondition)
 			}
 		})
-	}
-}
-
-// The legacy empty src_chain path resolves the sole configured route. With no
-// routes at all there is nothing to resolve, and that is a configuration the
-// caller must fix -- NotFound, per 04-Attestor: "NotFound chỉ dành cho
-// resource/configuration mà caller phải sửa".
-func TestEmptySrcChainWithNoRoutesIsNotFound(t *testing.T) {
-	service := &Server{routes: map[string]core.Ports{}, options: Options{AllowLegacyEmptySrcChain: true}}
-	client := newContractClient(t, service)
-
-	_, err := client.AttestedUpTo(context.Background(), &attestorpb.AttestedUpToRequest{})
-	if err == nil {
-		t.Fatal("a server with no routes answered successfully")
-	}
-	if got := status.Code(err); got != codes.NotFound {
-		t.Fatalf("code = %v, want NotFound; a daemon serving no chains is a configuration error, not replica lag", got)
 	}
 }

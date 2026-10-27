@@ -216,27 +216,19 @@ func destHasReturnLeg(dest *services.Services, settling []*services.Services) bo
 
 // builtL2Dest is one built-but-not-yet-running Cosmos→L2 destination.
 //
-// It lives at package level rather than inside the start command so that
-// markReturnLegs below can be tested without standing up a chain, a prover and
-// an attestor. The review that found the len(l2Sources) > 0 bug also found that
-// nothing could have caught it, and that was a direct consequence of the
-// decision living inside an untestable closure.
+// It lives at package level rather than inside the start command so that the
+// return-leg decision (destHasReturnLeg) can be tested without standing up a
+// chain, a prover and an attestor. The review that found the len(l2Sources) > 0
+// bug also found that nothing could have caught it, and that was a direct
+// consequence of the decision living inside an untestable closure.
 type builtL2Dest struct {
 	svc     *services.Services
 	deps    services.RelayDeps
 	cleanup func()
-	// hasReturnLeg gates the owed-ack ledger: unless some l2_to_cosmos source
+	// timeoutRecovery is populated only after this destination has been matched
+	// to the L2 source that owns its attestors and Cosmos-side wasm client.
+	timeoutRecovery *services.L2TimeoutRecovery
+	// hasReturnLeg gates the owed-ack ledger: unless the l2_to_cosmos source
 	// settles for THIS destination, nothing ever clears a debt it records.
 	hasReturnLeg bool
-}
-
-// markReturnLegs sets hasReturnLeg on each destination a source settles for.
-//
-// It mutates in place because the caller holds the slice it is about to launch
-// goroutines from; returning a copy would leave the original silently unmarked,
-// which fails in the permissive direction this whole gate exists to prevent.
-func markReturnLegs(dests []builtL2Dest, settling []*services.Services) {
-	for i := range dests {
-		dests[i].hasReturnLeg = destHasReturnLeg(dests[i].svc, settling)
-	}
 }

@@ -73,6 +73,10 @@ contract ICS02ClientTest is Test {
         accessManager.grantRole(IBCRolesLib.MISBEHAVIOUR_SUBMITTER_ROLE, misbehaviourSubmitter, 0);
         accessManager.grantRole(IBCRolesLib.PAUSER_ROLE, pauser, 0);
 
+        // The registry rejects light clients without code, whether they are added or migrated to
+        vm.etch(lightClient, hex"00");
+        vm.etch(makeAddr("newLightClient"), hex"00");
+
         string memory counterpartyId = "dummy-counterparty-01";
         IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
             IICS02ClientMsgs.CounterpartyInfo(counterpartyId, merklePrefix);
@@ -97,10 +101,43 @@ contract ICS02ClientTest is Test {
             abi.encodeWithSelector(
                 IICS02ClientErrors.IBCClientMigrationModuleMismatch.selector,
                 address(clientMigrationExecutor),
-                ClientMigrationModuleIds.PROPOSER
+                ClientMigrationModuleIds.PROPOSER,
+                ClientMigrationModuleIds.EXECUTOR
             )
         );
         new ICS26Router(address(clientMigrationExecutor), address(clientMigrationExecutor));
+    }
+
+    function test_constructorRejectsWrongExecutorModule() public {
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IICS02ClientErrors.IBCClientMigrationModuleMismatch.selector,
+                address(clientMigrationProposer),
+                ClientMigrationModuleIds.EXECUTOR,
+                ClientMigrationModuleIds.PROPOSER
+            )
+        );
+        new ICS26Router(address(clientMigrationProposer), address(clientMigrationProposer));
+    }
+
+    function test_constructorRejectsModuleWithoutModuleId() public {
+        NoModuleIdContract unrelated = new NoModuleIdContract();
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IICS02ClientErrors.IBCClientMigrationModuleNotResponding.selector, address(unrelated)
+            )
+        );
+        new ICS26Router(address(unrelated), address(clientMigrationExecutor));
+    }
+
+    function test_constructorRejectsModuleWithMalformedModuleId() public {
+        MalformedModuleIdContract malformed = new MalformedModuleIdContract();
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IICS02ClientErrors.IBCClientMigrationModuleNotResponding.selector, address(malformed)
+            )
+        );
+        new ICS26Router(address(clientMigrationProposer), address(malformed));
     }
 
     function test_success_customClientId() public {
@@ -153,6 +190,108 @@ contract ICS02ClientTest is Test {
         vm.prank(unauthorized);
         vm.expectRevert(abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, unauthorized));
         ics02Client.addClient(customClientId, validCounterparty, lightClient);
+    }
+
+    function test_failure_addClient_invalidClient() public {
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
+            IICS02ClientMsgs.CounterpartyInfo("dummy-counterparty-01", merklePrefix);
+        address codeless = makeAddr("codeless");
+
+        vm.expectRevert(IICS02ClientErrors.IBCInvalidClientAddress.selector);
+        ics02Client.addClient(counterpartyInfo, address(0));
+        vm.expectRevert(IICS02ClientErrors.IBCInvalidClientAddress.selector);
+        ics02Client.addClient(counterpartyInfo, codeless);
+
+        vm.startPrank(idCustomizer);
+        vm.expectRevert(IICS02ClientErrors.IBCInvalidClientAddress.selector);
+        ics02Client.addClient("custom-client-id", counterpartyInfo, address(0));
+        vm.expectRevert(IICS02ClientErrors.IBCInvalidClientAddress.selector);
+        ics02Client.addClient("custom-client-id", counterpartyInfo, codeless);
+        vm.stopPrank();
+
+        // Neither attempt registered a client or consumed a generated id
+        assertEq(ics02Client.getNextClientSeq(), 1, "client seq must not advance");
+        vm.expectRevert(abi.encodeWithSelector(IICS02ClientErrors.IBCClientNotFound.selector, "custom-client-id"));
+        ics02Client.getClient("custom-client-id");
+    }
+
+    function test_failure_addClient_emptyMerklePrefix() public {
+        IICS02ClientMsgs.CounterpartyInfo memory noPrefix =
+            IICS02ClientMsgs.CounterpartyInfo("dummy-counterparty-01", new bytes[](0));
+
+        vm.expectRevert(IICS02ClientErrors.IBCInvalidCounterpartyMerklePrefix.selector);
+        ics02Client.addClient(noPrefix, lightClient);
+
+        vm.prank(idCustomizer);
+        vm.expectRevert(IICS02ClientErrors.IBCInvalidCounterpartyMerklePrefix.selector);
+        ics02Client.addClient("custom-client-id", noPrefix, lightClient);
+
+        // A prefix with one empty element is not empty: it is what counterparties without a store prefix use
+        IICS02ClientMsgs.CounterpartyInfo memory emptyElementPrefix =
+            IICS02ClientMsgs.CounterpartyInfo("dummy-counterparty-01", th.EMPTY_MERKLE_PREFIX());
+        string memory newId = ics02Client.addClient(emptyElementPrefix, lightClient);
+        assertEq(ics02Client.getCounterparty(newId).merklePrefix.length, 1, "prefix not stored");
+    }
+
+    function test_failure_proposeClientMigration_invalidClient() public {
+        address clientMigrator = makeAddr("clientMigrator");
+        accessManager.grantRole(ics02Client.getLightClientMigratorRole(clientIdentifier), clientMigrator, 60);
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
+            IICS02ClientMsgs.CounterpartyInfo("dummy-counterparty-01", merklePrefix);
+
+        // Executing a migration to address(0) would silently unregister the client
+        vm.startPrank(clientMigrator);
+        vm.expectRevert(IICS02ClientErrors.IBCInvalidClientAddress.selector);
+        ics02Client.proposeClientMigration(clientIdentifier, counterpartyInfo, address(0));
+        vm.expectRevert(IICS02ClientErrors.IBCInvalidClientAddress.selector);
+        ics02Client.proposeClientMigration(clientIdentifier, counterpartyInfo, makeAddr("codeless"));
+        vm.stopPrank();
+
+        (bytes32 digest,,,) = ics02Client.getClientMigration(clientIdentifier);
+        assertEq(digest, bytes32(0), "no proposal may be committed");
+    }
+
+    function test_failure_executeClientMigration_clientLostItsCode() public {
+        address clientMigrator = makeAddr("clientMigrator");
+        accessManager.grantRole(ics02Client.getLightClientMigratorRole(clientIdentifier), clientMigrator, 60);
+        address newLightClient = makeAddr("newLightClient");
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
+            IICS02ClientMsgs.CounterpartyInfo("dummy-counterparty-01", merklePrefix);
+
+        vm.prank(clientMigrator);
+        ics02Client.proposeClientMigration(clientIdentifier, counterpartyInfo, newLightClient);
+        (, uint48 executeAfter,,) = ics02Client.getClientMigration(clientIdentifier);
+        vm.warp(executeAfter);
+
+        // The executor does not rely on the proposer having checked: it is also the only gate for a proposal
+        // that was committed before the proposer did
+        vm.etch(newLightClient, "");
+        vm.expectRevert(IICS02ClientErrors.IBCInvalidClientAddress.selector);
+        ics02Client.executeClientMigration(clientIdentifier, counterpartyInfo, newLightClient);
+        assertEq(address(ics02Client.getClient(clientIdentifier)), lightClient, "client must stay registered");
+    }
+
+    function test_failure_executeClientMigration_proposerRoleLostItsDelay() public {
+        address clientMigrator = makeAddr("clientMigrator");
+        uint64 migratorRole = ics02Client.getLightClientMigratorRole(clientIdentifier);
+        accessManager.grantRole(migratorRole, clientMigrator, 60);
+        address newLightClient = makeAddr("newLightClient");
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
+            IICS02ClientMsgs.CounterpartyInfo("dummy-counterparty-01", merklePrefix);
+
+        vm.prank(clientMigrator);
+        ics02Client.proposeClientMigration(clientIdentifier, counterpartyInfo, newLightClient);
+        (, uint48 executeAfter,,) = ics02Client.getClientMigration(clientIdentifier);
+
+        // Re-granting the role without a delay still makes the proposer a member, but a zero-delay role could not
+        // have created the proposal, so it cannot keep it alive either
+        accessManager.grantRole(migratorRole, clientMigrator, 0);
+        vm.warp(executeAfter);
+        vm.expectRevert(
+            abi.encodeWithSelector(IICS02ClientErrors.IBCClientMigrationDelayRequired.selector, clientIdentifier)
+        );
+        ics02Client.executeClientMigration(clientIdentifier, counterpartyInfo, newLightClient);
+        assertEq(address(ics02Client.getClient(clientIdentifier)), lightClient, "client must stay registered");
     }
 
     function test_MigrateClient() public {
@@ -399,6 +538,7 @@ contract ICS02ClientTest is Test {
         ics02Client.executeClientMigration(clientIdentifier, counterpartyInfo, newLightClient);
 
         address replacementClient = makeAddr("replacementClient");
+        vm.etch(replacementClient, hex"00");
         vm.prank(clientMigrator);
         ics02Client.proposeClientMigration(clientIdentifier, counterpartyInfo, replacementClient);
         (bytes32 replacementDigest,, uint48 replacementExpiry, address proposer) =
@@ -552,5 +692,21 @@ contract ICS02ClientTest is Test {
         vm.expectRevert(abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, unauthorized));
         vm.prank(unauthorized);
         ics02Client.updateApplicationState(clientIdentifier, updateMsg);
+    }
+}
+
+/// @dev A contract with code but no `moduleId()`: the staticcall reverts.
+contract NoModuleIdContract {
+    uint256 public value;
+}
+
+/// @dev Answers `moduleId()` with 64 bytes instead of a single `bytes32`.
+contract MalformedModuleIdContract {
+    fallback() external {
+        assembly ("memory-safe") {
+            mstore(0, 0)
+            mstore(32, 0)
+            return(0, 64)
+        }
     }
 }

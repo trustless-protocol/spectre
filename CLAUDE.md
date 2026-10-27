@@ -7,7 +7,7 @@ Operating manual for working in this repository. When this file conflicts with y
 Production Solidity implementation of **IBC v2** ("Spectre") for Ethereum ↔ Cosmos interoperability. Three language layers:
 
 - **Solidity** (`contracts/`) — IBC core, token transfer, ZK light client. The product.
-- **Go** (`relayer/`) — relayer + gnark Groth16 prover. The operator.
+- **Go** (`relayer/`) — relayer + gnark Groth16 prover. The relayer.
 - **Rust** — CosmWasm Ethereum and L2 ICS-08 clients. The L2 clients live in
   `programs/cw-ics08-wasm-{op,base,arbitrum}` with matching verifier packages.
 
@@ -42,7 +42,7 @@ forge test --match-contract EncodeTest -vvv  # Encoding cross-validation
 ./scripts/local/wasm.sh                    # 3. Submit ETH light client WASM via governance
 ```
 
-**Prerequisites**: `bun` (never npm/yarn), `just`, Foundry, Go 1.21+. E2E also needs Docker + Kurtosis.
+**Prerequisites**: `bun` (never npm/yarn), `just`, Foundry, Go (the version in `relayer/go.mod`). E2E also needs Docker + Kurtosis.
 
 ## Relayer CLI
 
@@ -53,7 +53,7 @@ cd relayer && go build -o relayer ./cmd
 
 # One-time setup: create the light clients, ONE COMMAND PER CHAIN (the umbrella
 # `create-clients` was removed — #255). Cosmos side first (creates the 08-wasm ETH
-# client → learns its real client id), then the ETH side (deploys ICS07 wired to that
+# client → learns its real client id), then the ETH side (deploys SpectreClient wired to that
 # id). Both write their ids back into config.json. create-clients-cosmos also creates
 # one L2 wasm client per --l2-config (all Cosmos-side, L1 client id auto-injected).
 ./relayer create-clients-cosmos --config config.json --wasm-checksum <hex>
@@ -65,7 +65,7 @@ cd relayer && go build -o relayer ./cmd
 
 Config: JSON file with `modules` array containing `cosmos_to_eth` and `eth_to_cosmos` entries (see `relayer/config.example.json`). Secrets: `relayer/.env` ships with devnet-only sample keys (`ETH_PRIVATE_KEY`, `COSMOS_PRIVATE_KEY`, `COSMOS_CHAIN_ID`, `COSMOS_ADDRESS_PREFIX` — bech32 account prefix, default `cosmos`, `PROVER_BIN_DIR`) — replace before any real deployment.
 
-**One process serves exactly one source → destination pair.** `start` rejects a config declaring more than one relay path (`validateSingleRelayPair`, `cmd/config.go`), listing every path it found. A Cosmos→L2 destination and its L2→Cosmos return leg count as one path; Cosmos↔ETH is one path driven by a single `cosmos_to_eth` module. Multiple sources therefore means one config file and one process per source — and each process needs **its own `COSMOS_PRIVATE_KEY`**, because `cosmosMu` serializes only within a process. `ETH_PRIVATE_KEY` is narrower: it must differ only between processes writing the **same** EVM chain, since the nonce cache is keyed `(chainID, address)`. For multiple Cosmos sources that condition always holds — they all relay to the same Ethereum router, so two processes sharing an ETH key sit on one nonce domain and will hand out the same nonce. A `cosmos↔eth` process and a `cosmos↔l2` process write different chains and may share one key; `docs/E2E.md` states the rule and why a shared ETH key degrades more gracefully than a shared Cosmos one. A second ETH key is unusable until it is funded **and** granted the router's `RELAYER_ROLE` — `E2ETestDeploy.s.sol` grants it to the deployer alone, and the resulting revert carries no revert string; `docs/E2E.md` has the `grantRole` command. **`start` enforces both rules** — one advisory lock per `{chain id, address}` EVM nonce domain (`cmd/evm_signer_lock.go`) and one on the Cosmos signing address (`cmd/cosmos_signer_lock.go`), both under `/tmp/fast-ibc-relayer-<uid>/`, so a second process on a key one of those domains already holds refuses to boot and names the lock file. `flock` is per machine and per user, so two hosts sharing a key still collide and nothing local sees it. Run `create-clients-cosmos` then `create-clients-eth` once per source with `--source <ics26_client_id>`; single-path configs need no `--source`. `config.example.json` is a catalogue of every module and is deliberately NOT runnable — copy `config.{ethereum,op,base,arbitrum}.example.json` instead.
+**One process serves exactly one source → destination pair.** `loadConfig` rejects a config declaring more than one relay path at parse time (`rejectExtraRelayPaths`, `cmd/config.go`), listing every path it found; `appConfig` holds one value per direction, never a list. A Cosmos→L2 destination and its L2→Cosmos return leg count as one path; Cosmos↔ETH is one path driven by a single `cosmos_to_eth` module. Multiple sources therefore means one config file and one process per source — and each process needs **its own `COSMOS_PRIVATE_KEY`**, because `cosmosMu` serializes only within a process. `ETH_PRIVATE_KEY` is narrower: it must differ only between processes writing the **same** EVM chain, since the nonce cache is keyed `(chainID, address)`. For multiple Cosmos sources that condition always holds — they all relay to the same Ethereum router, so two processes sharing an ETH key sit on one nonce domain and will hand out the same nonce. A `cosmos↔eth` process and a `cosmos↔l2` process write different chains and may share one key; `docs/E2E.md` states the rule and why a shared ETH key degrades more gracefully than a shared Cosmos one. A second ETH key is unusable until it is funded **and** granted the router's `RELAYER_ROLE` — `E2ETestDeploy.s.sol` grants it to the deployer alone, and the resulting revert carries no revert string; `docs/E2E.md` has the `grantRole` command. **`start` enforces both rules** — one advisory lock per `{chain id, address}` EVM nonce domain (`cmd/evm_signer_lock.go`) and one on the Cosmos signing address (`cmd/cosmos_signer_lock.go`), both under `/tmp/spectre-relayer-<uid>/`, so a second process on a key one of those domains already holds refuses to boot and names the lock file. `flock` is per machine and per user, so two hosts sharing a key still collide and nothing local sees it. Run `create-clients-cosmos` then `create-clients-eth` once per source, each against that source's own config file (there is no `--source` flag: a file names one source). `config.example.json` is a catalogue of every module and is deliberately NOT runnable — copy `config.{ethereum,op,base,arbitrum}.example.json` instead.
 
 Circuit setup: `scripts/solidity/build-prover-artifacts.sh` generates the supported N4 pair in ignored staging, smoke-tests it, publishes it, and records provenance. After regeneration the verifying key changes: **redeploy the generated N4 verifier and re-register it via `SignatureVerifier.setBucket(...)`**, or every proof fails on-chain.
 
@@ -85,33 +85,38 @@ ICS26Router (UUPS) ← main IBC entry point
           └─ Groth16Verifier_N{N}.sol ← GENERATED, one per N ∈ {4,8,16,32,64,128}, vk baked as constants
 ```
 
-ZK flow: top-N validator Ed25519 sigs (≥⅔ voting power) → padded to nearest bucket with deterministic dummy keypairs → circuit hashes the witness into a single SHA-256 public input + ECIP batch verify → per-bucket verifier checks the proof. **Pubkeys (A) are committed into the witness hash** so the on-chain pinned-set lookup is honest; **R/S are deliberately NOT in calldata or the hash** (bound by the Ed25519 verify itself). The witness layout must match byte-for-byte between `relayer/prover/hash_witness.go` and `contracts/light-clients/spectre/SignatureVerifier.sol`.
+ZK flow: top-N validator Ed25519 sigs (≥⅔ voting power) → padded to nearest bucket with deterministic dummy keypairs → circuit hashes the witness into a single SHA-256 public input + ECIP batch verify → per-bucket verifier checks the proof. **Pubkeys (A) are committed into the witness hash** so the on-chain pinned-set lookup is honest; **R/S are deliberately NOT in calldata or the hash** (bound by the Ed25519 verify itself). The witness layout must match byte-for-byte between `relayer/prover/witness/witness.go` and `contracts/light-clients/spectre/SignatureVerifier.sol`.
 
 ```
 relayer/
 ├── bindings/       # GENERATED Go bindings — never hand-edit
-├── chain/          # multi-chain adapter contract (Source/Destination/ClientUpdateBuilder) + cosmos/ evm/ l2rollup/ adapters + codec/ (opaque-payload codecs) — see chain/README.md
+├── chain/          # multi-chain adapter contract (Source/Destination/Builder) + cosmos/ evm/ l2rollup/ adapters + codec/ (opaque-payload codecs) — see chain/README.md
 ├── relay/          # generic RelayModule that drives one source→dest path via the chain adapters (the cutover engine)
 ├── client/         # Tendermint + Ethereum RPC/Beacon API clients
-├── prover/         # Bucketed Ed25519 batch prover
-│   ├── circuit.go / hash_witness.go / dummy.go / extractor.go / prover.go / buckets.go
+├── prover/         # Bucketed Ed25519 batch prover — async proof service
+│   ├── prover.go / job.go / validate.go / ports.go  # async service: submit/claim/prove/store a job
+│   ├── gnark/      # circuit, CPU + optional ICICLE GPU backend, setup
+│   ├── witness/    # witness layout + hashing, bucket family, dummy-signer padding
+│   ├── memqueue/ memstore/  # in-memory job queue/store implementations
 │   └── cmd/        # One-shot circuit setup tool (see Relayer CLI)
 ├── services/       # batch builder, PendingPacketTracker, timeout scanners, adapter_api.go surface consumed by the adapters (StartLoop removed at cutover; the adapter engine drives relay)
 ├── subscriber/     # Cosmos WebSocket + ETH event listeners (both sides have gap recovery — keep it that way)
 ├── transaction/    # ETH tx (nonce under h.mu) + Cosmos tx (account sequence under cosmosMu)
 ├── utils/          # IBC path helpers, byte utils
-└── cmd/main.go     # CLI: start (runAdapterEngine per source), create-clients-{cosmos,eth}, update-client, genesis, fixtures
+└── cmd/main.go     # CLI: start (runAdapterEngine per source), status (+ `status reactivate`), create-clients-{cosmos,eth}, update-client, update-eth-client, submit-misbehaviour, genesis
 ```
 
 `packages/go-abigen/` — GENERATED bindings consumed by the relayer (`spectreclient`, `ics26router`, `ics20transfer`, `ibcerc20`, `relayerhelper`).
 
 ## Documentation map
 
-`docs/` is deliberately small: four operational runbooks, nothing else. Architecture, design conventions, security doctrine, test policy, observability guides, and benchmark results are **not** documented in this repo — the code is their only description, and performance numbers exist only in runs you make yourself. Earlier versions of those documents are recoverable from git history (`git log --diff-filter=D -- docs/`) but are stale by definition; do not resurrect a claim from one without re-verifying it against the code. Read the runbook whose domain the task touches.
+`docs/` is deliberately small: six operational runbooks, nothing else. Architecture, design conventions, security doctrine, test policy, observability guides, and benchmark results are **not** documented in this repo — the code is their only description, and performance numbers exist only in runs you make yourself. Earlier versions of those documents are recoverable from git history (`git log --diff-filter=D -- docs/`) but are stale by definition; do not resurrect a claim from one without re-verifying it against the code. Read the runbook whose domain the task touches.
 
 | Document | When to read |
 |----------|--------------|
+| [docs/ATTESTOR_RUNBOOK.md](docs/ATTESTOR_RUNBOOK.md) | Operating and recovering the attestor services |
 | [docs/E2E.md](docs/E2E.md) | Bringing up a devnet or running an end-to-end relay |
+| [docs/ERC20_LOCKBOX_ADAPTER.md](docs/ERC20_LOCKBOX_ADAPTER.md) | Deploying or operating an ERC20 lockbox adapter |
 | [docs/L2_CLIENTS.md](docs/L2_CLIENTS.md) | OP, Base, or Arbitrum ICS-08 client work |
 | [docs/PRODUCTION_DEPLOYMENT.md](docs/PRODUCTION_DEPLOYMENT.md) | Governance-gated deployment, escrow launch gate, governed client migration |
 | [docs/MISBEHAVIOUR_RUNBOOK.md](docs/MISBEHAVIOUR_RUNBOOK.md) | Cosmos equivocation incident response |
@@ -135,7 +140,7 @@ Docs can lag the code (they have before — "cache"/"planned" wording for featur
 - **Solidity**: 120-col lines, 4-space width, double quotes (`foundry.toml` enforces). UUPS proxies for core contracts, Beacon for per-instance contracts. Modules under `contracts/light-clients/spectre/modules/` stay `pure`/stateless (read the Store, never write) — all client state lives in `SpectreClient`.
 - **Go**: wrap errors with `%w` + context; classify relayer failures transient vs permanent (`ErrPermanentRelayFailure`); every shared mutation under its owning mutex; tests run with `-race`.
 - **Bindings**: after any Solidity ABI change, regenerate with `abigen` into `packages/go-abigen/` (and `relayer/bindings/` where applicable) in the same PR.
-- **Tooling**: `bun` for JS deps; `just` recipes over raw commands when a recipe exists. `go.mod` has replace directives for local `ecip-gnark`/`decentrio-gnark` — adjust per dev setup, never commit machine-local paths.
+- **Tooling**: `bun` for JS deps; `just` recipes over raw commands when a recipe exists. `relayer/go.mod` pins `decentrio/ecip-gnark` (require) and `decentrio/gnark` (replace of `consensys/gnark`) as private Go modules — needs `GOPRIVATE=github.com/decentrio/*`; there is no `third_party/` submodule. `libgaraga_rs` is built by `scripts/build-garaga-ffi.sh` into `.artifacts/native/` and found via `CGO_LDFLAGS=-L…` + `LD_LIBRARY_PATH` (`DYLD_LIBRARY_PATH` on macOS). Never commit machine-local `replace` paths.
 
 ### Added — rules this codebase needs that you won't infer
 
@@ -163,7 +168,7 @@ Docs can lag the code (they have before — "cache"/"planned" wording for featur
 14. **Downgrading pinned deps to match a stale mirror** — a mirror lags, model "fixes" by downgrading. → *Never regress a pinned version to satisfy a mirror; fix the install source.*
 15. **Chat language leaking into GitHub** — non-English chat bleeds into an issue or commit. → *Hard limit 5.*
 16. **Misreading the permissionless escape hatch** — flags `hasRole(ROLE, address(0))` as a vulnerability. → *It's the documented permissionless mode; report it as design context, not a finding.*
-17. **Weakening witness binding** — moves a field out of the witness hash "to save gas", or adds R/S to calldata "for clarity". → *The hashed-field set in `hash_witness.go` is a security boundary; any change needs an explicit binding argument for both the before and after states.*
+17. **Weakening witness binding** — moves a field out of the witness hash "to save gas", or adds R/S to calldata "for clarity". → *The hashed-field set in `relayer/prover/witness/witness.go` is a security boundary; any change needs an explicit binding argument for both the before and after states.*
 
 ## Quality bar per deliverable — checkable, not adjectives
 
@@ -172,7 +177,7 @@ Docs can lag the code (they have before — "cache"/"planned" wording for featur
 - [ ] Targeted tests pass (`forge test --match-test/-contract ... -vvv`); full `just test-foundry` before handoff
 - [ ] If encoding touched: `EncodeTest` passes and the Go counterpart changed in the same diff
 - [ ] If ABI changed: bindings regenerated in the same diff
-- [ ] If light-client/verifier touched: `forge build --sizes` run and the new `SpectreClient` EIP-170 margin stated (headroom is only ~1.8KB)
+- [ ] If light-client/verifier touched: `forge build --sizes` run and the new `SpectreClient` EIP-170 margin stated
 - [ ] `just slither` run for anything touching access control, upgrades, or value transfer
 
 **Go relayer change**
@@ -242,3 +247,13 @@ Docs can lag the code (they have before — "cache"/"planned" wording for featur
 - He delegates via GitHub issues — write findings so a teammate can pick them up without re-deriving context.
 - Explanations: conclusion first, then evidence. If he says it's hard to follow, simplify with a concrete analogy — don't repeat the same abstraction louder.
 - Obsidian vault (`/Users/ducnt/Documents/tmp`): duplicate a note to `<name>-duc.md` before editing; never touch the original unless told per-file.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues on Spectre's `origin` remote, via the `gh` CLI. Labels are not used. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` + `docs/adr/` at the repo root. `docs/agents/` and `docs/adr/` are exempt from the "six runbooks only" rule above. See `docs/agents/domain.md`.

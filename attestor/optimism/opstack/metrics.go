@@ -5,7 +5,7 @@ import (
 )
 
 const (
-	metricsNamespace = "fast_ibc"
+	metricsNamespace = "spectre"
 	metricsSubsystem = "op_attestor"
 )
 

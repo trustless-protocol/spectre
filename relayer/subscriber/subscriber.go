@@ -173,13 +173,6 @@ func NewSubscriber(recovery ...*services.RecoveryStateStore) *Subscriber {
 	return &Subscriber{recovery: store}
 }
 
-func recoverySourceID(ids services.ClientIDs) string {
-	if ids.CosmosOnEVM != "" {
-		return ids.CosmosOnEVM
-	}
-	return "default"
-}
-
 func clampRecoveryCursor(cursor, lowestUnsubmitted uint64) uint64 {
 	if lowestUnsubmitted != 0 && lowestUnsubmitted < cursor {
 		return lowestUnsubmitted
@@ -193,7 +186,7 @@ func recoveryChunkSize(envName string, fallback uint64) uint64 {
 		if err == nil && value > 0 {
 			return value
 		}
-		log.Printf("[start] ignoring invalid %s=%q; using %d", envName, raw, fallback)
+		log.Printf("WARN [start] ignoring invalid %s=%q; using %d", envName, raw, fallback)
 	}
 	return fallback
 }
@@ -208,3 +201,17 @@ func sleepOrDone(ctx context.Context, delay time.Duration) bool {
 		return true
 	}
 }
+
+// Recovery cursor keys. They name the SCAN each cursor belongs to, and they are
+// declared here rather than in services because the stream owns its own key --
+// that is what lets a new chain add a key at its own call site instead of a
+// field in the shared struct.
+//
+// One process keeps one cursors.json, so these share a namespace with the keys
+// any other source in the same process declares (see chain/l2rollup). Keep them
+// distinct.
+const (
+	cursorCosmos      = "cosmos"
+	cursorEthSend     = "eth_send"
+	cursorEthWriteAck = "eth_write_ack"
+)

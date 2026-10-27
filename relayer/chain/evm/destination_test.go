@@ -2,14 +2,13 @@ package evm
 
 import (
 	"context"
-	"testing"
-
 	contractICS26Router "relayer/bindings/ICS26Router"
 	spectreContract "relayer/bindings/SpectreClient"
 	updateclientContract "relayer/bindings/UpdateClient"
 	"relayer/chain"
 	"relayer/chain/codec"
 	"relayer/services"
+	"testing"
 
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 	ethcommon "github.com/ethereum/go-ethereum/common"
@@ -39,53 +38,55 @@ func mustMarshalPacket(t *testing.T) []byte {
 // These exercise RelayPackets' input validation — the branches that return before
 // SendEthTxBatch, so no worker is needed. A zero-value Destination is sufficient.
 
-// TestRelayPackets_AckMissingBytes: an ack packet with no acknowledgement bytes
-// cannot build a MsgAckPacket and must error, not silently drop or panic.
-func TestRelayPackets_AckMissingBytes(t *testing.T) {
-	d := &Destination{}
-	err := d.RelayPackets(context.Background(), []chain.RelayPacket{{
-		Type:   chain.AckPacket,
-		Packet: mustMarshalPacket(t),
-		// AckBytes deliberately empty
-	}})
-	if err == nil {
-		t.Fatal("ack packet without acknowledgement bytes must error")
-	}
-}
+func TestRelayPackets(t *testing.T) {
+	// TestRelayPackets/ack missing bytes: an ack packet with no acknowledgement bytes
+	// cannot build a MsgAckPacket and must error, not silently drop or panic.
+	t.Run("ack missing bytes", func(t *testing.T) {
+		d := &Destination{}
+		_, err := d.RelayPackets(context.Background(), []chain.RelayPacket{{
+			Type:   chain.AckPacket,
+			Packet: mustMarshalPacket(t),
+			// AckBytes deliberately empty
+		}})
+		if err == nil {
+			t.Fatal("ack packet without acknowledgement bytes must error")
+		}
+	})
 
-// TestRelayPackets_UnknownType guards the default branch (an event type the EVM
-// destination does not build a message for).
-func TestRelayPackets_UnknownType(t *testing.T) {
-	d := &Destination{}
-	err := d.RelayPackets(context.Background(), []chain.RelayPacket{{
-		Type:   chain.EventType(99),
-		Packet: mustMarshalPacket(t),
-	}})
-	if err == nil {
-		t.Fatal("unknown packet type must error")
-	}
-}
+	// TestRelayPackets/unknown type guards the default branch (an event type the EVM
+	// destination does not build a message for).
+	t.Run("unknown type", func(t *testing.T) {
+		d := &Destination{}
+		_, err := d.RelayPackets(context.Background(), []chain.RelayPacket{{
+			Type:   chain.EventType(99),
+			Packet: mustMarshalPacket(t),
+		}})
+		if err == nil {
+			t.Fatal("unknown packet type must error")
+		}
+	})
 
-// TestRelayPackets_MalformedPacket guards the packet-decode failure path.
-func TestRelayPackets_MalformedPacket(t *testing.T) {
-	d := &Destination{}
-	// A byte string that is not a valid proto packet.
-	err := d.RelayPackets(context.Background(), []chain.RelayPacket{{
-		Type:   chain.SendPacket,
-		Packet: []byte{0xff, 0xff, 0xff, 0xff},
-	}})
-	if err == nil {
-		t.Fatal("malformed packet must error")
-	}
-}
+	// TestRelayPackets/malformed packet guards the packet-decode failure path.
+	t.Run("malformed packet", func(t *testing.T) {
+		d := &Destination{}
+		// A byte string that is not a valid proto packet.
+		_, err := d.RelayPackets(context.Background(), []chain.RelayPacket{{
+			Type:   chain.SendPacket,
+			Packet: []byte{0xff, 0xff, 0xff, 0xff},
+		}})
+		if err == nil {
+			t.Fatal("malformed packet must error")
+		}
+	})
 
-// TestRelayPackets_Empty: no packets is a no-op (returns nil without touching the
-// worker), matching the module's "nothing to relay" contract.
-func TestRelayPackets_Empty(t *testing.T) {
-	d := &Destination{}
-	if err := d.RelayPackets(context.Background(), nil); err != nil {
-		t.Fatalf("empty relay must be a no-op, got %v", err)
-	}
+	// TestRelayPackets/empty: no packets is a no-op (returns nil without touching the
+	// worker), matching the module's "nothing to relay" contract.
+	t.Run("empty", func(t *testing.T) {
+		d := &Destination{}
+		if committed, err := d.RelayPackets(context.Background(), nil); err != nil || committed != 0 {
+			t.Fatalf("empty relay must be a no-op, got %v", err)
+		}
+	})
 }
 
 // TestUpdateClient_BadPayload guards the codec-decode failure path (returns before
@@ -140,7 +141,7 @@ func TestRelayWithUpdate_SubmitsOneOrderedBatch(t *testing.T) {
 	payload, err := codec.EncodeCosmosUpdate(
 		int(services.ApplicationUpdate),
 		updateclientContract.ISpectreClientMsgsMsgUpdateApplicationState{},
-		spectreContract.IICS07TendermintMsgsValidatorSet{},
+		spectreContract.ISpectreTendermintMsgsValidatorSet{},
 	)
 	if err != nil {
 		t.Fatalf("encode update: %v", err)
@@ -165,5 +166,38 @@ func TestRelayWithUpdate_SubmitsOneOrderedBatch(t *testing.T) {
 	}
 	if _, ok := batch[1].(contractICS26Router.IICS26RouterMsgsMsgRecvPacket); !ok {
 		t.Fatalf("second inner message = %T, want MsgRecvPacket", batch[1])
+	}
+}
+
+// SupportsUpdatePacketFolding and services.EVMEndpoint.RouterManagesProofSubmission
+// are one question asked at two layers -- the chain.FoldingDestination contract
+// and the deployment shape it depends on. They were separately implemented and
+// byte-identical, which is how two things drift: nothing said they had to agree.
+//
+// This says it. Re-inlining the predicate here is only safe while the two answer
+// the same, and the moment they do not, this is red.
+func TestSupportsUpdatePacketFolding_AgreesWithTheEndpoint(t *testing.T) {
+	addr := func(b byte) ethcommon.Address { return ethcommon.Address{b} }
+
+	for _, tc := range []struct {
+		name        string
+		roleManager ethcommon.Address
+		router      ethcommon.Address
+	}{
+		{name: "router is the role manager", roleManager: addr(1), router: addr(1)},
+		{name: "separate role manager", roleManager: addr(2), router: addr(1)},
+		{name: "both unset"},
+		{name: "role manager unset", router: addr(1)},
+		{name: "router unset", roleManager: addr(1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			endpoint := services.EVMEndpoint{
+				Contracts: services.EVMContracts{RoleManager: tc.roleManager, Router: tc.router},
+			}
+			d := &Destination{evm: endpoint}
+			if got, want := d.SupportsUpdatePacketFolding(), endpoint.RouterManagesProofSubmission(); got != want {
+				t.Fatalf("folding says %v, the deployment says %v; the two definitions have drifted", got, want)
+			}
+		})
 	}
 }

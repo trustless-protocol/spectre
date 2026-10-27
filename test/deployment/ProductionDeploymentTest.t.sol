@@ -7,6 +7,7 @@ import { TimelockController } from "@openzeppelin-contracts/governance/TimelockC
 import { ProductionDeploy } from "scripts/ProductionDeploy.s.sol";
 import { ProductionVerify } from "scripts/ProductionVerify.s.sol";
 import { ICS20Transfer } from "contracts/apps/ics20/ICS20Transfer.sol";
+import { IICS02Client } from "contracts/core/interfaces/IICS02Client.sol";
 import { TestERC20 } from "test/mocks/TestERC20.sol";
 
 contract ProductionVerifierMock {
@@ -46,10 +47,12 @@ contract ProductionDeploymentTest is Test {
         _setAddressEnv("VERIFIER_N128", address(new ProductionVerifierMock()));
 
         vm.setEnv("SECURITY_DELAY", vm.toString(SECURITY_DELAY));
+        // Optional input: an operator's exported value must not leak into the first verification.
+        vm.setEnv("PRODUCTION_LIGHT_CLIENTS", "");
         address launchToken = address(new TestERC20());
         vm.setEnv(
             "PRODUCTION_ESCROW_CONFIG",
-            string.concat('{"clients":["client-0"],"tokens":["', vm.toString(launchToken), '"],"limits":["1000000"]}')
+            string.concat('{"clients":["eth-main"],"tokens":["', vm.toString(launchToken), '"],"limits":["1000000"]}')
         );
     }
 
@@ -70,7 +73,7 @@ contract ProductionDeploymentTest is Test {
         _setAddressEnv("ICS20_TRANSFER", deployment.readAddress(".ics20Transfer"));
 
         assertTrue(ICS20Transfer(deployment.readAddress(".ics20Transfer")).requiresPrecreatedEscrows());
-        assertTrue(ICS20Transfer(deployment.readAddress(".ics20Transfer")).isEscrowActive("client-0"));
+        assertTrue(ICS20Transfer(deployment.readAddress(".ics20Transfer")).isEscrowActive("eth-main"));
         assertTrue(new ProductionVerify().run());
 
         ProductionVerify verifier = new ProductionVerify();
@@ -97,6 +100,53 @@ contract ProductionDeploymentTest is Test {
         verifier.run();
         _setAddressEnv("RATE_LIMITER_ACCOUNT", configuredRateLimiter);
 
+        // Verification must reject a launch id in the permissionless `client-` namespace, including
+        // deployments that predate the deploy-time check.
+        string memory launchConfig = vm.envString("PRODUCTION_ESCROW_CONFIG");
+        vm.setEnv(
+            "PRODUCTION_ESCROW_CONFIG",
+            string.concat(
+                '{"clients":["client-0"],"tokens":["',
+                vm.toString(launchConfig.readAddressArray(".tokens")[0]),
+                '"],"limits":["1000000"]}'
+            )
+        );
+        vm.expectRevert("production client id must be a custom id");
+        verifier.run();
+        vm.setEnv("PRODUCTION_ESCROW_CONFIG", launchConfig);
+
+        // Optional launch-client registration check: the launch clients are registered through governance after
+        // the bootstrap, so it only runs once PRODUCTION_LIGHT_CLIENTS is set. The governed addClient round trip
+        // (two timelocks) is not replayed here; getClient is mocked to stand in for its result.
+        address router = vm.envAddress("ICS26_ROUTER");
+        address lightClient = address(new ProductionVerifierMock());
+        _setLightClients(lightClient);
+
+        vm.expectRevert("launch client not registered");
+        verifier.run();
+
+        vm.mockCall(router, abi.encodeCall(IICS02Client.getClient, ("eth-main")), abi.encode(lightClient));
+        assertTrue(verifier.run());
+
+        vm.mockCall(router, abi.encodeCall(IICS02Client.getClient, ("eth-main")), abi.encode(address(0xBAD)));
+        vm.expectRevert("launch client address mismatch");
+        verifier.run();
+        vm.clearMockedCalls();
+
+        vm.setEnv("PRODUCTION_LIGHT_CLIENTS", string.concat('{"lightClients":["', vm.toString(address(0xBAD)), '"]}'));
+        vm.expectRevert("expected light client has no code");
+        verifier.run();
+
+        vm.setEnv(
+            "PRODUCTION_LIGHT_CLIENTS",
+            string.concat('{"lightClients":["', vm.toString(lightClient), '","', vm.toString(lightClient), '"]}')
+        );
+        vm.expectRevert("light client count mismatch");
+        verifier.run();
+
+        vm.setEnv("PRODUCTION_LIGHT_CLIENTS", "");
+        assertTrue(verifier.run());
+
         ProductionDeploy deployer = new ProductionDeploy();
 
         _setValidEnv();
@@ -113,6 +163,10 @@ contract ProductionDeploymentTest is Test {
         _setAddressEnv("UNPAUSER_ACCOUNT", vm.envAddress("PAUSER_1"));
         vm.expectRevert("role separation failure");
         deployer.run();
+    }
+
+    function _setLightClients(address lightClient) internal {
+        vm.setEnv("PRODUCTION_LIGHT_CLIENTS", string.concat('{"lightClients":["', vm.toString(lightClient), '"]}'));
     }
 
     function _setAddressEnv(string memory name, address value) internal {

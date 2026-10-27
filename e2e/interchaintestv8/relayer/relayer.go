@@ -10,8 +10,6 @@ import (
 	"time"
 
 	"github.com/cosmos/gogoproto/proto"
-	grpc "google.golang.org/grpc"
-	insecure "google.golang.org/grpc/credentials/insecure"
 
 	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
 	txtypes "github.com/cosmos/cosmos-sdk/types/tx"
@@ -20,7 +18,6 @@ import (
 	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
 
 	ethereumtypes "github.com/srdtrk/solidity-ibc-eureka/e2e/v8/types/ethereum"
-	relayertypes "github.com/srdtrk/solidity-ibc-eureka/e2e/v8/types/relayer"
 )
 
 // DefaultRelayerGRPCAddress returns the default gRPC address for the relayer.
@@ -47,9 +44,9 @@ func binaryPath() string {
 
 // proverEnv exposes the per-bucket prover artifact directory to the spawned relayer process.
 //
-// The relayer loads artifacts via prover.NewProver(binDir) and expects a directory layout of
-// $PROVER_BIN_DIR/n{N}/{r1cs.bin,pk.bin,vk.bin} for each compiled bucket. Run
-// `just build-prover-artifacts` (or `go run ./relayer/prover/cmd`) to populate it.
+// The relayer loads artifacts via gnark.NewFromEnv(binDir) (relayer/cmd/main.go, buildProverService),
+// which serves every bucket whose $PROVER_BIN_DIR/n{N}/ directory holds r1cs.bin, pk.bin and vk.bin.
+// Run `just build-prover-artifacts` to populate it.
 func proverEnv() []string {
 	dir := os.Getenv("PROVER_BIN_DIR")
 	if dir == "" {
@@ -98,15 +95,32 @@ func StartRelayer(configPath string) (*os.Process, error) {
 	return cmd.Process, nil
 }
 
-// RunCreateClients runs the relayer's create-clients command synchronously (blocks until completion).
-func RunCreateClients(configPath string, extraArgs ...string) error {
+// RunCreateClients brings up both light clients, one relayer command per chain (the umbrella
+// create-clients command was removed): create-clients-cosmos first (creates the wasm Ethereum client
+// on Cosmos and writes its client id into the config), then create-clients-eth (deploys SpectreClient
+// wired to that id). An empty wasmChecksum skips the Cosmos half (PoW mode: no beacon API, so no
+// Ethereum light client on Cosmos).
+func RunCreateClients(configPath, wasmChecksum, trustLevel string) error {
+	if wasmChecksum != "" {
+		if err := RunCreateClientsCosmos(configPath, "--wasm-checksum", wasmChecksum); err != nil {
+			return fmt.Errorf("create-clients-cosmos: %w", err)
+		}
+	}
+	if err := RunCreateClientsEth(configPath, "--trust-level", trustLevel); err != nil {
+		return fmt.Errorf("create-clients-eth: %w", err)
+	}
+	return nil
+}
+
+// RunCreateClientsCosmos runs the relayer's create-clients-cosmos command synchronously.
+func RunCreateClientsCosmos(configPath string, extraArgs ...string) error {
 	config, err := os.ReadFile(configPath)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Running create-clients with config:\n%s\n", config)
+	fmt.Printf("Running create-clients-cosmos with config:\n%s\n", config)
 
-	args := append([]string{"create-clients", "--config", configPath}, extraArgs...)
+	args := append([]string{"create-clients-cosmos", "--config", configPath}, extraArgs...)
 	cmd := exec.Command(binaryPath(), args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -147,16 +161,6 @@ func RunUpdateClient(configPath string, extraArgs ...string) error {
 	cmd.Env = append(os.Environ(), proverEnv()...)
 
 	return cmd.Run()
-}
-
-// GetGRPCClient returns a gRPC client for the relayer.
-func GetGRPCClient(addr string) (relayertypes.RelayerServiceClient, error) {
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return nil, err
-	}
-
-	return relayertypes.NewRelayerServiceClient(conn), nil
 }
 
 // GetRelayUpdateSlot extracts the latest update slot from the relay body's update messages.
