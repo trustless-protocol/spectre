@@ -211,7 +211,13 @@ height, both certificates are valid, the client cannot tell the replacement from
 anyone who holds both can submit them as misbehaviour. The client freezes at that height
 (`packages/l2-client/src/runtime.rs:290-295`) and stays frozen. A deployment whose attestors sign
 roots that can still be lost accepts this. Whether a third party can obtain both certificates
-depends on who can reach the attestor feed, which these artifacts do not decide. Binding the
+depends on who can reach the attestor's gRPC API, which these artifacts do not decide. That API is
+plaintext and unauthenticated, `VerifyStateRoot` signs for any caller that names a height at or
+below the configured head together with that block's state root, and the listen address is
+operator configuration (`server.address` for OP, `grpc_listen_address` for Arbitrum) with no
+loopback restriction in the code. At `unsafe` and
+`safe`, whoever can reach it on both sides of a reorg can collect both certificates, so bind it to
+loopback or a private network and expose it only to the relayers that serve the client. Binding the
 finality tier into the statement would change the wire format of the attestor, the contract and the
 relayer together, and is not part of the current artifacts.
 

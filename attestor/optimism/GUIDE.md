@@ -94,10 +94,17 @@ as must `state_path` (both enforced at config load).
 supported for `l1_rpc_url` and `op_node_rpc_url`; use a URL transport when a
 WebSocket subscription is required.
 
-The client profile also pins `attestation_head` (`unsafe`, `safe`, or
-`finalized`). The relayer's `head_kind` must match it. The daemon signs the
-requested head into each attestation, so a signature issued for a lower head
-cannot be replayed to a stricter client that uses the same public key.
+`attestation_head` is enforced by this daemon and by the relayer, not by the
+Cosmos client. The daemon refuses any `VerifyStateRoot` whose `run_mode` differs
+from it, and the relayer's `head_kind` must match it (`start` compares the two
+through the daemon's `Info`). The tier is **not** part of the signed statement,
+and the client profile carries no tier either, so a signature issued at one
+tier is valid for any client of the same L2 whose attestor set contains the
+signing key. Give each tier its own `attestation_signing_key`: a key shared
+across tiers lets a signature issued at a weaker head be submitted to a client
+that expects a stricter one, and neither the daemon nor the relayer detects the
+reuse. See [docs/L2_CLIENTS.md](../../docs/L2_CLIENTS.md#signed-update-contract)
+for the statement layout.
 
 `server` block: `port` serves Prometheus on `/metrics`; `grpc_port` serves the
 sidecar API (0/omitted disables either).
