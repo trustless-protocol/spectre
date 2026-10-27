@@ -95,6 +95,7 @@ where
     Profile: Clone + Serialize + RuntimeProfile,
 {
     client.validate()?;
+    client.attestors.validate_for_install()?;
     consensus.validate()?;
     if consensus.l2_height != client.latest_height {
         return Err(Error::InvalidHeader(
@@ -144,7 +145,7 @@ where
                 public_keys,
                 threshold,
             };
-            replacement.validate()?;
+            replacement.validate_for_install()?;
             client.attestors = replacement;
             client.validate()?;
 

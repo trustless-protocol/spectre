@@ -13,6 +13,59 @@ pub const MAX_ATTESTORS: usize = 32;
 /// Raw Ed25519 public-key length.
 pub const ED25519_PUBLIC_KEY_LENGTH: usize = 32;
 
+/// Compressed Ed25519 encodings that decode to a point of order 1, 2, 4 or 8.
+///
+/// A key from this list satisfies the verification equation for signatures nobody made: the
+/// identity, for one, "signs" every statement under ZIP-215. There are five such `y` values and
+/// each is valid with either sign bit. A test derives this table from `curve25519-dalek`.
+pub(crate) const SMALL_ORDER_ED25519_KEYS: [[u8; ED25519_PUBLIC_KEY_LENGTH]; 10] = [
+    hex_key("0000000000000000000000000000000000000000000000000000000000000000"),
+    hex_key("0000000000000000000000000000000000000000000000000000000000000080"),
+    hex_key("0100000000000000000000000000000000000000000000000000000000000000"),
+    hex_key("0100000000000000000000000000000000000000000000000000000000000080"),
+    hex_key("26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05"),
+    hex_key("26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85"),
+    hex_key("c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a"),
+    hex_key("c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa"),
+    hex_key("ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f"),
+    hex_key("ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"),
+];
+
+/// Decodes a 64-digit hex string at compile time.
+const fn hex_key(hex: &str) -> [u8; ED25519_PUBLIC_KEY_LENGTH] {
+    const fn digit(byte: u8) -> u8 {
+        match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            _ => panic!("not a lowercase hex digit"),
+        }
+    }
+
+    let hex = hex.as_bytes();
+    assert!(hex.len() == 2 * ED25519_PUBLIC_KEY_LENGTH);
+    let mut key = [0; ED25519_PUBLIC_KEY_LENGTH];
+    let mut index = 0;
+    while index < ED25519_PUBLIC_KEY_LENGTH {
+        key[index] = digit(hex[2 * index]) << 4 | digit(hex[2 * index + 1]);
+        index += 1;
+    }
+    key
+}
+
+/// Whether the low 255 bits of the key, its `y` coordinate, are below the field prime `2^255 - 19`.
+///
+/// RFC 8032 requires it, but ZIP-215 verification, which `ed25519_verify` follows, also accepts
+/// `y` in `[p, 2^255)`, a second encoding of the point with `y - p`.
+pub(crate) fn has_canonical_y(key: &[u8]) -> bool {
+    let Some((&top, rest)) = key.split_last() else {
+        return false;
+    };
+    // `p` is 0x7fff...ffed, so y >= p exactly when the top byte is 0x7f (sign bit aside), every
+    // byte below it is 0xff, and the lowest byte is at least 0xed.
+    let is_all_ones = rest[1..].iter().all(|&byte| byte == 0xff);
+    !(top & 0x7f == 0x7f && is_all_ones && rest[0] >= 0xed)
+}
+
 /// Active, canonically ordered Ed25519 attestor set.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -48,6 +101,25 @@ impl AttestorConfig {
             .any(|pair| pair[0].as_slice() >= pair[1].as_slice())
         {
             return Err(Error::InvalidAttestorSet);
+        }
+        Ok(())
+    }
+
+    /// Validates a set that is about to be installed, at instantiation or on rotation.
+    ///
+    /// On top of [`Self::validate`], every key must be a canonical Ed25519 encoding of a point
+    /// that does not have small order. Stricter rules are not part of [`Self::validate`], which
+    /// runs on every call, because a client that already holds such a key must keep working
+    /// until governance rotates the set.
+    pub fn validate_for_install(&self) -> Result<(), Error> {
+        self.validate()?;
+        if self.public_keys.iter().any(|key| {
+            !has_canonical_y(key)
+                || SMALL_ORDER_ED25519_KEYS
+                    .iter()
+                    .any(|weak| weak == key.as_slice())
+        }) {
+            return Err(Error::InvalidAttestorPublicKey);
         }
         Ok(())
     }
