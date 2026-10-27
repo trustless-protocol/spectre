@@ -129,7 +129,14 @@ Copy `config.example.json` to `config.json` and configure:
 - `attestor_state_path`: durable JSON state for the assertion cursor and
   verified feed.
 - `nitro_rpc_url`: Nitro HTTP/HTTPS endpoint used for chain state, block
-  lookups, and unsafe/safe/finalized head reads.
+  lookups, and unsafe/safe/finalized head reads. Point it at one Nitro node, or
+  at an endpoint that keeps this client on one backend. `VerifyStateRoot` reads
+  the configured head and then the requested block by number in two separate
+  requests, and checks only that the block it got has the number it asked for,
+  not that it descends from the head it checked. Behind a pool that answers the
+  two requests from different nodes, the block it signs is not guaranteed to be
+  on the chain of the head it checked. `config.arbitrum-sepolia.json` points at
+  a shared public endpoint; use a node you operate for anything beyond testing.
 - `nitro_ws_url`: Nitro WS/WSS endpoint used for `newHeads` notifications.
 
 ### Early L1 ingestion and recovery
