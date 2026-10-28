@@ -41,7 +41,7 @@ type DaemonConfig struct {
 	AssertionStatusOffset      uint8        `json:"assertion_status_offset"`
 	AssertionStartBlock        uint64       `json:"assertion_start_block"`
 	AssertionPollInterval      string       `json:"assertion_poll_interval"`
-	AssertionPassTimeout       string       `json:"assertion_pass_timeout"`
+	AssertionCallTimeout       string       `json:"assertion_call_timeout"`
 	AssertionMaxBlockRange     uint64       `json:"assertion_max_block_range"`
 	AttestorStatePath          string       `json:"attestor_state_path"`
 	NitroRPCURL                string       `json:"nitro_rpc_url"`
@@ -151,7 +151,7 @@ func (c DaemonConfig) Validate() error {
 	if _, err := c.AssertionPollDuration(); err != nil {
 		return err
 	}
-	if _, err := c.AssertionPassTimeoutDuration(); err != nil {
+	if _, err := c.AssertionCallTimeoutDuration(); err != nil {
 		return err
 	}
 	if c.AttestorStatePath == "" || !filepath.IsAbs(c.AttestorStatePath) {
@@ -244,13 +244,14 @@ func (c DaemonConfig) AssertionPollDuration() (time.Duration, error) {
 	return parsePositiveDuration(c.AssertionPollInterval, "assertion_poll_interval")
 }
 
-// AssertionPassTimeoutDuration returns the deadline for one assertion sync
-// pass. An omitted value defaults to attestortypes.DefaultPassTimeout.
-func (c DaemonConfig) AssertionPassTimeoutDuration() (time.Duration, error) {
-	if c.AssertionPassTimeout == "" {
-		return attestortypes.DefaultPassTimeout, nil
+// AssertionCallTimeoutDuration returns the deadline for one upstream call the
+// assertion loop makes to L1 or Nitro. An omitted value defaults to
+// attestortypes.DefaultCallTimeout.
+func (c DaemonConfig) AssertionCallTimeoutDuration() (time.Duration, error) {
+	if c.AssertionCallTimeout == "" {
+		return attestortypes.DefaultCallTimeout, nil
 	}
-	return parsePositiveDuration(c.AssertionPassTimeout, "assertion_pass_timeout")
+	return parsePositiveDuration(c.AssertionCallTimeout, "assertion_call_timeout")
 }
 
 // AssertionBlockRange returns the maximum number of finalized L1 blocks read

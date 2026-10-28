@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	attestortypes "attestor/types"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
@@ -299,6 +301,51 @@ func TestMismatchIsRetainedWhenChallengeHookFails(t *testing.T) {
 	}
 	if pending := a.store.Pending(); len(pending) != 0 {
 		t.Fatalf("pending after hook failure = %+v", pending)
+	}
+}
+
+// hangingHook never returns until its context ends, like a challenge
+// transaction submitted to an endpoint that does not answer.
+type hangingHook struct{}
+
+func (hangingHook) OnMismatch(ctx context.Context, _ ProposedRoot, _ [32]byte) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// The hook is called with the loop's context and, once it submits a challenge
+// transaction, will make network calls. A hook that never returns must be cut
+// like any other call: the verdict stays recorded, the failure is logged, and the
+// pass goes on.
+func TestHungChallengeHookIsCutAndTheVerdictKept(t *testing.T) {
+	claim := root(0xaa)
+	local := root(0xab)
+	games := &fakeGames{games: []ProposedRoot{game(0, 0, 100, claim)}}
+	replica := &fakeReplica{
+		status:  SyncStatus{SafeL2: 100, FinalizedL2: 100},
+		outputs: map[uint64][32]byte{100: local},
+	}
+	a := newTestAttestor(t, HeadSafe, games, replica, hangingHook{})
+	a.cfg.CallTimeout = 50 * time.Millisecond
+	core, logs := observer.New(zapcore.ErrorLevel)
+	a.logger = zap.New(core).Sugar()
+
+	done := make(chan error, 1)
+	go func() { done <- a.runOnce(context.Background()) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runOnce: a cut hook must not fail the pass: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a hung challenge hook parked the pass")
+	}
+	if got := a.store.state.Mismatches; len(got) != 1 || got[0].LocalRoot != local {
+		t.Fatalf("mismatches after a cut hook = %+v", got)
+	}
+	failure := logs.FilterMessageSnippet("challenge hook failed")
+	if failure.Len() != 1 || !strings.Contains(failure.All()[0].Message, "challenge hook exceeded its 50ms deadline") {
+		t.Fatalf("hook failure log = %v, want one line naming the hook and its deadline", failure.All())
 	}
 }
 
@@ -855,12 +902,12 @@ func stopRun(t *testing.T, cancel context.CancelFunc, done <-chan error) {
 }
 
 // A call that never returns used to park the single feed goroutine forever:
-// no error, no backoff, no log, no metric. The pass deadline turns it into an
-// ordinary failed pass.
-func TestRunCutsAPassParkedOnAHungUpstream(t *testing.T) {
+// no error, no backoff, no log, no metric. The call bound turns it into an
+// ordinary failed pass, and the log line names the call that was cut.
+func TestHungOpNodeCallIsCutAndLogged(t *testing.T) {
 	a := newTestAttestor(t, HeadSafe, &fakeGames{}, &fakeReplica{}, nil)
 	a.replica = &hangingReplica{}
-	a.cfg.PassTimeout = 50 * time.Millisecond
+	a.cfg.CallTimeout = 50 * time.Millisecond
 	a.cfg.PollInterval = 10 * time.Millisecond
 	logs := captureWarnings(a)
 	registry := prometheus.NewRegistry()
@@ -871,13 +918,13 @@ func TestRunCutsAPassParkedOnAHungUpstream(t *testing.T) {
 	go func() { done <- a.Run(ctx) }()
 	defer stopRun(t, cancel, done)
 
-	waitUntil(t, "the hung pass to be cut and logged", func() bool {
+	waitUntil(t, "the hung call to be cut and logged", func() bool {
 		return logs.FilterMessageSnippet("attestation pass failed").Len() == 1
 	})
 	message := logs.FilterMessageSnippet("attestation pass failed").All()[0].Message
-	if !strings.Contains(message, "pass exceeded its 50ms deadline") ||
+	if !strings.Contains(message, "op-node SyncStatus exceeded its 50ms deadline") ||
 		!strings.Contains(message, "nothing affirmed, retrying in 1m0s") {
-		t.Fatalf("log line %q does not name the deadline and the backoff", message)
+		t.Fatalf("log line %q does not name the call, its deadline and the backoff", message)
 	}
 	if got := counterTotal(t, registry, "spectre_op_attestor_pass_failures_total"); got != 1 {
 		t.Fatalf("pass failure counter = %v, want 1", got)
@@ -892,15 +939,15 @@ func TestRunBoundsTheBootstrapOfAFreshStore(t *testing.T) {
 	}
 	a.store = fresh
 	a.games = &hangingGames{}
-	a.cfg.PassTimeout = 50 * time.Millisecond
+	a.cfg.CallTimeout = 50 * time.Millisecond
 
 	done := make(chan error, 1)
 	go func() { done <- a.Run(context.Background()) }()
 	select {
 	case err := <-done:
 		if err == nil || !strings.Contains(err.Error(), "bootstrap failed") ||
-			!strings.Contains(err.Error(), "pass exceeded its 50ms deadline") {
-			t.Fatalf("Run error = %v, want a bootstrap failure naming the pass deadline", err)
+			!strings.Contains(err.Error(), "factory FinalizedView exceeded its 50ms deadline") {
+			t.Fatalf("Run error = %v, want a bootstrap failure naming the call and its deadline", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("a hung bootstrap parked Run")
@@ -917,9 +964,9 @@ func TestRunnerAliveTellsAParkedLoopFromAHealthyOne(t *testing.T) {
 	a.replica = rep
 	clock := newTestClock(time.Unix(5000, 0))
 	a.now = clock.now
-	// A long pass deadline keeps the second pass parked for the whole test, so
-	// what is measured is the heartbeat and not the deadline.
-	a.cfg.PassTimeout = time.Hour
+	// A long call bound keeps the second pass parked in its first call for the
+	// whole test, so what is measured is the heartbeat and not the bound.
+	a.cfg.CallTimeout = time.Hour
 	a.cfg.PollInterval = 10 * time.Millisecond
 	staleAfter := time.Hour + 20*time.Millisecond
 
@@ -939,14 +986,14 @@ func TestRunnerAliveTellsAParkedLoopFromAHealthyOne(t *testing.T) {
 
 	clock.advance(30 * time.Minute)
 	if !a.RunnerAlive() {
-		t.Fatal("a pass that has run for less than the pass timeout read as a dead loop")
+		t.Fatal("a call that has run for less than the call bound read as a dead loop")
 	}
 	clock.advance(staleAfter)
 	if _, found := a.LastSyncStatus(); !found {
 		t.Fatal("the snapshot disappeared")
 	}
 	if a.RunnerAlive() {
-		t.Fatal("a loop parked beyond the pass timeout and two ticks still reads as alive")
+		t.Fatal("a loop parked beyond the call bound and two ticks still reads as alive")
 	}
 }
 
@@ -958,7 +1005,7 @@ func TestRunnerStaysAliveWhilePassesFail(t *testing.T) {
 	a.now = clock.now
 	// staleAfter is about 1s, well under the 1m failure backoff, so the loop
 	// is only alive through the backoff if it beats without running a pass.
-	a.cfg.PassTimeout = time.Second
+	a.cfg.CallTimeout = time.Second
 	a.cfg.PollInterval = 10 * time.Millisecond
 	logs := captureWarnings(a)
 
@@ -979,5 +1026,122 @@ func TestRunnerStaysAliveWhilePassesFail(t *testing.T) {
 	}
 	if _, found := a.LastSyncStatus(); found {
 		t.Fatal("a failed pass recorded a snapshot")
+	}
+}
+
+// hookedReplica runs a hook inside each OutputAtBlock call, before the output is
+// read: the place a slow endpoint, or one that advances a test clock, is stood
+// in for.
+type hookedReplica struct {
+	fakeReplica
+	hook  func(ctx context.Context, call int) error
+	calls atomic.Int32
+}
+
+func (h *hookedReplica) OutputAtBlock(ctx context.Context, l2Block uint64) ([32]byte, error) {
+	call := int(h.calls.Add(1))
+	if h.hook != nil {
+		if err := h.hook(ctx, call); err != nil {
+			return [32]byte{}, err
+		}
+	}
+	return h.fakeReplica.OutputAtBlock(ctx, l2Block)
+}
+
+// newPendingGames builds an attestor with n ingested games that the replica
+// already covers, so a pass decides each of them with one OutputAtBlock call.
+func newPendingGames(t *testing.T, n int) (*OpStackAttestor, *hookedReplica) {
+	t.Helper()
+	games := &fakeGames{}
+	outputs := map[uint64][32]byte{}
+	for i := 0; i < n; i++ {
+		claim := root(byte(i + 1))
+		games.games = append(games.games, game(uint64(i), 0, 100+uint64(i), claim))
+		outputs[100+uint64(i)] = claim
+	}
+	replica := &hookedReplica{fakeReplica: fakeReplica{
+		status:  SyncStatus{SafeL2: 200, UnsafeL2: 200, FinalizedL2: 200},
+		outputs: outputs,
+	}}
+	a := newTestAttestor(t, HeadSafe, games, &fakeReplica{}, nil)
+	a.replica = replica
+	return a, replica
+}
+
+// A pass is a loop over work the runner does not control, and it can take far
+// longer than any one call. Each call here is well inside its bound; only their
+// sum is longer than one call's bound. A deadline on the whole pass would cut it
+// and send it to the failure backoff, with the games behind the cut waiting for
+// the next pass.
+func TestALongPassOfSlowCallsIsNotCut(t *testing.T) {
+	const games = 10
+	a, replica := newPendingGames(t, games)
+	a.cfg.CallTimeout = 100 * time.Millisecond
+	a.cfg.PollInterval = time.Hour // only the immediate first pass runs
+	replica.hook = func(ctx context.Context, _ int) error {
+		select {
+		case <-time.After(20 * time.Millisecond):
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	logs := captureWarnings(a)
+
+	started := time.Now()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx) }()
+	defer stopRun(t, cancel, done)
+
+	waitUntil(t, "every game to be decided in the first pass", func() bool {
+		return a.store.NextGameIndex() == games && len(a.store.Pending()) == 0
+	})
+	if took := time.Since(started); took <= a.cfg.CallTimeout {
+		t.Fatalf("the pass took %s, no longer than one call's bound %s: the test proves nothing", took, a.cfg.CallTimeout)
+	}
+	if got := logs.FilterMessageSnippet("attestation pass failed").Len(); got != 0 {
+		t.Fatalf("%d pass failures logged for a slow but healthy replica", got)
+	}
+}
+
+// A pass can legitimately run far longer than the staleness window. It stays
+// alive because the runner beats as each call returns, not only when the loop
+// comes back around.
+func TestRunnerStaysAliveThroughALongPassOfSlowCalls(t *testing.T) {
+	const games = 10
+	a, replica := newPendingGames(t, games)
+	clock := newTestClock(time.Unix(5000, 0))
+	a.now = clock.now
+	a.cfg.CallTimeout = time.Hour
+	a.cfg.PollInterval = 10 * time.Millisecond
+	staleAfter := attestortypes.FeedStaleAfter(a.cfg.CallTimeout, a.cfg.PollInterval)
+
+	const perCall = 40 * time.Minute // each call "takes" this long on the test clock
+	var sampled []bool
+	replica.hook = func(context.Context, int) error {
+		clock.advance(perCall)
+		sampled = append(sampled, a.RunnerAlive()) // while the call is in flight
+		return nil
+	}
+
+	a.heartbeat.Beat(a.now()) // the loop has started
+	startedAt := clock.now()
+	if err := a.runOnce(context.Background()); err != nil {
+		t.Fatalf("runOnce: %v", err)
+	}
+	if span := clock.now().Sub(startedAt); span <= 2*staleAfter {
+		t.Fatalf("the pass spanned %s on the test clock, not longer than twice the %s window: the test proves nothing", span, staleAfter)
+	}
+	if len(sampled) < games {
+		t.Fatalf("%d calls sampled, want at least %d", len(sampled), games)
+	}
+	for call, alive := range sampled {
+		if !alive {
+			t.Fatalf("the loop read as dead during call %d of a pass whose calls each returned inside the window", call+1)
+		}
+	}
+	if !a.RunnerAlive() {
+		t.Fatal("the loop reads as dead after a pass whose last call just returned")
 	}
 }

@@ -109,9 +109,9 @@ func runAttestor(ctx context.Context, configPath string) error {
 	if err != nil {
 		return fmt.Errorf("load assertion poll interval: %w", err)
 	}
-	assertionPassTimeout, err := config.AssertionPassTimeoutDuration()
+	assertionCallTimeout, err := config.AssertionCallTimeoutDuration()
 	if err != nil {
-		return fmt.Errorf("load assertion pass timeout: %w", err)
+		return fmt.Errorf("load assertion call timeout: %w", err)
 	}
 	assertionLoop, err := boldattestor.NewAssertionAttestor(
 		assertionSource,
@@ -120,7 +120,7 @@ func runAttestor(ctx context.Context, configPath string) error {
 		boldattestor.AssertionAttestorConfig{
 			L1IngestHead:    config.L1IngestHead,
 			PollInterval:    assertionPollInterval,
-			PassTimeout:     assertionPassTimeout,
+			CallTimeout:     assertionCallTimeout,
 			MaxL1BlockRange: config.AssertionBlockRange(),
 		},
 	)

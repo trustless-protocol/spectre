@@ -167,11 +167,11 @@ func TestNewAssertionAttestorFailureMatrix(t *testing.T) {
 			want: "poll interval",
 		},
 		{
-			name: "negative pass timeout",
+			name: "negative call timeout",
 			make: func() (AssertionSource, CommitmentResolver, *arbitrum.AttestedRootStore, AssertionAttestorConfig) {
-				return source, resolver, store, AssertionAttestorConfig{PassTimeout: -time.Second}
+				return source, resolver, store, AssertionAttestorConfig{CallTimeout: -time.Second}
 			},
-			want: "pass timeout",
+			want: "call timeout",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -188,7 +188,7 @@ func TestNewAssertionAttestorFailureMatrix(t *testing.T) {
 		t.Fatalf("NewAssertionAttestor defaults: %v", err)
 	}
 	if loop.config.PollInterval != defaultAssertionPollInterval ||
-		loop.config.PassTimeout != attestortypes.DefaultPassTimeout ||
+		loop.config.CallTimeout != attestortypes.DefaultCallTimeout ||
 		loop.config.MaxL1BlockRange != defaultMaxL1BlockRange {
 		t.Fatalf("defaults = %+v", loop.config)
 	}

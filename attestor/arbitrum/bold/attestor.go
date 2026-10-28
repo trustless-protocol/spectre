@@ -33,10 +33,13 @@ type CommitmentResolver interface {
 type AssertionAttestorConfig struct {
 	L1IngestHead arbitrum.L1IngestHead
 	PollInterval time.Duration
-	// PassTimeout bounds one pass of Run, so a call that never returns (a
-	// silent WebSocket peer) becomes a failed pass that is logged and counted
-	// instead of parking the loop. Zero selects attestortypes.DefaultPassTimeout.
-	PassTimeout     time.Duration
+	// CallTimeout bounds each upstream call the loop makes, so a call that never
+	// returns (a silent WebSocket peer) becomes a failed pass that is logged and
+	// counted instead of parking the loop. It bounds the call and not the pass:
+	// reconciliation starts from the first pending entry on every pass, and a
+	// deadline on the whole pass could be spent on the same prefix each time.
+	// Zero selects attestortypes.DefaultCallTimeout.
+	CallTimeout     time.Duration
 	MaxL1BlockRange uint64
 }
 
@@ -81,11 +84,11 @@ func NewAssertionAttestor(
 	if config.PollInterval < 0 {
 		return nil, errors.New("assertion poll interval must be greater than zero")
 	}
-	if config.PassTimeout == 0 {
-		config.PassTimeout = attestortypes.DefaultPassTimeout
+	if config.CallTimeout == 0 {
+		config.CallTimeout = attestortypes.DefaultCallTimeout
 	}
-	if config.PassTimeout < 0 {
-		return nil, errors.New("assertion pass timeout must be greater than zero")
+	if config.CallTimeout < 0 {
+		return nil, errors.New("assertion call timeout must be greater than zero")
 	}
 	if config.MaxL1BlockRange == 0 {
 		config.MaxL1BlockRange = defaultMaxL1BlockRange
@@ -106,11 +109,11 @@ func (a *AssertionAttestor) ValidateChainIDs(
 	expectedL1ChainID uint64,
 	expectedL2ChainID uint64,
 ) error {
-	finalizedL1Block, err := a.source.FinalizedBlockNumber(ctx)
+	finalizedL1Block, err := a.l1().FinalizedBlockNumber(ctx)
 	if err != nil {
 		return err
 	}
-	l1ChainID, l2ChainID, err := a.source.ChainIDs(ctx, finalizedL1Block)
+	l1ChainID, l2ChainID, err := a.l1().ChainIDs(ctx, finalizedL1Block)
 	if err != nil {
 		return err
 	}
@@ -143,27 +146,28 @@ func (a *AssertionAttestor) Run(ctx context.Context) {
 	a.RunWithObserver(ctx, nil)
 }
 
-// RunnerAlive reports whether Run's loop has come back around recently enough
-// to be making progress. A loop parked on a call that never returns stops
-// beating, so this goes false even though nothing has failed and nothing is
-// logged. A loop whose passes keep failing still beats: those failures are
-// logged and counted, and a long backfill that the pass timeout cuts into
-// several passes keeps beating too.
+// RunnerAlive reports whether Run's loop is making progress: it has come back
+// around, or one of its upstream calls has returned, recently enough. A loop
+// parked on something that never returns stops beating, so this goes false even
+// though nothing has failed and nothing is logged. A loop whose passes keep
+// failing still beats: those failures are logged and counted. So does a pass that
+// runs for a long time over a long list, because it beats as each call returns.
 func (a *AssertionAttestor) RunnerAlive() bool {
-	return a.heartbeat.Alive(a.now(), attestortypes.FeedStaleAfter(a.config.PassTimeout, a.config.PollInterval))
+	return a.heartbeat.Alive(a.now(), attestortypes.FeedStaleAfter(a.config.CallTimeout, a.config.PollInterval))
 }
 
 // RunWithObserver is Run with an optional per-pass callback for composition
 // roots. The callback observes only the pass outcome; it cannot alter
 // settlement ingestion or the durable feed.
 //
-// Every pass runs under config.PassTimeout. The check on ctx below is
-// deliberately the caller's, not the pass's, so a pass that hits its deadline
-// is a failed pass to log and observe, and not a shutdown.
+// Every upstream call a pass makes runs under config.CallTimeout, so no call can
+// park the loop. A call that hits its deadline fails the pass like any other
+// error, to be logged and observed, and the next tick retries from the durable
+// state.
 func (a *AssertionAttestor) RunWithObserver(ctx context.Context, observe func(error)) {
 	a.heartbeat.Beat(a.now())
 	sync := func() {
-		err := attestortypes.RunPass(ctx, a.config.PassTimeout, a.SyncOnce)
+		err := a.SyncOnce(ctx)
 		if err != nil && ctx.Err() != nil {
 			return
 		}
@@ -198,9 +202,9 @@ func (a *AssertionAttestor) SyncOnce(ctx context.Context) error {
 	var finalizedL1Block uint64
 	var err error
 	if a.config.L1IngestHead == arbitrum.L1IngestFinalized {
-		finalizedL1Block, err = a.source.FinalizedBlockNumber(ctx)
+		finalizedL1Block, err = a.l1().FinalizedBlockNumber(ctx)
 	} else {
-		finalizedSnapshot, err = a.source.Head(ctx, arbitrum.L1IngestFinalized)
+		finalizedSnapshot, err = a.l1().Head(ctx, arbitrum.L1IngestFinalized)
 		finalizedL1Block = finalizedSnapshot.Number
 	}
 	if err != nil {
@@ -243,7 +247,7 @@ func (a *AssertionAttestor) SyncOnce(ctx context.Context) error {
 		if remaining := finalizedL1Block - from; remaining >= a.config.MaxL1BlockRange {
 			to = from + a.config.MaxL1BlockRange - 1
 		}
-		proposals, confirmations, err := a.source.Assertions(ctx, from, to)
+		proposals, confirmations, err := a.l1().Assertions(ctx, from, to)
 		if err != nil {
 			return err
 		}
@@ -311,7 +315,7 @@ func (a *AssertionAttestor) reconcileProposals(
 		// Share the set across proposal and provisional reconciliation so a
 		// newly attested proposal is not checked again in the same pass.
 		checked[proposal.AssertionHash] = true
-		status, err := a.source.AssertionStatus(
+		status, err := a.l1().AssertionStatus(
 			ctx,
 			proposal,
 			finalizedL1Block,
@@ -380,7 +384,7 @@ func (a *AssertionAttestor) resolveProposal(
 	proposal arbitrum.ProposedAssertion,
 ) (arbitrum.BlockCommitment, bool, error) {
 	if proposal.Confirmed {
-		commitment, err := a.runtime.ResolveCanonicalBlockHash(
+		commitment, err := a.nitro().ResolveCanonicalBlockHash(
 			ctx,
 			proposal.L2BlockHash,
 			arbitrum.RunModeFinalized,
@@ -392,7 +396,7 @@ func (a *AssertionAttestor) resolveProposal(
 			return arbitrum.BlockCommitment{}, false, err
 		}
 	}
-	commitment, err := a.runtime.ResolveCanonicalBlockHash(
+	commitment, err := a.nitro().ResolveCanonicalBlockHash(
 		ctx,
 		proposal.L2BlockHash,
 		arbitrum.RunModeSafe,
@@ -413,7 +417,7 @@ func (a *AssertionAttestor) reconcileProvisional(
 			continue
 		}
 		checked[entry.AssertionHash] = true
-		status, err := a.source.AssertionStatus(
+		status, err := a.l1().AssertionStatus(
 			ctx,
 			arbitrum.ProposedAssertion{
 				AssertionHash: entry.AssertionHash,
@@ -442,7 +446,7 @@ func (a *AssertionAttestor) reconcileProvisional(
 			)
 		}
 
-		_, err = a.runtime.ResolveCanonicalBlockHash(
+		_, err = a.nitro().ResolveCanonicalBlockHash(
 			ctx,
 			entry.L2BlockHash,
 			arbitrum.RunModeSafe,
@@ -462,7 +466,7 @@ func (a *AssertionAttestor) reconcileProvisional(
 		if status != assertionStatusConfirmed {
 			continue
 		}
-		_, err = a.runtime.ResolveCanonicalBlockHash(
+		_, err = a.nitro().ResolveCanonicalBlockHash(
 			ctx,
 			entry.L2BlockHash,
 			arbitrum.RunModeFinalized,

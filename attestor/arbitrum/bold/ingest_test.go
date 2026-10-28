@@ -783,9 +783,9 @@ func TestSyncOnceFinalizedReadGuardBoundary(t *testing.T) {
 	}
 }
 
-// parkingSource parks the finalized-block read, the first call of a pass, until
-// the pass context ends. It stands in for an L1 WebSocket peer that keeps
-// answering pings and drops one response.
+// parkingSource parks the finalized-block read, from its parkFromCall-th call
+// on, until the call's context ends. It stands in for an L1 WebSocket peer that
+// keeps answering pings and drops one response.
 type parkingSource struct {
 	headTestSource
 	calls atomic.Int32
@@ -839,10 +839,10 @@ func stopRun(t *testing.T, cancel context.CancelFunc, done <-chan struct{}) {
 }
 
 // A call that never returns used to park the single feed goroutine forever: no
-// error, no log, no metric. The pass deadline turns it into an ordinary failed
-// pass that the observer sees.
-func TestRunWithObserverCutsAPassParkedOnAHungL1Call(t *testing.T) {
-	a, _ := newParkingLoop(t, 1, AssertionAttestorConfig{PollInterval: time.Hour, PassTimeout: 50 * time.Millisecond})
+// error, no log, no metric. The call bound turns it into an ordinary failed pass
+// that the observer sees, and names the call that was cut.
+func TestHungL1CallIsCutAndReported(t *testing.T) {
+	a, _ := newParkingLoop(t, 1, AssertionAttestorConfig{PollInterval: time.Hour, CallTimeout: 50 * time.Millisecond})
 	observed := make(chan error, 4)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -854,28 +854,28 @@ func TestRunWithObserverCutsAPassParkedOnAHungL1Call(t *testing.T) {
 
 	select {
 	case err := <-observed:
-		if err == nil || !strings.Contains(err.Error(), "pass exceeded its 50ms deadline") ||
+		if err == nil || !strings.Contains(err.Error(), "L1 FinalizedBlockNumber exceeded its 50ms deadline") ||
 			!errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("observed pass error = %v, want one naming the 50ms pass deadline", err)
+			t.Fatalf("observed pass error = %v, want one naming the call and its 50ms deadline", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("the hung pass was never reported: the loop is parked")
+		t.Fatal("the hung call was never reported: the loop is parked")
 	}
 }
 
-// The pass deadline must not discard a backlog it interrupts. Each log chunk is
-// committed as it completes, so the pass that follows resumes from the cursor
-// and the backlog still drains.
-func TestPassDeadlineKeepsTheChunksAlreadyCommitted(t *testing.T) {
+// A call cut in the middle of the log scan fails the pass, and the chunks that
+// were already committed stay committed: the next pass resumes from the cursor.
+func TestCallDeadlineKeepsTheChunksAlreadyCommitted(t *testing.T) {
 	a, s, _ := newHeadTestLoop(t, arbitrum.L1IngestFinalized)
+	a.config.CallTimeout = 50 * time.Millisecond
 	s.finalizedBlock = 120
 	s.events = nil
 	blocking := &chunkBlockingSource{headTestSource: s, blockFrom: 106}
 	a.source = blocking
 
-	err := attestortypes.RunPass(context.Background(), 50*time.Millisecond, a.SyncOnce)
-	if err == nil || !strings.Contains(err.Error(), "pass exceeded its 50ms deadline") {
-		t.Fatalf("pass with a parked chunk = %v, want the pass deadline", err)
+	err := a.SyncOnce(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "L1 Assertions exceeded its 50ms deadline") {
+		t.Fatalf("pass with a parked chunk = %v, want the call deadline", err)
 	}
 	if got := a.store.NextL1Block(); got != 106 {
 		t.Fatalf("cursor after the cut pass = %d, want 106: the first chunk (101-105) was committed", got)
@@ -904,6 +904,143 @@ func (c *chunkBlockingSource) Assertions(ctx context.Context, from, to uint64) (
 	return c.headTestSource.Assertions(ctx, from, to)
 }
 
+// hookedSource runs a hook inside each AssertionStatus call, before the status
+// is read: the place a slow, hung or clock-advancing endpoint is stood in for.
+type hookedSource struct {
+	*headTestSource
+	hook  func(ctx context.Context, call int) error
+	calls atomic.Int32
+}
+
+func (h *hookedSource) AssertionStatus(ctx context.Context, p arbitrum.ProposedAssertion, n uint64) (uint8, error) {
+	call := int(h.calls.Add(1))
+	if h.hook != nil {
+		if err := h.hook(ctx, call); err != nil {
+			return 0, err
+		}
+	}
+	return h.headTestSource.AssertionStatus(ctx, p, n)
+}
+
+// newPendingList builds a loop whose store holds pending assertions that exist
+// on finalized L1 but that Nitro has not reached, so they stay in the lists
+// reconciliation walks from the first entry on every pass. The one at
+// revokedIndex no longer exists on L1 (revokedIndex < 0 for none): reconciling
+// the list removes it. The L1 log scan still has 100 blocks to cover.
+func newPendingList(t *testing.T, pending, revokedIndex int) (*AssertionAttestor, *hookedSource) {
+	t.Helper()
+	a, s, r := newHeadTestLoop(t, arbitrum.L1IngestFinalized)
+	r.err = arbitrum.ErrCommitmentNotReady
+	s.finalizedBlock = 200
+	s.events = nil
+	for i := 0; i < pending; i++ {
+		p := earlyProposal(int64(100+i), uint64(101+i))
+		if i != revokedIndex {
+			s.events = append(s.events, p)
+		}
+		if err := a.store.RecordProposal(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hooked := &hookedSource{headTestSource: s}
+	a.source = hooked
+	return a, hooked
+}
+
+// runFirstPass runs the loop's first pass the way production does, through
+// RunWithObserver, and returns its outcome. A deadline on the pass, if one were
+// ever added to the loop, would apply here and not to a direct SyncOnce.
+func runFirstPass(t *testing.T, a *AssertionAttestor) error {
+	t.Helper()
+	a.config.PollInterval = time.Hour // only the immediate first pass runs
+	observed := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.RunWithObserver(ctx, func(err error) { observed <- err })
+	}()
+	defer stopRun(t, cancel, done)
+	select {
+	case err := <-observed:
+		return err
+	case <-time.After(10 * time.Second):
+		t.Fatal("the loop's first pass never finished")
+		return nil
+	}
+}
+
+// The case a whole-pass deadline got wrong. Reconciliation walks the pending
+// entries from the first on every pass, and an entry that is still pending stays
+// in the list, so no progress is kept between passes. With a deadline on the
+// pass, a list that takes longer than the deadline to walk was cut in the same
+// prefix every time: the entries behind it were never confirmed or revoked, and
+// the log scan that comes after the reconciliation never ran. Each call here is
+// well inside its bound; only their sum is longer than one call's bound.
+func TestALongSlowReconcileIsNotCutAndReachesTheLogScan(t *testing.T) {
+	const pending = 30
+	a, source := newPendingList(t, pending, pending-1)
+	a.config.CallTimeout = 100 * time.Millisecond
+	source.hook = func(ctx context.Context, _ int) error {
+		select {
+		case <-time.After(20 * time.Millisecond):
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	started := time.Now()
+	if err := runFirstPass(t, a); err != nil {
+		t.Fatalf("the first pass over a slow but healthy endpoint: %v", err)
+	}
+	if took := time.Since(started); took <= a.config.CallTimeout {
+		t.Fatalf("the pass took %s, no longer than one call's bound %s: the test proves nothing", took, a.config.CallTimeout)
+	}
+	if got := len(a.store.Proposals()); got != pending-1 {
+		t.Fatalf("%d proposals tracked, want %d: the revoked entry at the end of the list was not reached", got, pending-1)
+	}
+	if got := a.store.NextL1Block(); got != 201 {
+		t.Fatalf("cursor = %d, want 201: the log scan after the reconciliation did not run", got)
+	}
+}
+
+// A call that hangs part-way down the list fails the pass at that entry, like
+// any other failing call. What was reconciled before it stays reconciled, and
+// the cursor does not move, because the entries behind the failure were not
+// checked.
+func TestAHungCallMidListFailsThePassAtThatEntry(t *testing.T) {
+	const pending = 30
+	a, source := newPendingList(t, pending, 1)
+	a.config.CallTimeout = 50 * time.Millisecond
+	source.hook = func(ctx context.Context, call int) error {
+		if call == 4 {
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		return nil
+	}
+
+	err := runFirstPass(t, a)
+	if err == nil || !strings.Contains(err.Error(), "L1 AssertionStatus exceeded its 50ms deadline") {
+		t.Fatalf("the first pass with a hung call = %v, want the call deadline", err)
+	}
+	if got := len(a.store.Proposals()); got != pending-1 {
+		t.Fatalf("%d proposals tracked, want %d: the entry revoked before the hang was kept", got, pending-1)
+	}
+	if got := a.store.NextL1Block(); got != 101 {
+		t.Fatalf("cursor = %d, want 101: a pass that failed mid-list must not advance past unchecked entries", got)
+	}
+
+	source.hook = nil
+	if err := a.SyncOnce(context.Background()); err != nil {
+		t.Fatalf("pass after the hang cleared: %v", err)
+	}
+	if got := a.store.NextL1Block(); got != 201 {
+		t.Fatalf("cursor after the next pass = %d, want 201", got)
+	}
+}
+
 // testClock is a clock the test advances by hand; it is read by the run loop's
 // goroutine and the test's, so it is atomic.
 type testClock struct{ ns atomic.Int64 }
@@ -921,9 +1058,9 @@ func (c *testClock) advance(d time.Duration) { c.ns.Add(int64(d)) }
 // snapshot keeps looking fresh over a frozen assertion feed, so health that
 // read only that stayed SERVING.
 func TestRunnerAliveTellsAParkedLoopFromAHealthyOne(t *testing.T) {
-	// The second pass parks. A long pass deadline keeps it parked for the whole
-	// test, so what is measured is the heartbeat and not the deadline.
-	a, source := newParkingLoop(t, 2, AssertionAttestorConfig{PollInterval: 10 * time.Millisecond, PassTimeout: time.Hour})
+	// The second pass parks in its first call. A long call bound keeps it parked
+	// for the whole test, so what is measured is the heartbeat and not the bound.
+	a, source := newParkingLoop(t, 2, AssertionAttestorConfig{PollInterval: 10 * time.Millisecond, CallTimeout: time.Hour})
 	clock := newTestClock(time.Unix(5000, 0))
 	a.now = clock.now
 	staleAfter := time.Hour + 20*time.Millisecond
@@ -948,18 +1085,59 @@ func TestRunnerAliveTellsAParkedLoopFromAHealthyOne(t *testing.T) {
 
 	clock.advance(30 * time.Minute)
 	if !a.RunnerAlive() {
-		t.Fatal("a pass that has run for less than the pass timeout read as a dead loop")
+		t.Fatal("a call that has run for less than the call bound read as a dead loop")
 	}
 	clock.advance(staleAfter)
 	if a.RunnerAlive() {
-		t.Fatal("a loop parked beyond the pass timeout and two ticks still reads as alive")
+		t.Fatal("a loop parked beyond the call bound and two ticks still reads as alive")
+	}
+}
+
+// A pass can legitimately run far longer than the staleness window: the lists it
+// walks have no bound. It stays alive because the runner beats as each call
+// returns, not only when the loop comes back around.
+func TestRunnerStaysAliveThroughALongPassOfSlowCalls(t *testing.T) {
+	const pending = 10
+	a, source := newPendingList(t, pending, -1)
+	clock := newTestClock(time.Unix(5000, 0))
+	a.now = clock.now
+	a.config.CallTimeout = time.Hour
+	a.config.PollInterval = 10 * time.Millisecond
+	staleAfter := attestortypes.FeedStaleAfter(a.config.CallTimeout, a.config.PollInterval)
+
+	const perCall = 40 * time.Minute // each call "takes" this long on the test clock
+	var sampled []bool
+	source.hook = func(context.Context, int) error {
+		clock.advance(perCall)
+		sampled = append(sampled, a.RunnerAlive()) // while the call is in flight
+		return nil
+	}
+
+	a.heartbeat.Beat(a.now()) // the loop has started
+	startedAt := clock.now()
+	if err := a.SyncOnce(context.Background()); err != nil {
+		t.Fatalf("SyncOnce: %v", err)
+	}
+	if span := clock.now().Sub(startedAt); span <= 2*staleAfter {
+		t.Fatalf("the pass spanned %s on the test clock, not longer than twice the %s window: the test proves nothing", span, staleAfter)
+	}
+	if len(sampled) < pending {
+		t.Fatalf("%d calls sampled, want at least %d", len(sampled), pending)
+	}
+	for call, alive := range sampled {
+		if !alive {
+			t.Fatalf("the loop read as dead during call %d of a pass whose calls each returned inside the window", call+1)
+		}
+	}
+	if !a.RunnerAlive() {
+		t.Fatal("the loop reads as dead after a pass whose last call just returned")
 	}
 }
 
 // A pass that fails is not a parked loop: it is logged and counted, but the
 // loop keeps coming back around.
 func TestRunnerStaysAliveWhilePassesFail(t *testing.T) {
-	a, source := newParkingLoop(t, 0, AssertionAttestorConfig{PollInterval: 10 * time.Millisecond, PassTimeout: time.Second})
+	a, source := newParkingLoop(t, 0, AssertionAttestorConfig{PollInterval: 10 * time.Millisecond, CallTimeout: time.Second})
 	source.finalizedErr = errors.New("L1 unavailable")
 	clock := newTestClock(time.Unix(5000, 0))
 	a.now = clock.now

@@ -21,7 +21,7 @@ type speculativeAssertion struct {
 // ingestUnfinalized rebuilds the whole non-finalized window. It never advances
 // the durable log cursor and never trusts confirmations from this window.
 func (a *AssertionAttestor) ingestUnfinalized(ctx context.Context, finalized L1Block) error {
-	head, err := a.source.Head(ctx, a.config.L1IngestHead)
+	head, err := a.l1().Head(ctx, a.config.L1IngestHead)
 	if err != nil {
 		return err
 	}
@@ -39,7 +39,7 @@ func (a *AssertionAttestor) ingestUnfinalized(ctx context.Context, finalized L1B
 			if head.Number-from >= a.config.MaxL1BlockRange {
 				to = from + a.config.MaxL1BlockRange - 1
 			}
-			batch, _, err := a.source.Assertions(ctx, from, to)
+			batch, _, err := a.l1().Assertions(ctx, from, to)
 			if err != nil {
 				return err
 			}
@@ -59,7 +59,7 @@ func (a *AssertionAttestor) ingestUnfinalized(ctx context.Context, finalized L1B
 	present := make(map[common.Hash]bool)
 	results := make([]speculativeAssertion, 0, len(proposals))
 	for _, proposal := range proposals {
-		status, err := a.source.AssertionStatusAtHash(ctx, proposal, head.Hash)
+		status, err := a.l1().AssertionStatusAtHash(ctx, proposal, head.Hash)
 		if err != nil {
 			return err
 		}
@@ -89,7 +89,7 @@ func (a *AssertionAttestor) ingestUnfinalized(ctx context.Context, finalized L1B
 	// Numeric log ranges must still belong to the snapshots used above.
 	// Check immediately before committing, without holding the save lock.
 	for _, snapshot := range []L1Block{finalized, head} {
-		hash, err := a.source.CanonicalHash(ctx, snapshot.Number)
+		hash, err := a.l1().CanonicalHash(ctx, snapshot.Number)
 		if err != nil {
 			return err
 		}

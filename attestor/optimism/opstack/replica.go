@@ -33,7 +33,7 @@ type ReplicaClient struct {
 // transport timeout DialEthRPC gives the L1 client: a reachable op-node can
 // accept a request and never answer, and go-ethereum applies no client timeout
 // itself. A WebSocket or IPC endpoint carries none; the caller's context is
-// what bounds a call on it (the attestation pass deadline, for the run loop).
+// what bounds a call on it (the run loop's call bound).
 func DialReplica(ctx context.Context, url string, timeout time.Duration) (*ReplicaClient, error) {
 	c, err := attestortypes.DialRPC(ctx, url, timeout)
 	if err != nil {

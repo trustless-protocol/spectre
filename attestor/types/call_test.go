@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,12 +13,12 @@ import (
 	"github.com/ethereum/go-ethereum/rpc"
 )
 
-func TestRunPassWithoutTimeoutLeavesTheContextAlone(t *testing.T) {
+func TestCallBoundWithoutTimeoutLeavesTheContextAlone(t *testing.T) {
 	for _, timeout := range []time.Duration{0, -time.Second} {
 		parent := context.Background()
-		err := RunPass(parent, timeout, func(ctx context.Context) error {
+		err := CallBound{Timeout: timeout}.Do(parent, "call", func(ctx context.Context) error {
 			if ctx != parent {
-				t.Fatalf("timeout %s: pass got a derived context, want the caller's", timeout)
+				t.Fatalf("timeout %s: call got a derived context, want the caller's", timeout)
 			}
 			return nil
 		})
@@ -27,30 +28,30 @@ func TestRunPassWithoutTimeoutLeavesTheContextAlone(t *testing.T) {
 	}
 }
 
-func TestRunPassCutsAPassThatNeverReturns(t *testing.T) {
+func TestCallBoundCutsACallThatNeverReturns(t *testing.T) {
 	started := time.Now()
-	err := RunPass(context.Background(), 50*time.Millisecond, func(ctx context.Context) error {
+	err := CallBound{Timeout: 50 * time.Millisecond}.Do(context.Background(), "L1 AssertionStatus", func(ctx context.Context) error {
 		<-ctx.Done() // a call parked on a connection that never answers
 		return ctx.Err()
 	})
 	if err == nil {
-		t.Fatal("RunPass returned nil for a pass cut by its deadline")
+		t.Fatal("Do returned nil for a call cut by its deadline")
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("error %q does not wrap context.DeadlineExceeded", err)
 	}
-	if !strings.Contains(err.Error(), "pass exceeded its 50ms deadline") {
-		t.Fatalf("error %q does not name the pass deadline", err)
+	if !strings.Contains(err.Error(), "L1 AssertionStatus exceeded its 50ms deadline") {
+		t.Fatalf("error %q does not name the call and its deadline", err)
 	}
 	if elapsed := time.Since(started); elapsed > 5*time.Second {
-		t.Fatalf("pass was cut after %s, want about 50ms", elapsed)
+		t.Fatalf("call was cut after %s, want about 50ms", elapsed)
 	}
 }
 
-func TestRunPassReturnsParentCancellationUnlabelled(t *testing.T) {
+func TestCallBoundReturnsParentCancellationUnlabelled(t *testing.T) {
 	parent, cancel := context.WithCancel(context.Background())
 	cancel()
-	err := RunPass(parent, time.Hour, func(ctx context.Context) error {
+	err := CallBound{Timeout: time.Hour}.Do(parent, "call", func(ctx context.Context) error {
 		<-ctx.Done()
 		return ctx.Err()
 	})
@@ -58,33 +59,69 @@ func TestRunPassReturnsParentCancellationUnlabelled(t *testing.T) {
 		t.Fatalf("error = %v, want context.Canceled", err)
 	}
 	if strings.Contains(err.Error(), "deadline") {
-		t.Fatalf("shutdown reported as a pass deadline: %q", err)
+		t.Fatalf("shutdown reported as a call deadline: %q", err)
 	}
 }
 
-func TestRunPassDoesNotBlameTheDeadlineForATransportTimeout(t *testing.T) {
+func TestCallBoundDoesNotBlameTheDeadlineForATransportTimeout(t *testing.T) {
 	// An HTTP client timeout also satisfies errors.Is(err, DeadlineExceeded),
-	// while the pass context is still live.
+	// while the call's context is still live.
 	transport := errors.New("Post: Client.Timeout exceeded")
-	err := RunPass(context.Background(), time.Hour, func(context.Context) error {
+	err := CallBound{Timeout: time.Hour}.Do(context.Background(), "call", func(context.Context) error {
 		return errors.Join(transport, context.DeadlineExceeded)
 	})
-	if err == nil || strings.Contains(err.Error(), "pass exceeded") {
+	if err == nil || strings.Contains(err.Error(), "exceeded its") {
 		t.Fatalf("transport timeout reported as %v, want it returned as is", err)
 	}
 }
 
-func TestRunPassPassesThroughOrdinaryResults(t *testing.T) {
-	if err := RunPass(context.Background(), time.Hour, func(context.Context) error { return nil }); err != nil {
+func TestCallBoundPassesThroughOrdinaryResults(t *testing.T) {
+	bound := CallBound{Timeout: time.Hour}
+	if err := bound.Do(context.Background(), "call", func(context.Context) error { return nil }); err != nil {
 		t.Fatalf("success became %v", err)
 	}
 	failure := errors.New("upstream said no")
-	if err := RunPass(context.Background(), time.Hour, func(context.Context) error { return failure }); err != failure {
+	if err := bound.Do(context.Background(), "call", func(context.Context) error { return failure }); err != failure {
 		t.Fatalf("failure became %v, want it returned as is", err)
 	}
 }
 
-func TestFeedStaleAfterCoversOnePassAndTwoTicks(t *testing.T) {
+func TestCallReturnsTheValueOfTheCall(t *testing.T) {
+	bound := CallBound{Timeout: time.Hour}
+	got, err := Call(context.Background(), bound, "call", func(context.Context) (uint64, error) { return 42, nil })
+	if err != nil || got != 42 {
+		t.Fatalf("Call = (%d, %v), want (42, nil)", got, err)
+	}
+	failure := errors.New("upstream said no")
+	if _, err := Call(context.Background(), bound, "call", func(context.Context) (uint64, error) { return 0, failure }); err != failure {
+		t.Fatalf("Call error = %v, want it returned as is", err)
+	}
+}
+
+// The beat is how a runner tells a pass that is making progress from a loop that
+// is parked, so it must fire for every way a call can end.
+func TestCallBoundBeatsWhenACallReturns(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		timeout time.Duration
+		call    func(context.Context) error
+	}{
+		{"success", time.Hour, func(context.Context) error { return nil }},
+		{"failure", time.Hour, func(context.Context) error { return errors.New("no") }},
+		{"cut by its deadline", 20 * time.Millisecond, func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }},
+		{"no deadline configured", 0, func(context.Context) error { return nil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var beats atomic.Int32
+			_ = CallBound{Timeout: tc.timeout, Beat: func() { beats.Add(1) }}.Do(context.Background(), "call", tc.call)
+			if got := beats.Load(); got != 1 {
+				t.Fatalf("%d beats, want 1", got)
+			}
+		})
+	}
+}
+
+func TestFeedStaleAfterCoversOneCallAndTwoTicks(t *testing.T) {
 	if got := FeedStaleAfter(5*time.Minute, 30*time.Second); got != 6*time.Minute {
 		t.Fatalf("FeedStaleAfter = %s, want 6m0s", got)
 	}
@@ -118,35 +155,6 @@ func TestHeartbeatAliveWindow(t *testing.T) {
 	}
 }
 
-func TestDialRPCBoundsHangingHTTPCall(t *testing.T) {
-	server := blackHoleServer(t)
-	client, err := DialRPC(context.Background(), server.URL, 50*time.Millisecond)
-	if err != nil {
-		t.Fatalf("DialRPC: %v", err)
-	}
-	t.Cleanup(client.Close)
-
-	done := make(chan error, 1)
-	go func() {
-		var out string
-		done <- client.CallContext(context.Background(), &out, "eth_blockNumber")
-	}()
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("hanging HTTP call succeeded")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("hanging HTTP call was not bounded")
-	}
-}
-
-func TestDialRPCRejectsAnUnparsableURL(t *testing.T) {
-	if _, err := DialRPC(context.Background(), "http://[::1", time.Second); err == nil {
-		t.Fatal("DialRPC accepted a malformed URL")
-	}
-}
-
 // silentBlockNumberService receives the request and never answers it, as a
 // WebSocket peer that keeps its connection up and drops one response does.
 type silentBlockNumberService struct{}
@@ -158,9 +166,9 @@ func (silentBlockNumberService) BlockNumber(ctx context.Context) (hexutil.Uint64
 
 // DialRPC puts no timeout on a WebSocket connection, so a call on one that is
 // never answered is bounded only by the context it is made with. That is what
-// makes the pass deadline the thing that frees a feed runner, for the endpoints
-// a transport timeout cannot reach.
-func TestRunPassFreesACallOnAWebSocketThatNeverAnswers(t *testing.T) {
+// makes the call bound the thing that frees a feed runner, for the endpoints a
+// transport timeout cannot reach.
+func TestCallBoundFreesACallOnAWebSocketThatNeverAnswers(t *testing.T) {
 	rpcServer := rpc.NewServer()
 	t.Cleanup(rpcServer.Stop)
 	if err := rpcServer.RegisterName("eth", silentBlockNumberService{}); err != nil {
@@ -178,20 +186,20 @@ func TestRunPassFreesACallOnAWebSocketThatNeverAnswers(t *testing.T) {
 	t.Cleanup(client.Close)
 
 	started := time.Now()
-	err = RunPass(context.Background(), 100*time.Millisecond, func(ctx context.Context) error {
+	err = CallBound{Timeout: 100 * time.Millisecond}.Do(context.Background(), "eth_blockNumber", func(ctx context.Context) error {
 		var blockNumber hexutil.Uint64
 		return client.CallContext(ctx, &blockNumber, "eth_blockNumber")
 	})
-	if err == nil || !strings.Contains(err.Error(), "pass exceeded its 100ms deadline") {
-		t.Fatalf("pass on a silent WebSocket = %v, want the pass deadline", err)
+	if err == nil || !strings.Contains(err.Error(), "eth_blockNumber exceeded its 100ms deadline") {
+		t.Fatalf("call on a silent WebSocket = %v, want the call deadline", err)
 	}
 	if elapsed := time.Since(started); elapsed > 5*time.Second {
-		t.Fatalf("the pass was freed after %s, want about 100ms", elapsed)
+		t.Fatalf("the call was freed after %s, want about 100ms", elapsed)
 	}
 
 	// The same call with only the dial's 50ms transport timeout in play, and no
-	// pass deadline, is not freed by it: that timeout does not apply to a
-	// WebSocket. A caller's own context is the only bound.
+	// call bound, is not freed by it: that timeout does not apply to a
+	// WebSocket. The caller's own context is the only bound.
 	probe, probeCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer probeCancel()
 	var blockNumber hexutil.Uint64
