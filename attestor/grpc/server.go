@@ -312,7 +312,7 @@ func (s *Server) mapError(method string, err error) error {
 	kind := core.ErrorKindOf(err)
 	message := clientMessage(err, kind)
 	if s.logf != nil && err.Error() != message {
-		s.logf("attestor gRPC %s failed (%s): %s", method, message, redact.URLs(err.Error()))
+		s.logf("attestor gRPC %s failed (%s): %s", method, message, redact.Error(err))
 	}
 	switch kind {
 	case core.ErrorInvalidArgument:

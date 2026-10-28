@@ -28,6 +28,16 @@ import (
 // providerKey stands for the API key an RPC provider puts in the endpoint URL.
 const providerKey = "DUMMY-KEY-0123456789"
 
+// endpointQueries are the shapes the query of a provider URL can take. The key
+// sits after characters that are legal in a URL and that a text scan for its end
+// could mistake for the end of it: apostrophes, brackets, semicolons, commas.
+var endpointQueries = []struct{ name, query string }{
+	{"plain", "apikey=" + providerKey},
+	{"apostrophes before the key", "label='node'&apikey=" + providerKey},
+	{"sub-delimiters before the key", "a=(b);c,d!*&e=[f]&apikey=" + providerKey},
+	{"key between apostrophes", "x='1'&apikey=" + providerKey + "&y='2'"},
+}
+
 // connectionDroppingServer accepts every request and closes the connection
 // without answering, as a provider outage or a reset does.
 func connectionDroppingServer(t *testing.T) *httptest.Server {
@@ -91,8 +101,17 @@ func serveHost(t *testing.T, config host.Config) attestorpb.AttestorServiceClien
 // reset on the op-node endpoint produced a gRPC status that quoted
 // `Post "http://127.0.0.1:.../rpc?apikey=<key>": EOF` to any caller.
 func TestOPUpstreamTransportFailureDoesNotReachTheGRPCCaller(t *testing.T) {
+	for _, endpoint := range endpointQueries {
+		t.Run(endpoint.name, func(t *testing.T) {
+			opUpstreamTransportFailure(t, "/rpc?"+endpoint.query)
+		})
+	}
+}
+
+func opUpstreamTransportFailure(t *testing.T, requestURI string) {
+	t.Helper()
 	server := connectionDroppingServer(t)
-	replica, err := opstack.DialReplica(context.Background(), server.URL+"/rpc?apikey="+providerKey, time.Minute)
+	replica, err := opstack.DialReplica(context.Background(), server.URL+requestURI, time.Minute)
 	if err != nil {
 		t.Fatalf("DialReplica: %v", err)
 	}
@@ -152,7 +171,14 @@ func TestOPUpstreamTransportFailureDoesNotReachTheGRPCCaller(t *testing.T) {
 	if len(lines) != 1 || !strings.Contains(lines[0], "optimism_syncStatus") || !strings.Contains(lines[0], "EOF") {
 		t.Fatalf("server log = %q, want one line with the upstream cause", lines)
 	}
-	if strings.Contains(lines[0], providerKey) || strings.Contains(lines[0], "apikey") {
-		t.Fatalf("server log line %q carries the key", lines[0])
+	// The log keeps the host, so the operator can see which endpoint failed, and
+	// nothing of the path or the query.
+	if !strings.Contains(lines[0], `Post "http://127.0.0.1:`) {
+		t.Fatalf("server log line %q should name the endpoint's host", lines[0])
+	}
+	for _, leaked := range []string{providerKey, "apikey", "label", "node", "/rpc", "?"} {
+		if strings.Contains(lines[0], leaked) {
+			t.Fatalf("server log line %q carries %q", lines[0], leaked)
+		}
 	}
 }

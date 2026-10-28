@@ -190,3 +190,48 @@ func TestTheCauseIsLoggedRedactedNotDiscarded(t *testing.T) {
 		t.Fatalf("unclassified error log = %q", got)
 	}
 }
+
+// The server log is where the cause goes now, so it is where a key that a
+// redaction missed would be written. The query shapes are the ones a text scan
+// for the end of a URL can get wrong.
+func TestTheLoggedCauseIsRedactedForAnyQueryShape(t *testing.T) {
+	for _, query := range []string{
+		"apikey=" + leakyKey,
+		"label='node'&apikey=" + leakyKey,
+		"a=(b);c,d!*&apikey=" + leakyKey,
+		`q="a"&apikey=` + leakyKey,
+		"x='1'&apikey=" + leakyKey + "&y='2'",
+	} {
+		t.Run(query, func(t *testing.T) {
+			var logs capturedLog
+			ports := &fakePorts{verifyErr: core.NewError(core.ErrorUnavailable, "read replica finalized head",
+				fmt.Errorf("optimism_syncStatus failed: %w", &url.Error{Op: "Post", URL: "http://127.0.0.1:9545/rpc?" + query, Err: io.EOF}))}
+			service, err := New(map[string]core.Ports{"chain-a": {Status: ports, Verifier: ports}}, WithErrorLog(logs.logf))
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			client := newContractClient(t, service)
+			if _, err := client.VerifyStateRoot(context.Background(), &attestorpb.VerifyStateRootRequest{
+				SrcChain:          "chain-a",
+				ExpectedStateRoot: make([]byte, 32),
+				L2Router:          make([]byte, 20),
+				AttestorSetHash:   make([]byte, 32),
+				RunMode:           attestorpb.RunMode_RUN_MODE_FINALIZED,
+			}); status.Code(err) != codes.Unavailable {
+				t.Fatalf("VerifyStateRoot code = %v", status.Code(err))
+			}
+			lines := logs.snapshot()
+			if len(lines) != 1 {
+				t.Fatalf("%d log lines, want 1: %q", len(lines), lines)
+			}
+			if !strings.Contains(lines[0], `Post "http://127.0.0.1:9545": EOF`) {
+				t.Errorf("log line %q should name the host and the failure", lines[0])
+			}
+			for _, leaked := range []string{leakyKey, "apikey", "node", "/rpc"} {
+				if strings.Contains(lines[0], leaked) {
+					t.Errorf("log line %q carries %q", lines[0], leaked)
+				}
+			}
+		})
+	}
+}
