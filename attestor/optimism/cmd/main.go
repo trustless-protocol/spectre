@@ -33,6 +33,7 @@ import (
 	"attestor/optimism/opstack"
 	attestortypes "attestor/types"
 	"attestor/types/attestation"
+	"attestor/types/redact"
 )
 
 const flagConfigPath = "config"
@@ -131,7 +132,7 @@ func loadConfig(configPath string) (*attestorConfig, error) {
 		}
 		if op.L1WsUrl != "" {
 			if _, err := url.Parse(op.L1WsUrl); err != nil {
-				return nil, fmt.Errorf("op_source.l1_ws_url is not a valid URL: %w", err)
+				return nil, fmt.Errorf("op_source.l1_ws_url is not a valid URL: %w", redact.Error(err))
 			}
 		}
 		cfg.Sources = append(cfg.Sources, op)
@@ -173,7 +174,7 @@ func buildOpAttestor(ctx context.Context, logger *zap.Logger, op opSourceConfig,
 
 	l1Client, err := attestortypes.DialEthRPC(ctx, cfg.L1RpcUrl, attestortypes.DefaultRPCTimeout)
 	if err != nil {
-		return nil, attestation.Signer{}, nil, fmt.Errorf("failed to dial L1 rpc %s: %w", cfg.L1RpcUrl, err)
+		return nil, attestation.Signer{}, nil, fmt.Errorf("failed to dial L1 rpc %s: %w", redact.URL(cfg.L1RpcUrl), redact.Error(err))
 	}
 	if err := validateChainID(ctx, l1Client, cfg.L1ChainID, "L1 RPC"); err != nil {
 		l1Client.Close()
@@ -340,6 +341,7 @@ func run(logger *zap.Logger, cmd *cobra.Command) error {
 		Runners:          runners,
 		Listener:         grpcListener,
 		EnableReflection: true,
+		ErrorLog:         logger.Sugar().Warnf,
 	})
 	if err != nil {
 		return fmt.Errorf("initialize attestor host: %w", err)
@@ -362,6 +364,10 @@ func main() {
 		Use:   "attestor",
 		Short: "attestor sidecar — replay-verify OP Stack output roots and serve the attested-root feed",
 		Args:  cobra.ExactArgs(0),
+		// The error is reported once, below, with its URLs redacted: cobra would
+		// print it raw, and a startup failure on an RPC endpoint quotes the
+		// endpoint URL, whose path or query can hold the provider's API key.
+		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return run(zLogger, cmd)
 		},
@@ -369,6 +375,6 @@ func main() {
 	rootCmd.Flags().String(flagConfigPath, "config.json", "path to JSON config file")
 
 	if err := rootCmd.Execute(); err != nil {
-		zLogger.Sugar().Fatal(err)
+		zLogger.Sugar().Fatal(redact.Error(err))
 	}
 }

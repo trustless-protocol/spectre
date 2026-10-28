@@ -9,6 +9,7 @@ import (
 	"time"
 
 	attestortypes "attestor/types"
+	"attestor/types/redact"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -37,7 +38,7 @@ type ReplicaClient struct {
 func DialReplica(ctx context.Context, url string, timeout time.Duration) (*ReplicaClient, error) {
 	c, err := attestortypes.DialRPC(ctx, url, timeout)
 	if err != nil {
-		return nil, fmt.Errorf("failed to dial op-node rpc %s: %w", url, err)
+		return nil, fmt.Errorf("failed to dial op-node rpc %s: %w", redact.URL(url), redact.Error(err))
 	}
 	return &ReplicaClient{c: c}, nil
 }

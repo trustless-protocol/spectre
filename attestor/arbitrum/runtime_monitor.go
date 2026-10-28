@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"attestor/types/redact"
+
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/core/types"
 )
@@ -105,7 +107,7 @@ func monitorRuntimeStateWithRetry(
 		}
 		if err != nil {
 			if ctx.Err() == nil {
-				log.Printf("attestor runtime refresh failed: %v", err)
+				log.Printf("attestor runtime refresh failed: %v", redact.Error(err))
 			}
 			return err
 		}
@@ -247,7 +249,7 @@ func streamNitroHeadUpdates(
 			if ctx.Err() != nil {
 				return
 			}
-			log.Printf("subscribe to Nitro new heads failed: %v", err)
+			log.Printf("subscribe to Nitro new heads failed: %v", redact.Error(err))
 			if !waitForRetry(ctx, retryInterval) {
 				return
 			}
@@ -262,7 +264,7 @@ func streamNitroHeadUpdates(
 		if ctx.Err() != nil {
 			return
 		}
-		log.Printf("Nitro new-head subscription ended: %v; reconnecting", err)
+		log.Printf("Nitro new-head subscription ended: %v; reconnecting", redact.Error(err))
 		if !waitForRetry(ctx, retryInterval) {
 			return
 		}

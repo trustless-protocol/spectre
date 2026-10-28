@@ -14,6 +14,7 @@ import (
 
 	contractDisputeGameFactory "attestor/optimism/bindings/DisputeGameFactory"
 	contractFaultDisputeGame "attestor/optimism/bindings/FaultDisputeGame"
+	"attestor/types/redact"
 )
 
 // FactoryGameSource ingests output-root proposals by enumerating the L1
@@ -185,7 +186,7 @@ func wakeHintLoop(ctx context.Context, logger *zap.SugaredLogger, wsURL string, 
 			return
 		}
 		if err != nil {
-			logger.Warnf("[opstack attestor] DisputeGameCreated hint subscription error (poll loop unaffected): %v; reconnecting in %s", err, reconnectDelay)
+			logger.Warnf("[opstack attestor] DisputeGameCreated hint subscription error (poll loop unaffected): %v; reconnecting in %s", redact.Error(err), reconnectDelay)
 		}
 		select {
 		case <-ctx.Done():
@@ -198,7 +199,7 @@ func wakeHintLoop(ctx context.Context, logger *zap.SugaredLogger, wsURL string, 
 func wakeHintOnce(ctx context.Context, wsURL string, factoryAddr common.Address, wake chan<- struct{}) error {
 	client, err := ethclient.DialContext(ctx, wsURL)
 	if err != nil {
-		return fmt.Errorf("failed to dial L1 ws %s: %w", wsURL, err)
+		return fmt.Errorf("failed to dial L1 ws %s: %w", redact.URL(wsURL), redact.Error(err))
 	}
 	defer client.Close()
 	factory, err := contractDisputeGameFactory.NewContract(factoryAddr, client)

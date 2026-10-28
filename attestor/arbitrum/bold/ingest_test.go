@@ -1,10 +1,14 @@
 package bold
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"math/big"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1161,4 +1165,53 @@ func TestRunnerStaysAliveWhilePassesFail(t *testing.T) {
 	<-failures
 	clock.advance(time.Minute) // far past staleAfter (about 1s): only a new beat revives it
 	waitUntil(t, "the failing loop to beat again", a.RunnerAlive)
+}
+
+// The pass failure line is where a transport error is logged at run time, and
+// net/http quotes the full endpoint URL in it; an RPC provider's API key is in
+// that URL.
+func TestPassFailureLogDoesNotQuoteTheEndpointKey(t *testing.T) {
+	var output syncBuffer
+	log.SetOutput(&output)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	a, source := newParkingLoop(t, 0, AssertionAttestorConfig{PollInterval: time.Hour, CallTimeout: time.Second})
+	source.finalizedErr = fmt.Errorf("finalized block: %w", &url.Error{Op: "Post", URL: "http://127.0.0.1:8545/rpc?apikey=SECRET-KEY", Err: io.EOF})
+	observed := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.RunWithObserver(ctx, func(err error) { observed <- err })
+	}()
+	defer stopRun(t, cancel, done)
+
+	if err := <-observed; err == nil {
+		t.Fatal("the pass did not fail")
+	}
+	line := output.String()
+	if strings.Contains(line, "SECRET-KEY") || strings.Contains(line, "apikey") {
+		t.Fatalf("log output %q carries the endpoint key", line)
+	}
+	if !strings.Contains(line, `Post "http://127.0.0.1:8545": EOF`) {
+		t.Fatalf("log output %q should still name the host and the failure", line)
+	}
+}
+
+// syncBuffer is a bytes.Buffer safe for the log package's writer and the test.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }

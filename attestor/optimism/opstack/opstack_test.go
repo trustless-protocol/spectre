@@ -3,6 +3,9 @@ package opstack
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -1143,5 +1146,31 @@ func TestRunnerStaysAliveThroughALongPassOfSlowCalls(t *testing.T) {
 	}
 	if !a.RunnerAlive() {
 		t.Fatal("the loop reads as dead after a pass whose last call just returned")
+	}
+}
+
+// The pass failure line is where a transport error is logged at run time, and
+// net/http quotes the full endpoint URL in it; an RPC provider's API key is in
+// that URL.
+func TestPassFailureLogDoesNotQuoteTheEndpointKey(t *testing.T) {
+	transport := &url.Error{Op: "Post", URL: "http://127.0.0.1:9545/rpc?apikey=SECRET-KEY", Err: io.EOF}
+	a := newTestAttestor(t, HeadSafe, &fakeGames{}, &fakeReplica{statusErr: fmt.Errorf("optimism_syncStatus failed: %w", transport)}, nil)
+	a.cfg.PollInterval = 10 * time.Millisecond
+	logs := captureWarnings(a)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx) }()
+	defer stopRun(t, cancel, done)
+
+	waitUntil(t, "the failing pass to be logged", func() bool {
+		return logs.FilterMessageSnippet("attestation pass failed").Len() == 1
+	})
+	message := logs.FilterMessageSnippet("attestation pass failed").All()[0].Message
+	if strings.Contains(message, "SECRET-KEY") || strings.Contains(message, "apikey") {
+		t.Fatalf("log line %q carries the endpoint key", message)
+	}
+	if !strings.Contains(message, `Post "http://127.0.0.1:9545": EOF`) {
+		t.Fatalf("log line %q should still name the host and the failure", message)
 	}
 }

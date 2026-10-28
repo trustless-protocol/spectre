@@ -113,6 +113,25 @@ func TestDialReplicaBoundsAHangingHTTPCall(t *testing.T) {
 	}
 }
 
+// A dial error reaches the process log at startup, and an RPC provider's API key
+// travels in the URL: the error may name the endpoint, never the key.
+func TestDialReplicaErrorsDoNotQuoteTheKey(t *testing.T) {
+	for _, endpoint := range []string{
+		"http://[::1/rpc?apikey=SECRET-KEY",
+		"ws://127.0.0.1:1/ws/SECRET-KEY",
+	} {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, err := DialReplica(ctx, endpoint, time.Second)
+		cancel()
+		if err == nil {
+			t.Fatalf("DialReplica(%q) succeeded", endpoint)
+		}
+		if strings.Contains(err.Error(), "SECRET-KEY") || strings.Contains(err.Error(), "apikey") {
+			t.Fatalf("DialReplica(%q) error %q carries the key", endpoint, err)
+		}
+	}
+}
+
 func TestReplicaClientRejectsShortOutputRoot(t *testing.T) {
 	srv := newFakeOpNode(t, 1, 2, "0xabcd")
 	defer srv.Close()

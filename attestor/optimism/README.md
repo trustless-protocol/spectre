@@ -68,6 +68,12 @@ Provisional semantics are defined in the Operator Guide's
 | `WatchAttested` | Server-streamed frontier advances (streams the frontier, not every entry) |
 | `VerifyStateRoot` | Requires `run_mode` to match the configured attestation head, compares a candidate block with that replica head and, on a match, returns its Ed25519 attestation signature |
 
+A failed call returns its gRPC code and a classified message only (for example
+`read replica finalized head`). The upstream error behind it is not returned,
+because it quotes the op-node or L1 URL and an RPC provider's API key can be
+part of that URL; it is in the attestor's log with URLs reduced to scheme and
+host (see the [runbook](../../docs/ATTESTOR_RUNBOOK.md#supported-transport-boundary)).
+
 Go consumers use `attestor/optimism/client` (`client.Dial(addr)`), which
 mirrors the store's read interface — in-process and sidecar consumption are
 interchangeable.
