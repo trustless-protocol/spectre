@@ -159,7 +159,14 @@ SHA256("SPECTRE_L2_ATTESTATION_V1")
 
 The statement remains exactly 164 bytes. Finality (`unsafe`, `safe`, or `finalized`) is an
 off-chain selection policy and is intentionally not another signed field. Therefore every
-finality tier must use disjoint attestor/KMS keys. Each attestor daemon rejects
+finality tier must use disjoint attestor/KMS keys. The statement binds the router and the whole
+attestor-set hash, threshold included, so sharing a key does not make a signature that was already
+made valid at another client. The exposure is what a daemon signs on request: it takes the router
+and the set hash from the request, so a weaker-tier daemon can be asked for a signature bound to a
+stricter client's router and set hash, and that client accepts a header on `threshold` such
+signatures. Weaker-tier daemons that hold that many of its keys can authenticate a block it would
+refuse; each shared key below that still lowers by one the number of other keys that would have to
+sign such a block. Each attestor daemon rejects
 `VerifyStateRoot` requests whose `run_mode` does not exactly match its configured attestation
 head (`attestor/optimism/adapter/adapter.go`), so a single daemon can't be tricked into signing
 for the wrong tier. **Current limitation:** the relayer config loader does not itself check for
@@ -211,15 +218,17 @@ height, both certificates are valid, the client cannot tell the replacement from
 anyone who holds both can submit them as misbehaviour. The client freezes at that height
 (`packages/l2-client/src/runtime.rs:290-295`) and stays frozen. A deployment whose attestors sign
 roots that can still be lost accepts this. Whether a third party can obtain both certificates
-depends on who can reach the attestor's gRPC API, which these artifacts do not decide. That API is
-plaintext and unauthenticated, `VerifyStateRoot` signs for any caller that names a height at or
-below the configured head together with that block's state root, and the listen address is
-operator configuration (`server.address` for OP, `grpc_listen_address` for Arbitrum) with no
-loopback restriction in the code. At `unsafe` and
-`safe`, whoever can reach it on both sides of a reorg can collect both certificates, so bind it to
-loopback or a private network and expose it only to the relayers that serve the client. Binding the
-finality tier into the statement would change the wire format of the attestor, the contract and the
-relayer together, and is not part of the current artifacts.
+depends on who can reach the attestors' gRPC API, which these artifacts do not decide. A
+certificate is `threshold` signatures and each daemon supplies one, so the question is who can
+reach at least `threshold` of the client's attestors. That API is plaintext and unauthenticated,
+`VerifyStateRoot` signs for any caller that names a height at or below the configured head
+together with that block's state root, and the listen address is operator configuration
+(`server.address` for OP, `grpc_listen_address` for Arbitrum) with no loopback restriction in the
+code. At `unsafe` and `safe`, a caller that reaches `threshold` of the client's attestors on both
+sides of a reorg can assemble both certificates, so bind each daemon to loopback or a private
+network and expose it only to the relayers that serve the client. Binding the finality tier into
+the statement would change the wire format of the attestor, the contract and the relayer
+together, and is not part of the current artifacts.
 
 **The default accepts pending Arbitrum assertions, deliberately.** `include_provisional` defaults to
 `true` for every `head_kind` except `finalized` (`relayer/cmd/build_l2_source.go`). A confirmed-only

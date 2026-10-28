@@ -98,13 +98,25 @@ WebSocket subscription is required.
 Cosmos client. The daemon refuses any `VerifyStateRoot` whose `run_mode` differs
 from it, and the relayer's `head_kind` must match it (`start` compares the two
 through the daemon's `Info`). The tier is **not** part of the signed statement,
-and the client profile carries no tier either, so a signature issued at one
-tier is valid for any client of the same L2 whose attestor set contains the
-signing key. Give each tier its own `attestation_signing_key`: a key shared
-across tiers lets a signature issued at a weaker head be submitted to a client
-that expects a stricter one, and neither the daemon nor the relayer detects the
-reuse. See [docs/L2_CLIENTS.md](../../docs/L2_CLIENTS.md#signed-update-contract)
-for the statement layout.
+and the client profile carries no tier either.
+
+Give each tier its own `attestation_signing_key`. A signature binds the L2 chain
+ID, the router, the complete attestor-set hash (its threshold and every key) and
+the block identity, so a signature already made for one client does not verify
+at a client with a different router, key set or threshold. A shared key matters
+for what the daemon signs next: it takes the router and the set hash from the
+request, so any caller that can reach a weaker-tier daemon can ask it for a
+signature bound to the stricter client's router and set hash, and that signature
+verifies there. The stricter client accepts a header only with exactly
+`threshold` valid signatures from distinct members of its set. If weaker-tier
+daemons hold at least that many of its keys, they alone can authenticate a block
+the stricter tier would refuse; with fewer, each shared key is still one of the
+`threshold` signatures that any caller can obtain, which lowers by one the number
+of other keys that would have to sign such a block. Two tiers with the same keys
+and threshold on the same router have identical statements, so every signature
+is valid at both. Neither the daemon nor the relayer detects any of this. See
+[docs/L2_CLIENTS.md](../../docs/L2_CLIENTS.md#signed-update-contract) for the
+statement layout.
 
 `server` block: `port` serves Prometheus on `/metrics`; `grpc_port` serves the
 sidecar API (0/omitted disables either).
