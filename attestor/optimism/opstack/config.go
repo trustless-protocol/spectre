@@ -89,7 +89,7 @@ type Config struct {
 	// RespectedGameType filters ingested games; games of any other type are
 	// skipped (counted, never attested).
 	RespectedGameType uint32
-	// AttestationHead selects the gating head (safe by default).
+	// AttestationHead selects the gating head (finalized by default).
 	AttestationHead Head
 	// PollInterval is the runOnce cadence.
 	PollInterval time.Duration

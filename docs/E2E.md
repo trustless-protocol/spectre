@@ -875,9 +875,11 @@ the wasm artifact (`op_attestor_v1`, `base_attestor_v1`, `arbitrum_attestor_v1`)
 `l2_header_fork` must match the chain's execution-header layout: `prague` for OP and
 Base, `london` for Arbitrum Nitro, which produces none of the post-London header fields.
 `head_kind` remains outside the 164-byte signed statement, so modules using different finality
-tiers must use disjoint `attestors.public_keys`/KMS keys. The relayer refuses to load one config
-with any public-key overlap across two `head_kind` values, even when the complete set hashes differ;
-the attestor also rejects a verification request whose `run_mode` differs from its configured head.
+tiers must use disjoint `attestors.public_keys`/KMS keys. Nothing enforces this: a config declares
+one source, and the relayer compares no keys across `head_kind` values, config files or processes,
+so a key shared between tiers is not reported (see
+[docs/L2_CLIENTS.md](L2_CLIENTS.md#signed-update-contract)). The attestor does reject a
+verification request whose `run_mode` differs from its configured head.
 `packages/l2-op-stack/config/op-sepolia.json`,
 `packages/l2-op-stack/config/base-sepolia.json` and
 `packages/l2-arbitrum/config/arbitrum-sepolia.json` are working public-network
@@ -1058,7 +1060,6 @@ instead of building one; `L2_TIMEOUT_WINDOW` and `L2_TIMEOUT_SETTLE` tune the wa
 | L2 client update panics the tx: `returning attributes from a contract is not allowed` | The deployed wasm predates the fix that made the client return data only. Rebuild through `cosmwasm/optimizer` and gov-store it. |
 | L2 client update fails: `unsigned L2 headers are unsupported` | The producer is stale or misconfigured: the authenticated client requires the relayer to collect the configured threshold of indexed attestor signatures before submitting any router proof. Confirm the relayer and wasm are from the same stack and that `attestor_endpoints`, indices and key set match the fresh authenticated client; see [docs/L2_CLIENTS.md](L2_CLIENTS.md#signed-update-contract). |
 | `only N valid attestor signatures` or `only N attestor frontiers available` | Fewer than the configured threshold of endpoints answered with a valid signature/frontier. The relayer queries endpoints concurrently, so one failed endpoint is tolerated whenever the remaining endpoints still satisfy the threshold; check every endpoint address, immutable index and daemon health. |
-| Relayer startup fails with `reuse attestor public key ... across different head_kind values` | Two finality tiers share at least one key. Provision disjoint attestor/KMS keys for each tier and update `attestors` plus endpoint indices; finality is deliberately outside the signed 164-byte statement. |
 | `updateApplicationState` reverts, ~82k gas, no revert string | The relayer's signer lacks the ICS26Router relayer role on the L2. `cast run <tx>` shows `canCall(...) → false`; funding the address does not help. |
 | `updateApplicationState` / `updateConsensusState` reverts with `ProofVerificationFailed()` on every attempt; packet re-queued forever | `relayer/bin/n4/pk.bin` is not from the same setup as the `Groth16Verifier_N4` registered on that chain (typically `pk.bin` was lost and a new set was generated, or the contracts predate a regeneration). Run `./scripts/local/check_prover_pairing.sh --rpc <evm-rpc>`; fix per [Prover key and verifier must be a pair](#prover-key-and-verifier-must-be-a-pair). |
 | Send fails: `timeout exceeds the maximum expected value` | Sent without `--absolute-timeouts`, so the CLI writes `timeout_timestamp` in nanoseconds while IBC v2 reads seconds. |
