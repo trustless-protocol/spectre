@@ -28,15 +28,20 @@ type Options struct {
 	Feed            FeedReader
 	AttestationHead arbitrum.RunMode
 	Signer          attestation.Signer
+	// RunnerAlive reports whether the loop that advances Feed is still coming
+	// back around (AssertionAttestor.RunnerAlive). Nil leaves readiness to the
+	// Nitro snapshot alone, for compositions with no such loop.
+	RunnerAlive func() bool
 }
 
 // Adapter is the Arbitrum implementation of the common read/verify ports.
 type Adapter struct {
-	srcChain string
-	runtime  *arbitrum.RuntimeState
-	feed     FeedReader
-	head     core.RunMode
-	signer   attestation.Signer
+	srcChain    string
+	runtime     *arbitrum.RuntimeState
+	feed        FeedReader
+	head        core.RunMode
+	signer      attestation.Signer
+	runnerAlive func() bool
 }
 
 // New constructs a route bridge. The signer may be absent only for diagnostic
@@ -56,11 +61,12 @@ func New(options Options) (*Adapter, error) {
 		return nil, err
 	}
 	return &Adapter{
-		srcChain: options.SrcChain,
-		runtime:  options.Runtime,
-		feed:     options.Feed,
-		head:     core.RunMode(head),
-		signer:   options.Signer,
+		srcChain:    options.SrcChain,
+		runtime:     options.Runtime,
+		feed:        options.Feed,
+		head:        core.RunMode(head),
+		signer:      options.Signer,
+		runnerAlive: options.RunnerAlive,
 	}, nil
 }
 
@@ -80,8 +86,12 @@ func (a *Adapter) AttestedRootAtOrBelow(_ context.Context, height uint64, policy
 	return toCoreRoot(root), true, nil
 }
 
-// Status observes only RuntimeState's local snapshot. It deliberately does
-// not issue a Nitro call, refresh heads, or mutate the feed.
+// Status observes only RuntimeState's local snapshot and the feed loop's
+// heartbeat. It deliberately does not issue a Nitro call, refresh heads, or
+// mutate the feed. The route is ready once the configured head has been
+// observed and the loop that advances the feed is still coming back around: a
+// loop parked on a call that never returns leaves the feed frozen, and must
+// not read as serving.
 func (a *Adapter) Status(_ context.Context) (core.FeedStatus, error) {
 	snapshot := a.runtime.Snapshot()
 	status := core.FeedStatus{
@@ -105,6 +115,9 @@ func (a *Adapter) Status(_ context.Context) (core.FeedStatus, error) {
 		status.Ready = snapshot.SafeObserved
 	case core.RunModeFinalized:
 		status.Ready = snapshot.FinalizedSeen
+	}
+	if a.runnerAlive != nil && !a.runnerAlive() {
+		status.Ready = false
 	}
 	return status, nil
 }

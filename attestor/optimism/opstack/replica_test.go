@@ -7,7 +7,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
+
+// testRPCTimeout is the replica transport timeout for tests that do not
+// exercise it.
+const testRPCTimeout = time.Minute
 
 // newFakeOpNode serves a minimal JSON-RPC endpoint speaking the two op-node
 // methods the attestor uses.
@@ -49,7 +54,7 @@ func TestReplicaClientSyncStatusAndOutput(t *testing.T) {
 	defer srv.Close()
 
 	ctx := context.Background()
-	rc, err := DialReplica(ctx, srv.URL)
+	rc, err := DialReplica(ctx, srv.URL, testRPCTimeout)
 	if err != nil {
 		t.Fatalf("DialReplica: %v", err)
 	}
@@ -72,12 +77,48 @@ func TestReplicaClientSyncStatusAndOutput(t *testing.T) {
 	}
 }
 
+// An op-node that accepts a request and never answers must not park the
+// caller: DialReplica gives an HTTP endpoint the same transport timeout the L1
+// client has.
+func TestDialReplicaBoundsAHangingHTTPCall(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	// httptest.Server.Close waits for handlers, so release them first.
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) })
+
+	rc, err := DialReplica(context.Background(), srv.URL, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("DialReplica: %v", err)
+	}
+	defer rc.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := rc.SyncStatus(context.Background())
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a call on a silent op-node succeeded")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a call on a silent op-node was not bounded by the transport timeout")
+	}
+}
+
 func TestReplicaClientRejectsShortOutputRoot(t *testing.T) {
 	srv := newFakeOpNode(t, 1, 2, "0xabcd")
 	defer srv.Close()
 
 	ctx := context.Background()
-	rc, err := DialReplica(ctx, srv.URL)
+	rc, err := DialReplica(ctx, srv.URL, testRPCTimeout)
 	if err != nil {
 		t.Fatalf("DialReplica: %v", err)
 	}
@@ -108,7 +149,7 @@ func TestReplicaClientPropagatesRPCFailureForEveryRead(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client, err := DialReplica(context.Background(), srv.URL)
+	client, err := DialReplica(context.Background(), srv.URL, testRPCTimeout)
 	if err != nil {
 		t.Fatalf("DialReplica: %v", err)
 	}

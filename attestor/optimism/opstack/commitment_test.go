@@ -66,7 +66,7 @@ func TestCommitmentAtReadsBlockIdentity(t *testing.T) {
 	srv := newFakeOpNodeWithCommitment(t, wantHash, wantState, 0)
 	defer srv.Close()
 
-	client, err := DialReplica(context.Background(), srv.URL)
+	client, err := DialReplica(context.Background(), srv.URL, testRPCTimeout)
 	if err != nil {
 		t.Fatalf("DialReplica: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestCommitmentAtRejectsAnAnswerAboutAnotherBlock(t *testing.T) {
 	srv := newFakeOpNodeWithCommitment(t, common.HexToHash("0xaa"), common.HexToHash("0xbb"), 999)
 	defer srv.Close()
 
-	client, err := DialReplica(context.Background(), srv.URL)
+	client, err := DialReplica(context.Background(), srv.URL, testRPCTimeout)
 	if err != nil {
 		t.Fatalf("DialReplica: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestOutputAtBlockDoesNotRequireBlockRef(t *testing.T) {
 	srv := newFakeOpNode(t, 1, 2, "0x"+strings.Repeat("ab", 32))
 	defer srv.Close()
 
-	client, err := DialReplica(context.Background(), srv.URL)
+	client, err := DialReplica(context.Background(), srv.URL, testRPCTimeout)
 	if err != nil {
 		t.Fatalf("DialReplica: %v", err)
 	}

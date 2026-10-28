@@ -49,6 +49,7 @@ type opSourceConfig struct {
 	RespectedGameType       uint32 `json:"respected_game_type"`
 	AttestationHead         string `json:"attestation_head"`
 	PollIntervalSeconds     uint64 `json:"poll_interval_seconds"`
+	CallTimeoutSeconds      uint64 `json:"call_timeout_seconds"`
 	StatePath               string `json:"state_path"`
 	L1BootstrapLookbackBlks uint64 `json:"l1_bootstrap_lookback_blocks"`
 	DisableDerivedRoots     bool   `json:"disable_derived_roots"`
@@ -159,6 +160,7 @@ func buildOpAttestor(ctx context.Context, logger *zap.Logger, op opSourceConfig,
 		RespectedGameType:       op.RespectedGameType,
 		AttestationHead:         opstack.Head(op.AttestationHead),
 		PollInterval:            time.Duration(op.PollIntervalSeconds) * time.Second,
+		CallTimeout:             time.Duration(op.CallTimeoutSeconds) * time.Second,
 		StatePath:               op.StatePath,
 		BootstrapLookbackBlocks: op.L1BootstrapLookbackBlks,
 		DisableDerivedRoots:     op.DisableDerivedRoots,
@@ -182,7 +184,7 @@ func buildOpAttestor(ctx context.Context, logger *zap.Logger, op opSourceConfig,
 		l1Client.Close()
 		return nil, attestation.Signer{}, nil, err
 	}
-	replica, err := opstack.DialReplica(ctx, cfg.OpNodeRpcUrl)
+	replica, err := opstack.DialReplica(ctx, cfg.OpNodeRpcUrl, attestortypes.DefaultRPCTimeout)
 	if err != nil {
 		l1Client.Close()
 		return nil, attestation.Signer{}, nil, err

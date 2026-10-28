@@ -10,6 +10,7 @@ import (
 	"go.uber.org/zap"
 
 	"attestor/optimism"
+	attestortypes "attestor/types"
 )
 
 // gameSource and replica are the two upstream dependencies of the attestation
@@ -52,6 +53,9 @@ type OpStackAttestor struct {
 	// for read-only observers (the sidecar gRPC server); nil until the first
 	// successful poll.
 	lastStatus atomic.Pointer[SyncStatus]
+	// heartbeat is beaten by the Run goroutine each time its loop comes back
+	// around, and read by the sidecar's readiness probe (see RunnerAlive).
+	heartbeat attestortypes.Heartbeat
 }
 
 // New assembles an attestor from already-validated config and dialed
@@ -106,6 +110,17 @@ func (a *OpStackAttestor) LastSyncStatus() (SyncStatus, bool) {
 	return SyncStatus{}, false
 }
 
+// RunnerAlive reports whether Run's loop is making progress: it has come back
+// around, or one of its upstream calls has returned, recently enough. A loop
+// parked on something that never returns stops beating, so this goes false even
+// though nothing has failed and nothing is logged. A loop whose passes keep
+// failing still beats: those failures are visible in the log and the
+// pass-failure counter, and the loop backs off. So does a pass that runs for a
+// long time over a long list, because it beats as each call returns.
+func (a *OpStackAttestor) RunnerAlive() bool {
+	return a.heartbeat.Alive(a.now(), attestortypes.FeedStaleAfter(a.cfg.CallTimeout, a.cfg.PollInterval))
+}
+
 // ErrNoReplica reports that this attestor was built without a replica, so the
 // read-only replica queries below cannot be served. The attestation loop needs
 // one, so it only happens in tests.
@@ -146,7 +161,11 @@ func (a *OpStackAttestor) CommitmentAt(ctx context.Context, l2Block uint64) (L2C
 }
 
 // Run executes the attestation loop until ctx is done: poll ticker plus the
-// optional DisputeGameCreated wake hint, with failure backoff.
+// optional DisputeGameCreated wake hint, with failure backoff. Every upstream
+// call the loop makes, the bootstrap that precedes the first pass included, runs
+// under cfg.CallTimeout, so no call can park the loop. A call that hits its
+// deadline fails the pass like any other error: it is logged, counted and backed
+// off, and the next pass resumes from the durable state.
 func (a *OpStackAttestor) Run(ctx context.Context) error {
 	if a.store.Fresh() {
 		if err := a.bootstrap(ctx); err != nil {
@@ -161,6 +180,7 @@ func (a *OpStackAttestor) Run(ctx context.Context) error {
 
 	ticker := time.NewTicker(a.cfg.PollInterval)
 	defer ticker.Stop()
+	a.heartbeat.Beat(a.now())
 	for {
 		if a.backoff.Ready(a.now()) {
 			if err := a.runOnce(ctx); err != nil {
@@ -168,11 +188,13 @@ func (a *OpStackAttestor) Run(ctx context.Context) error {
 					return nil
 				}
 				delay := a.backoff.RecordFailure(a.now())
+				a.count(func(m *Metrics) { m.PassFailures.WithLabelValues(a.cfg.SrcChain).Inc() })
 				a.logger.Warnf("%s: attestation pass failed (nothing affirmed, retrying in %s): %v", a.Name(), delay, err)
 			} else {
 				a.backoff.RecordSuccess()
 			}
 		}
+		a.heartbeat.Beat(a.now())
 		select {
 		case <-ctx.Done():
 			return nil
@@ -240,7 +262,7 @@ func (a *OpStackAttestor) runOnce(ctx context.Context) error {
 		return err
 	}
 
-	status, err := a.replica.SyncStatus(ctx)
+	status, err := a.loopReplica().SyncStatus(ctx)
 	if err != nil {
 		a.countReplicaError("rpc")
 		return err
@@ -337,7 +359,7 @@ func (a *OpStackAttestor) finalizedGames(ctx context.Context) (gameSource, uint6
 	if a.games == nil {
 		return nil, 0, errors.New("DisputeGameFactory source is not configured")
 	}
-	view, finalizedL1Block, err := a.games.FinalizedView(ctx)
+	view, finalizedL1Block, err := a.loopGames().FinalizedView(ctx)
 	if err != nil {
 		return nil, 0, fmt.Errorf("read finalized DisputeGameFactory view: %w", err)
 	}
@@ -356,7 +378,7 @@ func (a *OpStackAttestor) decidePending(ctx context.Context, status SyncStatus) 
 		if game.L2BlockNumber > gate {
 			continue
 		}
-		local, err := a.replica.OutputAtBlock(ctx, game.L2BlockNumber)
+		local, err := a.loopReplica().OutputAtBlock(ctx, game.L2BlockNumber)
 		if err != nil {
 			a.countReplicaError("rpc")
 			return fmt.Errorf("deciding game %d (l2 block %d): %w", game.GameIndex, game.L2BlockNumber, err)
@@ -385,7 +407,7 @@ func (a *OpStackAttestor) attestDerived(ctx context.Context, status SyncStatus) 
 	if last, ok := a.store.HighestDerivedBlock(); ok && gate < last+a.cfg.DerivedGapBlocks {
 		return nil
 	}
-	root, err := a.replica.OutputAtBlock(ctx, gate)
+	root, err := a.loopReplica().OutputAtBlock(ctx, gate)
 	if err != nil {
 		a.countReplicaError("rpc")
 		return fmt.Errorf("deriving output root at head block %d: %w", gate, err)
@@ -416,7 +438,7 @@ func (a *OpStackAttestor) attestDerived(ctx context.Context, status SyncStatus) 
 // the entry, disagreement corrects it and raises the divergence alarm.
 func (a *OpStackAttestor) reverifyDerived(ctx context.Context, finalized uint64) error {
 	for _, entry := range a.store.DerivedProvisionalAtOrBelow(finalized) {
-		root, err := a.replica.OutputAtBlock(ctx, entry.L2BlockNumber)
+		root, err := a.loopReplica().OutputAtBlock(ctx, entry.L2BlockNumber)
 		if err != nil {
 			a.countReplicaError("rpc")
 			return fmt.Errorf("reverifying derived root at l2 block %d: %w", entry.L2BlockNumber, err)
@@ -475,7 +497,7 @@ func (a *OpStackAttestor) recordVerdict(ctx context.Context, game ProposedRoot, 
 			a.Name(), game.GameIndex, game.L2BlockNumber, game.RootClaim, provisional)
 	} else {
 		a.count(func(m *Metrics) { m.RootsMismatched.WithLabelValues(a.cfg.SrcChain).Inc() })
-		if err := a.hook.OnMismatch(ctx, game, local); err != nil {
+		if err := a.challengeHook(ctx, game, local); err != nil {
 			a.logger.Errorf("%s: challenge hook failed for game %d: %v", a.Name(), game.GameIndex, err)
 		}
 	}
@@ -494,7 +516,7 @@ func (a *OpStackAttestor) resolveRechecks(ctx context.Context, finalized uint64)
 		if entry.Game.L2BlockNumber > finalized {
 			continue
 		}
-		local, err := a.replica.OutputAtBlock(ctx, entry.Game.L2BlockNumber)
+		local, err := a.loopReplica().OutputAtBlock(ctx, entry.Game.L2BlockNumber)
 		if err != nil {
 			a.countReplicaError("rpc")
 			return fmt.Errorf("rechecking game %d (l2 block %d): %w", entry.Game.GameIndex, entry.Game.L2BlockNumber, err)
@@ -525,7 +547,7 @@ func (a *OpStackAttestor) resolveRechecks(ctx context.Context, finalized uint64)
 				"finalized_match", finalMatch,
 			)
 			if !finalMatch {
-				if err := a.hook.OnMismatch(ctx, entry.Game, local); err != nil {
+				if err := a.challengeHook(ctx, entry.Game, local); err != nil {
 					a.logger.Errorf("%s: challenge hook failed for rechecked game %d: %v", a.Name(), entry.Game.GameIndex, err)
 				}
 			}

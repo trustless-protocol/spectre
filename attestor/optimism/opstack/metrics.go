@@ -20,6 +20,7 @@ type Metrics struct {
 	RootsProvisional     *prometheus.CounterVec
 	HeadDivergence       *prometheus.CounterVec
 	ReplicaErrors        *prometheus.CounterVec
+	PassFailures         *prometheus.CounterVec
 	AttestationLag       *prometheus.GaugeVec
 	ReplicaFinalizedHead *prometheus.GaugeVec
 	ReplicaSafeHead      *prometheus.GaugeVec
@@ -50,6 +51,7 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		RootsProvisional:     counter("roots_provisional_total", "Verdicts recorded provisionally (below the finalized head), pending finalized recheck."),
 		HeadDivergence:       counter("head_divergence_total", "Finalized rechecks that contradicted a provisional verdict (sequencer divergence at unsafe, L1 reorg at safe)."),
 		ReplicaErrors:        counter("replica_errors_total", "Replica interaction failures.", "kind"),
+		PassFailures:         counter("pass_failures_total", "Attestation passes that failed, including those that hit the call timeout."),
 		AttestationLag:       gauge("attestation_lag_blocks", "Oldest pending proposal's L2 block minus the gating head (0 when nothing pending is ahead)."),
 		ReplicaFinalizedHead: gauge("replica_finalized_head", "Replica finalized L2 head (derived from finalized L1 — tx finality)."),
 		ReplicaSafeHead:      gauge("replica_safe_head", "Replica safe L2 head (derived from L1)."),

@@ -81,6 +81,7 @@ as must `state_path` (both enforced at config load).
 | `respected_game_type` | 0 | Only games of this type are verified; others counted + skipped |
 | `attestation_head` | `finalized` | Gating head: `finalized` \| `safe` \| `unsafe` (see below) |
 | `poll_interval_seconds` | 30 | Attestation-pass cadence |
+| `call_timeout_seconds` | 300 | Deadline for each upstream call the loop makes to the op-node, the dispute-game factory and the challenge hook, the first-run bootstrap included. A call that never returns (an op-node or L1 WebSocket peer that accepts a request and drops the response) fails the pass at this deadline instead of parking the loop. It bounds the call, not the pass: a pass of many calls that each return is never cut |
 | `state_path` | required | JSON state file (cursor, pending, rechecks, feed) |
 | `l1_bootstrap_lookback_blocks` | 7200 | First-run ingest window (~24 h of L1 blocks) |
 | `l1_ws_url` | off | Optional `DisputeGameCreated` wake hint; poll loop fully correct without it |
@@ -249,6 +250,16 @@ With **no replica reachable**, the correct posture is: proposals ingest,
 `pending` fills, `attestation pass failed (nothing affirmed, retrying in …)`
 with backoff 1 m → 15 m, feed stays empty. Nothing is ever affirmed by a down
 or lagging replica.
+
+A call that never returns is cut at `call_timeout_seconds` and then behaves the
+same way: `attestation pass failed (…): op-node SyncStatus exceeded its 5m0s
+deadline: …`, `pass_failures_total` and the backoff above. The deadline is per
+call, so a pass over many games takes as long as its calls take and is never cut
+for that. Once a replica snapshot exists, the gRPC health service turns
+NOT_SERVING if neither the loop nor any of its upstream calls has made progress
+for longer than `call_timeout_seconds` plus two `poll_interval_seconds`; a loop
+whose passes fail keeps reporting SERVING with the heads of its last good
+snapshot.
 
 ### Fail-safe invariants
 

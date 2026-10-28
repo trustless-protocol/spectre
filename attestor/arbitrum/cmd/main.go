@@ -109,6 +109,10 @@ func runAttestor(ctx context.Context, configPath string) error {
 	if err != nil {
 		return fmt.Errorf("load assertion poll interval: %w", err)
 	}
+	assertionCallTimeout, err := config.AssertionCallTimeoutDuration()
+	if err != nil {
+		return fmt.Errorf("load assertion call timeout: %w", err)
+	}
 	assertionLoop, err := boldattestor.NewAssertionAttestor(
 		assertionSource,
 		runtimeState,
@@ -116,6 +120,7 @@ func runAttestor(ctx context.Context, configPath string) error {
 		boldattestor.AssertionAttestorConfig{
 			L1IngestHead:    config.L1IngestHead,
 			PollInterval:    assertionPollInterval,
+			CallTimeout:     assertionCallTimeout,
 			MaxL1BlockRange: config.AssertionBlockRange(),
 		},
 	)
@@ -157,6 +162,7 @@ func runAttestor(ctx context.Context, configPath string) error {
 		Feed:            attestedRootStore,
 		AttestationHead: attestationHead,
 		Signer:          signer,
+		RunnerAlive:     assertionLoop.RunnerAlive,
 	})
 	if err != nil {
 		return fmt.Errorf("compose Arbitrum attestor bridge: %w", err)

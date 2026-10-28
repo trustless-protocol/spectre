@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	attestortypes "attestor/types"
+
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -93,6 +95,12 @@ type Config struct {
 	AttestationHead Head
 	// PollInterval is the runOnce cadence.
 	PollInterval time.Duration
+	// CallTimeout bounds each upstream call the run loop makes, so a call that
+	// never returns (a silent WebSocket peer, an op-node holding a request)
+	// becomes a failed pass that backs off and is logged, instead of parking the
+	// loop. It bounds the call and not the pass, so a long pass of calls that each
+	// return is never cut. Zero selects attestortypes.DefaultCallTimeout.
+	CallTimeout time.Duration
 	// StatePath is the JSON state file holding the ingest cursor, pending and
 	// recheck sets, and the attested-root feed.
 	StatePath string
@@ -118,6 +126,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.PollInterval == 0 {
 		c.PollInterval = defaultPollInterval
+	}
+	if c.CallTimeout == 0 {
+		c.CallTimeout = attestortypes.DefaultCallTimeout
 	}
 	if c.BootstrapLookbackBlocks == 0 {
 		c.BootstrapLookbackBlocks = defaultBootstrapLookback
@@ -178,6 +189,9 @@ func (c *Config) Validate() error {
 	}
 	if c.PollInterval < 0 {
 		return fmt.Errorf("op_source.poll_interval must not be negative")
+	}
+	if c.CallTimeout < 0 {
+		return fmt.Errorf("op_source.call_timeout must not be negative")
 	}
 	return nil
 }

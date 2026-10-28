@@ -168,3 +168,52 @@ func TestNewRejectsInvalidComposition(t *testing.T) {
 		t.Fatal("New accepted nil feed")
 	}
 }
+
+// The route is ready only while the loop that advances the feed is still coming
+// back around: the Nitro snapshot alone stays fresh over a frozen assertion
+// feed, because the runtime monitor is a separate loop.
+func TestStatusReadinessFollowsTheFeedLoop(t *testing.T) {
+	head := &types.Header{Number: big.NewInt(10), Root: common.HexToHash("0x10")}
+	candidate := &types.Header{Number: big.NewInt(7), Root: common.HexToHash("0x70")}
+	runtime, err := arbitrum.NewRuntimeState(contractHeaderReader{head: head, candidate: candidate})
+	if err != nil {
+		t.Fatalf("NewRuntimeState: %v", err)
+	}
+	if _, err := runtime.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+
+	alive := true
+	bridge, err := New(Options{
+		SrcChain:        "arbitrum-contract",
+		Runtime:         runtime,
+		Feed:            contractFeed{},
+		AttestationHead: arbitrum.RunModeFinalized,
+		RunnerAlive:     func() bool { return alive },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	status, err := bridge.Status(context.Background())
+	if err != nil || !status.Ready || status.ReplicaFinalized != 10 {
+		t.Fatalf("status with a live feed loop = (%+v, %v), want ready at finalized 10", status, err)
+	}
+
+	alive = false
+	status, err = bridge.Status(context.Background())
+	if err != nil || status.Ready {
+		t.Fatalf("status with a parked feed loop = (%+v, %v), want not ready", status, err)
+	}
+	if !status.ReplicaSeen || status.ReplicaFinalized != 10 {
+		t.Fatalf("a parked feed loop hid the Nitro heads: %+v", status)
+	}
+
+	// Without a feed loop to ask, the Nitro snapshot decides alone.
+	standalone := newContractAdapter(t, contractHeaderReader{head: head, candidate: candidate}, attestation.Signer{})
+	if _, err := standalone.runtime.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if status, err := standalone.Status(context.Background()); err != nil || !status.Ready {
+		t.Fatalf("status with no feed loop wired = (%+v, %v), want ready", status, err)
+	}
+}
