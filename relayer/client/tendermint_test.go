@@ -26,6 +26,8 @@ func TestEncodeMisbehaviourContractMsg(t *testing.T) {
 	}
 	for i := range proof.Commitments {
 		proof.Commitments[i] = big.NewInt(0)
+	}
+	for i := range proof.CommitmentPok {
 		proof.CommitmentPok[i] = big.NewInt(0)
 	}
 	header := misbehaviourContract.ISpectreTendermintMsgsHeader{}

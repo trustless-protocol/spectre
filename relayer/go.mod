@@ -17,7 +17,7 @@ require (
 	github.com/cosmos/ibc-go/modules/light-clients/08-wasm/v10 v10.3.0
 	github.com/cosmos/ibc-go/v10 v10.3.0
 	github.com/cosmos/ics23/go v0.11.0
-	github.com/decentrio/ecip-gnark v0.1.0-rc.3
+	github.com/decentrio/ecip-gnark v0.1.0-rc.3.0.20261101160124-161566863181
 	github.com/ethereum/go-ethereum v1.17.4
 	github.com/gogo/protobuf v1.3.2
 	github.com/gorilla/websocket v1.5.3
@@ -202,5 +202,5 @@ require (
 
 replace (
 	attestor/types => ../attestor/types
-	github.com/consensys/gnark => github.com/decentrio/gnark v0.16.4-decentrio-fork.2
+	github.com/consensys/gnark => github.com/decentrio/gnark v0.16.4-decentrio-fork.4
 )

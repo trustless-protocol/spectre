@@ -45,7 +45,7 @@ attestor/optimism/
 The gRPC transport itself lives in the shared `attestor/grpc` and
 `attestor/host` packages, not a per-chain `server/` package.
 
-Its own Go module, **no cgo** — builds and tests without `libgaraga_rs.so`.
+Its own Go module, **no cgo**.
 The gRPC proto (`../../proto/attestor/attestor.proto`, generated via
 `../../buf.gen.attestor.yaml`) is the **only contract** with the relayer.
 Both sidecars import its shared generated Go module from

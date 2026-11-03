@@ -219,7 +219,7 @@ contract RecvPacketGasTest is IntegrationTest {
         m.proposedHeader = header;
         m.time = NEW_TS_NS;
         m.proof.proof = [uint256(0), 0, 0, 0, 0, 0, 0, 0];
-        m.proof.commitments = [uint256(0), 0];
+        m.proof.commitments = [uint256(0), 0, 0, 0];
         m.proof.commitmentPok = [uint256(0), 0];
         m.proof.bucket = bucket;
         m.proof.signerIndices = idx;

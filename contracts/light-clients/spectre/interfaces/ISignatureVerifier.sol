@@ -32,15 +32,15 @@ interface ISignatureVerifier {
     ///      what stops calldata from re-labelling a padding slot as a signer.
     /// @param bucket Validator-count bucket (selects which per-bucket Groth16Verifier to dispatch to)
     /// @param proof The Groth16 proof (8 uint256s: Ar, Bs, Krs)
-    /// @param commitments The proof commitments (2 uint256s)
-    /// @param commitmentPok The proof of knowledge for commitments (2 uint256s)
+    /// @param commitments The two BSB22 commitments as G1 points, C0 then C1 (4 uint256s: x0, y0, x1, y1)
+    /// @param commitmentPok The single folded proof of knowledge for both commitments (2 uint256s)
     /// @param pubkeys Per-slot Ed25519 compressed public key. Length == bucket.
     /// @param active Per-slot real-signer flag (true = real validator, false = dummy padding). Length == bucket.
     /// @param shared Common-prefix CanonicalVote fields shared across all slots.
     function verifyBatchProof(
         uint16 bucket,
         uint256[8] calldata proof,
-        uint256[2] calldata commitments,
+        uint256[4] calldata commitments,
         uint256[2] calldata commitmentPok,
         bytes32[] calldata pubkeys,
         bool[] calldata active,

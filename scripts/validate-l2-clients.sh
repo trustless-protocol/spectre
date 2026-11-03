@@ -27,8 +27,6 @@ ibc_go_max_wasm_size=$((3 * 1024 * 1024))
 approved_upload_limit=$((ibc_go_max_wasm_size * 9 / 10))
 validate_optimized="${VALIDATE_OPTIMIZED:-0}"
 go_cache="${GOCACHE:-/tmp/spectre-wasm-go-cache}"
-go_library_path="$root/.artifacts/native${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export CGO_LDFLAGS="-L$root/.artifacts/native${CGO_LDFLAGS:+ $CGO_LDFLAGS}"
 optimizer_cargo_cache="${OPTIMIZER_CARGO_CACHE:-${CARGO_HOME:-${HOME}/.cargo}}"
 
 case "$validate_optimized" in
@@ -122,7 +120,7 @@ cargo test --locked --manifest-path programs/cw-ics08-wasm-eth/Cargo.toml
 
 (
   cd e2e/interchaintestv8
-  env GOCACHE="$go_cache" LD_LIBRARY_PATH="$go_library_path" \
+  env GOCACHE="$go_cache" \
     go test ./wasm -run '^$' -count=1
 )
 forge test --match-contract WasmStorageLayoutCompatibilityTest
@@ -229,7 +227,6 @@ if [[ "$validate_optimized" == 1 ]]; then
     cd "$root/e2e/interchaintestv8"
     env \
       GOCACHE="$go_cache" \
-      LD_LIBRARY_PATH="$go_library_path" \
       WASM_CONFORMANCE_REPO_ROOT="$root" \
       WASM_CONFORMANCE_ARTIFACT_DIR="$root/artifacts" \
       WASM_CONFORMANCE_REPORT="$root/$gas_report" \

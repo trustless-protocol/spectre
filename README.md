@@ -84,12 +84,12 @@ The relayer/prover depend on two private forks of gnark, pinned as ordinary Go
 modules in `relayer/go.mod`:
 
 ```
-require github.com/decentrio/ecip-gnark v0.1.0-rc.3
+require github.com/decentrio/ecip-gnark v0.1.0-rc.3.0.20261101160124-161566863181
 
-replace github.com/consensys/gnark => github.com/decentrio/gnark v0.16.4-decentrio-fork.2
+replace github.com/consensys/gnark => github.com/decentrio/gnark v0.16.4-decentrio-fork.4
 ```
 
-- [`decentrio/ecip-gnark`](https://github.com/decentrio/ecip-gnark) — Ed25519 in-circuit ops + the `garaga_rs` Rust FFI.
+- [`decentrio/ecip-gnark`](https://github.com/decentrio/ecip-gnark) — Ed25519 in-circuit ops. Pure Go: the relayer and prover build with `CGO_ENABLED=0`.
 - [`decentrio/gnark`](https://github.com/decentrio/gnark) — fork of consensys/gnark with hash-aggregate verifier tweaks.
 
 Both repositories are private, so the Go proxy and checksum DB cannot serve
@@ -103,34 +103,12 @@ gh auth setup-git        # or any other git credential for github.com/decentrio
 To hack on a fork, point a local `replace` at your checkout while you work and
 never commit it (machine-local paths do not belong in `go.mod`).
 
-#### Garaga FFI
-
-`ecip-gnark`'s prover links a Rust FFI (`libgaraga_rs`). Its cgo directive is
-`-L..`, which lands in the read-only Go module cache, so the library is built
-into `.artifacts/native/` instead. Build it once (and after bumping the
-`ecip-gnark` version):
-
-```bash
-scripts/build-garaga-ffi.sh
-```
-
-Then point the linker and the loader at it (the `just` recipes and the scripts
-under `scripts/` already set `CGO_LDFLAGS`; the loader path is still yours to set):
-
-```bash
-export CGO_LDFLAGS="-L$PWD/.artifacts/native"
-export LD_LIBRARY_PATH="$PWD/.artifacts/native"       # DYLD_LIBRARY_PATH on macOS
-```
-
-Without the built FFI, `go build ./...` under `relayer/` fails at link with
-`library 'garaga_rs' not found`.
-
 ### Build and test
 
 ```bash
 bun install                  # Solidity dependencies (never npm/yarn)
 just build-go-relayer        # go build ./... in relayer/
-just build-prover-artifacts  # compile circuits into relayer/bin/n{N}/ and emit contracts/verifiers/
+just build-prover-artifacts  # compile circuits into relayer/bin/n{N}/, emit contracts/verifiers/ and the smoke proof for Groth16OnchainProofTest
 just build-contracts         # forge build — needs the generated verifier (see below)
 
 just test-foundry            # all Solidity tests
