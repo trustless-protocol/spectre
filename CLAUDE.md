@@ -7,9 +7,10 @@ Operating manual for working in this repository. When this file conflicts with y
 Production Solidity implementation of **IBC v2** ("Spectre") for Ethereum ↔ Cosmos interoperability. Three language layers:
 
 - **Solidity** (`contracts/`) — IBC core, token transfer, ZK light client. The product.
-- **Go** (`relayer/`) — relayer + gnark Groth16 prover. The relayer.
-- **Rust** — CosmWasm Ethereum and L2 ICS-08 clients. The L2 clients live in
-  `programs/cw-ics08-wasm-{op,base,arbitrum}` with matching verifier packages.
+- **Go** (`relayer/`) — relayer + gnark Groth16 prover. The relayer. Also `attestor/`: the OP and Arbitrum
+  attestor services the L2 clients trust (see `docs/ATTESTOR_RUNBOOK.md`).
+- **Rust** — CosmWasm Ethereum and L2 ICS-08 clients in `programs/cw-ics08-wasm-{eth,op,base,arbitrum}`, with
+  their verifier packages in `packages/`.
 
 Key difference from upstream `solidity-ibc-eureka`: a **heavily-optimized purpose-built gnark Groth16 circuit** (Go, batched Ed25519) instead of SP1 (Rust RISC-V zkVM) for Tendermint light-client verification. When describing the project, credit the circuit + gnark optimization work as the moat — not just "Groth16 instead of zkVM".
 
@@ -28,7 +29,7 @@ cd relayer && go test -race -count=1 -run <TestName> ./...  # Single Go test (al
 just test-e2e <name>              # E2E test by name (needs Docker + Kurtosis)
 
 # Lint / static analysis
-just lint                         # All linters (solidity + go + buf)
+just lint                         # All linters (solidity + go + buf + rust)
 just lint-solidity                # forge fmt + solhint + natlint
 just slither                      # Slither static analysis
 
@@ -103,6 +104,11 @@ relayer/
 ├── subscriber/     # Cosmos WebSocket + ETH event listeners (both sides have gap recovery — keep it that way)
 ├── transaction/    # ETH tx (nonce under h.mu) + Cosmos tx (account sequence under cosmosMu)
 ├── utils/          # IBC path helpers, byte utils
+├── keys/           # ETH private-key parsing (secp256k1)
+├── status/         # read-only "what is this relayer doing" listener + `status` CLI reader
+├── workers/ logbridge/  # named goroutines for shutdown diagnosis; leveled logs for the stdlib logger and gnark
+├── rpcmock/        # httptest JSON-RPC stubs (EVM, Cosmos, beacon) — test-only
+├── l2fixtures/     # captures fixed-block rollup evidence for the offline Rust verifier tests
 └── cmd/main.go     # CLI: start (runAdapterEngine per source), status (+ `status reactivate`), create-clients-{cosmos,eth}, update-client, update-eth-client, submit-misbehaviour, genesis
 ```
 
@@ -140,7 +146,7 @@ Docs can lag the code (they have before — "cache"/"planned" wording for featur
 - **Solidity**: 120-col lines, 4-space width, double quotes (`foundry.toml` enforces). UUPS proxies for core contracts, Beacon for per-instance contracts. Modules under `contracts/light-clients/spectre/modules/` stay `pure`/stateless (read the Store, never write) — all client state lives in `SpectreClient`.
 - **Go**: wrap errors with `%w` + context; classify relayer failures transient vs permanent (`ErrPermanentRelayFailure`); every shared mutation under its owning mutex; tests run with `-race`.
 - **Bindings**: after any Solidity ABI change, regenerate with `abigen` into `packages/go-abigen/` (and `relayer/bindings/` where applicable) in the same PR.
-- **Tooling**: `bun` for JS deps; `just` recipes over raw commands when a recipe exists. `relayer/go.mod` pins `decentrio/ecip-gnark` (require) and `decentrio/gnark` (replace of `consensys/gnark`) as private Go modules — needs `GOPRIVATE=github.com/decentrio/*`; there is no `third_party/` submodule. `libgaraga_rs` is built by `scripts/build-garaga-ffi.sh` into `.artifacts/native/` and found via `CGO_LDFLAGS=-L…` + `LD_LIBRARY_PATH` (`DYLD_LIBRARY_PATH` on macOS). Never commit machine-local `replace` paths.
+- **Tooling**: `bun` for JS deps; `just` recipes over raw commands when a recipe exists. `relayer/go.mod` pins `decentrio/ecip-gnark` (require) and `decentrio/gnark` (replace of `consensys/gnark`) as private Go modules — needs `GOPRIVATE=github.com/decentrio/*`; there is no `third_party/` submodule. Bump the two together: ecip-gnark pins a gnark fork, and a different fork changes the R1CS (and, past one BSB22 commitment, needs the fork whose `ExportSolidity` supports several) — any bump that changes the circuit means regenerate + redeploy `Groth16Verifier_N{N}` + `setBucket`. `libgaraga_rs` is built by `scripts/build-garaga-ffi.sh` into `.artifacts/native/` and found via `CGO_LDFLAGS=-L…` + `LD_LIBRARY_PATH` (`DYLD_LIBRARY_PATH` on macOS). Never commit machine-local `replace` paths.
 
 ### Added — rules this codebase needs that you won't infer
 
@@ -256,4 +262,6 @@ GitHub Issues on Spectre's `origin` remote, via the `gh` CLI. Labels are not use
 
 ### Domain docs
 
-Single-context: one `GLOSSARY.md` + `docs/adr/` at the repo root. `docs/agents/` and `docs/adr/` are exempt from the "six runbooks only" rule above. See `docs/agents/domain.md`.
+Single-context: one `GLOSSARY.md` + `docs/adr/` at the repo root, created lazily when a term or decision is first resolved — neither exists yet. Until then the docs-checklist terminology and "Settled design decisions" above play their role. `docs/agents/` and `docs/adr/` are exempt from the "six runbooks only" rule above. See `docs/agents/domain.md`.
+
+Claude Code skills, commands and settings are per-developer and live in each developer's own `.claude/` (ignored by git); nothing in this repo depends on them.
