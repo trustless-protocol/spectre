@@ -116,7 +116,7 @@ relayer/
 
 ## Documentation map
 
-`docs/` is deliberately small: six operational runbooks in `docs/runbooks/`, nothing else. Architecture, design conventions, security doctrine, test policy, observability guides, and benchmark results are **not** documented in this repo — the code is their only description, and performance numbers exist only in runs you make yourself. Earlier versions of those documents are recoverable from git history (`git log --diff-filter=D -- docs/`) but are stale by definition; do not resurrect a claim from one without re-verifying it against the code. Read the runbook whose domain the task touches.
+`docs/` is deliberately small: six operational runbooks in `docs/runbooks/` and the README diagram in `docs/assets/`, nothing else. Architecture, design conventions, security doctrine, test policy, observability guides, and benchmark results are **not** documented in this repo — the code is their only description, and performance numbers exist only in runs you make yourself. Earlier versions of those documents are recoverable from git history (`git log --diff-filter=D -- docs/`) but are stale by definition; do not resurrect a claim from one without re-verifying it against the code. Read the runbook whose domain the task touches.
 
 | Document | When to read |
 |----------|--------------|

@@ -150,6 +150,32 @@ COSMOS_PRIVATE_KEY=$KEY_OP_PATH  ./relayer start --config config.op.json &
 
 Each key is a distinct account and needs its own gas balance on the Cosmos chain.
 
+## Relayer logs
+
+Every log line of the relayer carries a level. `--log-level` /
+`RELAYER_LOG_LEVEL` (`debug`, `info`, `warn`, `error`; default `info`) and
+`--log-format` / `RELAYER_LOG_FORMAT` (`json`, `console`, `auto`; default `auto`)
+are accepted by every subcommand. The flag takes precedence over the variable.
+
+- **Source of the variables.** They are read from the process environment.
+  `relayer/.env` is loaded inside each command, after the logger exists, so
+  values there have no effect.
+- **Invalid values.** An invalid value never stops the relayer. It is ignored
+  and reported in the log, and the default is used.
+- **JSON format.** Each line has `level`, `ts` (epoch seconds), `caller`, `msg`
+  and, under `start`, `relay_path`. This is the format a log viewer reads. If
+  the relayer runs with a terminal attached (`docker run -t`), pass
+  `--log-format json` explicitly, because `auto` picks `console`.
+- **Failed commands.** cobra prints its own `Error: ...` line and the usage text
+  as plain lines. The same error is then logged once at `fatal`. Alert on the
+  `fatal` line.
+- **gnark.** gnark has its own logger, which by default prints three console
+  lines on stdout for every proof. The relayer routes it through the same
+  stream. These lines read `[gnark] <message>`, carry `"component":"gnark"` and
+  no `caller`, and keep gnark's own fields under a `gnark` key (`took` is in
+  milliseconds), so they cannot shadow `level` or `msg`. The per-proof lines are
+  `debug`; a warning or an error from gnark keeps its level.
+
 ## Prover key and verifier must be a pair
 
 Every Cosmos → EVM update (`updateApplicationState`, `updateConsensusState`) carries a
