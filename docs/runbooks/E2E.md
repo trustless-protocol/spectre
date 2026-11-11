@@ -4,7 +4,7 @@ Every local bring-up: Cosmos↔Ethereum, Cosmos↔OP, Cosmos↔Arbitrum, Cosmos�
 and running against an L2 someone else operates. Split out of the README, which
 had grown past the point where any of it was findable.
 
-Prerequisites are in [the README](../README.md#requirements); these runbooks assume
+Prerequisites are in [the README](../../README.md#requirements); these runbooks assume
 the toolchain is in place and add Docker + Kurtosis on top.
 
 **Read this first, whichever chain you are bringing up.**
@@ -187,7 +187,7 @@ profile) — see the `ProofVerificationFailed()` row in the L2 [Failure modes](#
 ## Local Cosmos ↔ Ethereum E2E
 
 End-to-end run on local Cosmos + Ethereum nodes. Requires Docker + Kurtosis on
-top of the toolchain in [Requirements](../README.md#requirements).
+top of the toolchain in [Requirements](../../README.md#requirements).
 
 ### Gaia binary
 
@@ -867,7 +867,7 @@ Several L2s can still be created in one run:
 ```
 
 The `--l2-config` file carries the full ICS-08 profile (see
-[docs/L2_CLIENTS.md](L2_CLIENTS.md#creation-and-profile)). For the
+[docs/runbooks/L2_CLIENTS.md](L2_CLIENTS.md#creation-and-profile)). For the
 attestor-trusted clients `rollup_profile.common` is five keys — `l2_chain_id`,
 `l2_router`, `commitment_slot`, `profile_version`, and `l2_header_fork` — and nothing
 else; an unknown key fails `instantiate` on the Rust side. `profile_version` must match
@@ -878,7 +878,7 @@ Base, `london` for Arbitrum Nitro, which produces none of the post-London header
 tiers must use disjoint `attestors.public_keys`/KMS keys. Nothing enforces this: a config declares
 one source, and the relayer compares no keys across `head_kind` values, config files or processes,
 so a key shared between tiers is not reported (see
-[docs/L2_CLIENTS.md](L2_CLIENTS.md#signed-update-contract)). The attestor does reject a
+[docs/runbooks/L2_CLIENTS.md](L2_CLIENTS.md#signed-update-contract)). The attestor does reject a
 verification request whose `run_mode` differs from its configured head.
 `packages/l2-op-stack/config/op-sepolia.json`,
 `packages/l2-op-stack/config/base-sepolia.json` and
@@ -957,7 +957,7 @@ The forward leg has the same shape on every stack: one Groth16 proof, then
 return leg's wait, which is the gap times the chain's block time. This runbook stores no
 timings or gas figures; measure your own. The relayer logs each proof job's duration
 (`[prover] … done in <duration>`, always on) and, with `--benchmark`, the gas of every
-multicall inner call (see [Benchmark mode](../README.md#benchmark-mode)). Quote any
+multicall inner call (see [Benchmark mode](../../README.md#benchmark-mode)). Quote any
 figure together with the hardware and the number of runs behind it.
 
 Lower is not free: each derived root is an attestation, and at `unsafe`/`safe` heads
@@ -1058,13 +1058,13 @@ instead of building one; `L2_TIMEOUT_WINDOW` and `L2_TIMEOUT_SETTLE` tune the wa
 | Optimizer fails: `rustc 1.86.0 is not supported ... requires rustc 1.90` | A dependency raised its MSRV above the optimizer image's Rust. Pin the dependency down (e.g. `cargo update -p ruint --precise 1.17.0`) or bump the optimizer image. |
 | `MsgCreateClient`: `status Unknown: client state is not active` | 08-wasm Stargate allowlist is missing `ClientStatus` — see [Gaia binary](#gaia-binary). |
 | L2 client update panics the tx: `returning attributes from a contract is not allowed` | The deployed wasm predates the fix that made the client return data only. Rebuild through `cosmwasm/optimizer` and gov-store it. |
-| L2 client update fails: `unsigned L2 headers are unsupported` | The producer is stale or misconfigured: the authenticated client requires the relayer to collect the configured threshold of indexed attestor signatures before submitting any router proof. Confirm the relayer and wasm are from the same stack and that `attestor_endpoints`, indices and key set match the fresh authenticated client; see [docs/L2_CLIENTS.md](L2_CLIENTS.md#signed-update-contract). |
+| L2 client update fails: `unsigned L2 headers are unsupported` | The producer is stale or misconfigured: the authenticated client requires the relayer to collect the configured threshold of indexed attestor signatures before submitting any router proof. Confirm the relayer and wasm are from the same stack and that `attestor_endpoints`, indices and key set match the fresh authenticated client; see [docs/runbooks/L2_CLIENTS.md](L2_CLIENTS.md#signed-update-contract). |
 | `only N valid attestor signatures` or `only N attestor frontiers available` | Fewer than the configured threshold of endpoints answered with a valid signature/frontier. The relayer queries endpoints concurrently, so one failed endpoint is tolerated whenever the remaining endpoints still satisfy the threshold; check every endpoint address, immutable index and daemon health. |
 | `updateApplicationState` reverts, ~82k gas, no revert string | The relayer's signer lacks the ICS26Router relayer role on the L2. `cast run <tx>` shows `canCall(...) → false`; funding the address does not help. |
 | `updateApplicationState` / `updateConsensusState` reverts with `ProofVerificationFailed()` on every attempt; packet re-queued forever | `relayer/bin/n4/pk.bin` is not from the same setup as the `Groth16Verifier_N4` registered on that chain (typically `pk.bin` was lost and a new set was generated, or the contracts predate a regeneration). Run `./scripts/local/check_prover_pairing.sh --rpc <evm-rpc>`; fix per [Prover key and verifier must be a pair](#prover-key-and-verifier-must-be-a-pair). |
 | Send fails: `timeout exceeds the maximum expected value` | Sent without `--absolute-timeouts`, so the CLI writes `timeout_timestamp` in nanoseconds while IBC v2 reads seconds. |
 | `eth_getProof failed: historical state ... is not available` | The Ethereum light client on Cosmos is behind, so the execution node has pruned the state it trusts. Stop the relayer that uses this Cosmos signer, run `./relayer update-eth-client --config config.json`, then restart it. The command prints the resulting `latest_slot` and `latest_execution_block_number`; if it says the client is already current, the stale proof has another cause. |
-| Ack fails: `unknown field account_proof, expected one of key, value, proof` | The L2 membership proof was built in the Ethereum L1 shape. The L2 client wants a bare `EvmStorageProof` — see [docs/L2_CLIENTS.md](L2_CLIENTS.md). |
+| Ack fails: `unknown field account_proof, expected one of key, value, proof` | The L2 membership proof was built in the Ethereum L1 shape. The L2 client wants a bare `EvmStorageProof` — see [docs/runbooks/L2_CLIENTS.md](L2_CLIENTS.md). |
 | `packet at height N not yet covered by the destination client (trusts M)` | **L2 → Cosmos:** the attestor frontier has not reached the packet's block yet, so `RelayableHeight` is still below it. It normally clears on the next attestation; if it persists, check the attestor's log. **Ethereum → Cosmos:** the Ethereum beacon light client on Cosmos may be lagging. If it stays behind, stop the relayer that uses this Cosmos signer, run `./relayer update-eth-client --config config.json`, check the reported `latest_slot` and `latest_execution_block_number`, then restart the relayer. If the client is already current, check whether the packet's block is finalized yet. |
 | ETH client stops advancing: `404 NOT_FOUND: Sync committee for period N not found` | The beacon does not serve a `light_client/bootstrap` for that period. The relayer takes the committee from the preceding period's update instead, so this should only appear if that update is also unavailable — check the endpoint serves `/eth/v1/beacon/light_client/updates`. |
 | `the attestor does not recognise L2 block N ... as canonical` | The relayer's L2 RPC and the attestor's replica disagree at that height — a reorg past the frontier, or the two pointed at different chains. Not retried away: confirm both use the same L2. |

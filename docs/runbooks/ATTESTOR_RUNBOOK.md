@@ -87,7 +87,7 @@ updates, and can freeze on explicit authenticated misbehaviour; it has no
 automatic provisional-root replacement or rollback. A root the attestor replaces
 after signing it is itself such evidence, because the signed statement does not
 say whether the root was provisional; see "Provisional attestations" in
-`docs/L2_CLIENTS.md`.
+`docs/runbooks/L2_CLIENTS.md`.
 
 ## `VerifyStateRoot` mismatch or divergence
 

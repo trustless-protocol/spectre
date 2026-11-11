@@ -22,7 +22,7 @@
 #   P2 transient outage relayer points at a stopped attestor: no progress;
 #                       starting the attestor lets the same packet through
 #   P1 happy path       a fresh packet is relayed with a signed header
-# Requires the full Cosmos <-> L2 devnet from docs/E2E.md (contracts, clients,
+# Requires the full Cosmos <-> L2 devnet from docs/runbooks/E2E.md (contracts, clients,
 # relayer/config.json) and the SHARED RELAYER STOPPED: this run signs with the
 # same Cosmos key, and `relayer start` refuses a second process on it. The
 # packet part deploys one TestERC20 to the devnet L2 for the transfers.

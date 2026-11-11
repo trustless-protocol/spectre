@@ -47,7 +47,7 @@ func l2ChainIDFromProfile(profile json.RawMessage) (uint64, error) {
 // client's committed profile, and the docs all saying otherwise. `l2_chain_id`
 // is documented as "must be the chain the relayer's l2_rpc_url actually serves"
 // (relayer/op-l2-config.example.json) and listed as a hand-filled field for
-// every L2 in docs/E2E.md, so an operator reasonably assumes a wrong value is
+// every L2 in docs/runbooks/E2E.md, so an operator reasonably assumes a wrong value is
 // caught. This is what catches it.
 //
 // A NON-ANSWERING endpoint does not fail this configuration comparison. That is

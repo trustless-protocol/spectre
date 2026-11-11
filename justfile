@@ -261,7 +261,7 @@ test-e2e testname: clean-foundry install-go-relayer build-prover-artifacts
 
 # Run the Cosmos -> L2 pause/expire/restart timeout test against a running OP or Base devnet.
 # For example, `just test-l2-timeout relayer/config.json`. The sender defaults to the devnet's
-# `test2` key (it must not be the relayer's COSMOS_PRIVATE_KEY); see docs/E2E.md.
+# `test2` key (it must not be the relayer's COSMOS_PRIVATE_KEY); see docs/runbooks/E2E.md.
 [group('test')]
 test-l2-timeout config:
 	@echo "Running the L2 timeout lifecycle test against {{config}}..."

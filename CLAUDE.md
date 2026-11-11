@@ -8,7 +8,7 @@ Production Solidity implementation of **IBC v2** ("Spectre") for Ethereum ↔ Co
 
 - **Solidity** (`contracts/`) — IBC core, token transfer, ZK light client. The product.
 - **Go** (`relayer/`) — relayer + gnark Groth16 prover. The relayer. Also `attestor/`: the OP and Arbitrum
-  attestor services the L2 clients trust (see `docs/ATTESTOR_RUNBOOK.md`).
+  attestor services the L2 clients trust (see `docs/runbooks/ATTESTOR_RUNBOOK.md`).
 - **Rust** — CosmWasm Ethereum and L2 ICS-08 clients in `programs/cw-ics08-wasm-{eth,op,base,arbitrum}`, with
   their verifier packages in `packages/`.
 
@@ -66,7 +66,7 @@ cd relayer && go build -o relayer ./cmd
 
 Config: JSON file with `modules` array containing `cosmos_to_eth` and `eth_to_cosmos` entries (see `relayer/config.example.json`). Secrets: `relayer/.env` ships with devnet-only sample keys (`ETH_PRIVATE_KEY`, `COSMOS_PRIVATE_KEY`, `COSMOS_CHAIN_ID`, `COSMOS_ADDRESS_PREFIX` — bech32 account prefix, default `cosmos`, `PROVER_BIN_DIR`) — replace before any real deployment.
 
-**One process serves exactly one source → destination pair.** `loadConfig` rejects a config declaring more than one relay path at parse time (`rejectExtraRelayPaths`, `cmd/config.go`), listing every path it found; `appConfig` holds one value per direction, never a list. A Cosmos→L2 destination and its L2→Cosmos return leg count as one path; Cosmos↔ETH is one path driven by a single `cosmos_to_eth` module. Multiple sources therefore means one config file and one process per source — and each process needs **its own `COSMOS_PRIVATE_KEY`**, because `cosmosMu` serializes only within a process. `ETH_PRIVATE_KEY` is narrower: it must differ only between processes writing the **same** EVM chain, since the nonce cache is keyed `(chainID, address)`. For multiple Cosmos sources that condition always holds — they all relay to the same Ethereum router, so two processes sharing an ETH key sit on one nonce domain and will hand out the same nonce. A `cosmos↔eth` process and a `cosmos↔l2` process write different chains and may share one key; `docs/E2E.md` states the rule and why a shared ETH key degrades more gracefully than a shared Cosmos one. A second ETH key is unusable until it is funded **and** granted the router's `RELAYER_ROLE` — `E2ETestDeploy.s.sol` grants it to the deployer alone, and the resulting revert carries no revert string; `docs/E2E.md` has the `grantRole` command. **`start` enforces both rules** — one advisory lock per `{chain id, address}` EVM nonce domain (`cmd/evm_signer_lock.go`) and one on the Cosmos signing address (`cmd/cosmos_signer_lock.go`), both under `/tmp/spectre-relayer-<uid>/`, so a second process on a key one of those domains already holds refuses to boot and names the lock file. `flock` is per machine and per user, so two hosts sharing a key still collide and nothing local sees it. Run `create-clients-cosmos` then `create-clients-eth` once per source, each against that source's own config file (there is no `--source` flag: a file names one source). `config.example.json` is a catalogue of every module and is deliberately NOT runnable — copy `config.{ethereum,op,base,arbitrum}.example.json` instead.
+**One process serves exactly one source → destination pair.** `loadConfig` rejects a config declaring more than one relay path at parse time (`rejectExtraRelayPaths`, `cmd/config.go`), listing every path it found; `appConfig` holds one value per direction, never a list. A Cosmos→L2 destination and its L2→Cosmos return leg count as one path; Cosmos↔ETH is one path driven by a single `cosmos_to_eth` module. Multiple sources therefore means one config file and one process per source — and each process needs **its own `COSMOS_PRIVATE_KEY`**, because `cosmosMu` serializes only within a process. `ETH_PRIVATE_KEY` is narrower: it must differ only between processes writing the **same** EVM chain, since the nonce cache is keyed `(chainID, address)`. For multiple Cosmos sources that condition always holds — they all relay to the same Ethereum router, so two processes sharing an ETH key sit on one nonce domain and will hand out the same nonce. A `cosmos↔eth` process and a `cosmos↔l2` process write different chains and may share one key; `docs/runbooks/E2E.md` states the rule and why a shared ETH key degrades more gracefully than a shared Cosmos one. A second ETH key is unusable until it is funded **and** granted the router's `RELAYER_ROLE` — `E2ETestDeploy.s.sol` grants it to the deployer alone, and the resulting revert carries no revert string; `docs/runbooks/E2E.md` has the `grantRole` command. **`start` enforces both rules** — one advisory lock per `{chain id, address}` EVM nonce domain (`cmd/evm_signer_lock.go`) and one on the Cosmos signing address (`cmd/cosmos_signer_lock.go`), both under `/tmp/spectre-relayer-<uid>/`, so a second process on a key one of those domains already holds refuses to boot and names the lock file. `flock` is per machine and per user, so two hosts sharing a key still collide and nothing local sees it. Run `create-clients-cosmos` then `create-clients-eth` once per source, each against that source's own config file (there is no `--source` flag: a file names one source). `config.example.json` is a catalogue of every module and is deliberately NOT runnable — copy `config.{ethereum,op,base,arbitrum}.example.json` instead.
 
 Circuit setup: `scripts/solidity/build-prover-artifacts.sh` generates the supported N4 pair in ignored staging, smoke-tests it, publishes it, and records provenance. After regeneration the verifying key changes: **redeploy the generated N4 verifier and re-register it via `SignatureVerifier.setBucket(...)`**, or every proof fails on-chain.
 
@@ -116,16 +116,16 @@ relayer/
 
 ## Documentation map
 
-`docs/` is deliberately small: six operational runbooks, nothing else. Architecture, design conventions, security doctrine, test policy, observability guides, and benchmark results are **not** documented in this repo — the code is their only description, and performance numbers exist only in runs you make yourself. Earlier versions of those documents are recoverable from git history (`git log --diff-filter=D -- docs/`) but are stale by definition; do not resurrect a claim from one without re-verifying it against the code. Read the runbook whose domain the task touches.
+`docs/` is deliberately small: six operational runbooks in `docs/runbooks/`, nothing else. Architecture, design conventions, security doctrine, test policy, observability guides, and benchmark results are **not** documented in this repo — the code is their only description, and performance numbers exist only in runs you make yourself. Earlier versions of those documents are recoverable from git history (`git log --diff-filter=D -- docs/`) but are stale by definition; do not resurrect a claim from one without re-verifying it against the code. Read the runbook whose domain the task touches.
 
 | Document | When to read |
 |----------|--------------|
-| [docs/ATTESTOR_RUNBOOK.md](docs/ATTESTOR_RUNBOOK.md) | Operating and recovering the attestor services |
-| [docs/E2E.md](docs/E2E.md) | Bringing up a devnet or running an end-to-end relay |
-| [docs/ERC20_LOCKBOX_ADAPTER.md](docs/ERC20_LOCKBOX_ADAPTER.md) | Deploying or operating an ERC20 lockbox adapter |
-| [docs/L2_CLIENTS.md](docs/L2_CLIENTS.md) | OP, Base, or Arbitrum ICS-08 client work |
-| [docs/PRODUCTION_DEPLOYMENT.md](docs/PRODUCTION_DEPLOYMENT.md) | Governance-gated deployment, escrow launch gate, governed client migration |
-| [docs/MISBEHAVIOUR_RUNBOOK.md](docs/MISBEHAVIOUR_RUNBOOK.md) | Cosmos equivocation incident response |
+| [docs/runbooks/ATTESTOR_RUNBOOK.md](docs/runbooks/ATTESTOR_RUNBOOK.md) | Operating and recovering the attestor services |
+| [docs/runbooks/E2E.md](docs/runbooks/E2E.md) | Bringing up a devnet or running an end-to-end relay |
+| [docs/runbooks/ERC20_LOCKBOX_ADAPTER.md](docs/runbooks/ERC20_LOCKBOX_ADAPTER.md) | Deploying or operating an ERC20 lockbox adapter |
+| [docs/runbooks/L2_CLIENTS.md](docs/runbooks/L2_CLIENTS.md) | OP, Base, or Arbitrum ICS-08 client work |
+| [docs/runbooks/PRODUCTION_DEPLOYMENT.md](docs/runbooks/PRODUCTION_DEPLOYMENT.md) | Governance-gated deployment, escrow launch gate, governed client migration |
+| [docs/runbooks/MISBEHAVIOUR_RUNBOOK.md](docs/runbooks/MISBEHAVIOUR_RUNBOOK.md) | Cosmos equivocation incident response |
 
 Docs can lag the code (they have before — "cache"/"planned" wording for features that shipped). **Code is the source of truth; when a doc contradicts the code, believe the code and flag the doc.**
 
@@ -254,14 +254,8 @@ Docs can lag the code (they have before — "cache"/"planned" wording for featur
 - Explanations: conclusion first, then evidence. If he says it's hard to follow, simplify with a concrete analogy — don't repeat the same abstraction louder.
 - Obsidian vault (`/Users/ducnt/Documents/tmp`): duplicate a note to `<name>-duc.md` before editing; never touch the original unless told per-file.
 
-## Agent skills
+## Issue tracker
 
-### Issue tracker
-
-GitHub Issues on Spectre's `origin` remote, via the `gh` CLI. Labels are not used. See `docs/agents/issue-tracker.md`.
-
-### Domain docs
-
-Single-context: one `GLOSSARY.md` + `docs/adr/` at the repo root, created lazily when a term or decision is first resolved — neither exists yet. Until then the docs-checklist terminology and "Settled design decisions" above play their role. `docs/agents/` and `docs/adr/` are exempt from the "six runbooks only" rule above. See `docs/agents/domain.md`.
+GitHub Issues on Spectre's `origin` remote, via the `gh` CLI. Labels are not used. Creating, commenting on or closing an issue is outward-facing: ask first unless the task asked for that artifact (see "Stop and ask first"). Use the terminology from the docs checklist above in issue titles and bodies.
 
 Claude Code skills, commands and settings are per-developer and live in each developer's own `.claude/` (ignored by git); nothing in this repo depends on them.

@@ -116,7 +116,7 @@ the stricter tier would refuse; with fewer, each shared key is still one of the
 of other keys that would have to sign such a block. Two tiers with the same keys
 and threshold on the same router have identical statements, so every signature
 is valid at both. Neither the daemon nor the relayer detects any of this. See
-[docs/L2_CLIENTS.md](../../docs/L2_CLIENTS.md#signed-update-contract) for the
+[docs/runbooks/L2_CLIENTS.md](../../docs/runbooks/L2_CLIENTS.md#signed-update-contract) for the
 statement layout.
 
 `server` block: `port` serves Prometheus on `/metrics`; `grpc_port` serves the

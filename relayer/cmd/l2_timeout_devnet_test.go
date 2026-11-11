@@ -6,7 +6,7 @@
 //
 // It is one test for every attestor-backed L2 (OP, Base): the rollup is chosen by
 // the config file, not by the test. It is behind a build tag because it needs a
-// devnet brought up with the scripts in docs/E2E.md (L2 + attestor + Cosmos +
+// devnet brought up with the scripts in docs/runbooks/E2E.md (L2 + attestor + Cosmos +
 // gov-stored wasm + L2 contracts + both clients). Run once per rollup:
 //
 //	L2_TIMEOUT_CONFIG=$PWD/config.json \

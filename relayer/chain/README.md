@@ -152,7 +152,7 @@ using disjoint attestor keys**: an attestor daemon configured for `finalized`
 refuses to sign a `VerifyStateRoot` request whose `run_mode` doesn't match its
 own configured head (`attestor/optimism/adapter/adapter.go`). That per-daemon
 check is enforced; cross-tier key separation across an operator's whole fleet
-is not currently checked by the relayer config loader (see `docs/L2_CLIENTS.md`)
+is not currently checked by the relayer config loader (see `docs/runbooks/L2_CLIENTS.md`)
 — it's an operational requirement today, not yet a validated one.
 
 ## Reliability behaviors
@@ -217,7 +217,7 @@ packages the result as `ClientUpdate.Payloads[0]`. The L2 wasm client
 quorum against its stored attestor public-key set, then the router account
 proof against the header's state root — it does **not** verify any L1
 rollup-contract witness, and it does not defer to the shared `cw-ics08-wasm-eth`
-client. See `docs/L2_CLIENTS.md` for the full wire contract and the
+client. See `docs/runbooks/L2_CLIENTS.md` for the full wire contract and the
 development-only status gate.
 
 `attestedHeaderBuilder` is the single `HeaderBuilder` implementation, shared by
@@ -237,7 +237,7 @@ match the requested L2 height and confirmation policy.
   (`header_attested.go`), event listener with gap-recovery (`subscribe.go`),
   storage/account proof assembly (`source.go`), and Cosmos destination
   submission (`destination.go`). See the L2 section above and
-  `docs/L2_CLIENTS.md`.
+  `docs/runbooks/L2_CLIENTS.md`.
 - The command layer assembles `services.RelayDeps`, while adapters and transaction
   handlers receive only the scoped `CosmosEndpoint`, `EVMEndpoint`, `ClientIDs`,
   and config values they consume.

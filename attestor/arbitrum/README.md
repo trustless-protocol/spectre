@@ -36,7 +36,7 @@ canonical L2 execution header only with this daemon's Ed25519 signature and
 verifies the router account proof against the signed header state root. Thus
 `source` and `attestation_head` govern what this daemon will sign; the
 permissionless Cosmos transaction sender cannot fabricate the signed block
-identity. See `docs/L2_CLIENTS.md` for the exact signature format.
+identity. See `docs/runbooks/L2_CLIENTS.md` for the exact signature format.
 
 ## Prerequisites
 
@@ -85,7 +85,7 @@ Copy `config.example.json` to `config.json` and configure:
   L1-finalized view. The default is `finalized` when omitted. It applies only
   to derived entries: assertion-backed entries are resolved at Nitro's
   `finalized` head, or at `safe` and served provisional until that head
-  reaches the block. `docs/L2_CLIENTS.md` ("Provisional attestations")
+  reaches the block. `docs/runbooks/L2_CLIENTS.md` ("Provisional attestations")
   explains why.
 - `l1_ingest_head`: Ethereum L1 head used to discover assertions: `finalized`
   (the default), `safe`, or `latest`. This does not change `attestation_head`.
@@ -316,7 +316,7 @@ A failed call returns its gRPC code and a classified message only (for example
 `query Nitro finalized head`). The upstream error behind it is not returned,
 because it quotes the Nitro or L1 URL and an RPC provider's API key can be part
 of that URL; it is in the attestor's log with URLs reduced to scheme and host
-(see the [runbook](../../docs/ATTESTOR_RUNBOOK.md#supported-transport-boundary)).
+(see the [runbook](../../docs/runbooks/ATTESTOR_RUNBOOK.md#supported-transport-boundary)).
 
 `AttestedUpTo(src_chain, include_provisional)` returns the highest qualifying
 verified commitment. `AttestedRootAtOrBelow` applies an inclusive L2-height
@@ -387,7 +387,7 @@ does a feed that is frozen behind it.
 Prometheus metrics use the `spectre_arbitrum_attestor_*` prefix and only the
 configured `chain` label. They cover Nitro heads and refresh failures, L1
 assertion backlog, provisional roots, divergence/reorg records, and durable
-save failures. See the shared [attestor operations runbook](../../docs/ATTESTOR_RUNBOOK.md)
+save failures. See the shared [attestor operations runbook](../../docs/runbooks/ATTESTOR_RUNBOOK.md)
 for the supported plaintext boundary and the required response to a mismatch.
 
 The relayer builds the same header at every head kind: the canonical Nitro L2

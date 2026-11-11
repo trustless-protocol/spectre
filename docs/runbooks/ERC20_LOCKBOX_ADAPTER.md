@@ -3,10 +3,10 @@
 How to bridge a Cosmos-native denom into an ERC20 that **already exists on Ethereum** and cannot mint
 or burn.
 
-- Contract: [`contracts/apps/ics20/ERC20LockboxAdapter.sol`](../contracts/apps/ics20/ERC20LockboxAdapter.sol)
-- Interface: [`contracts/apps/ics20/interfaces/IERC20LockboxAdapter.sol`](../contracts/apps/ics20/interfaces/IERC20LockboxAdapter.sol)
-- Errors: [`contracts/apps/ics20/errors/IERC20LockboxAdapterErrors.sol`](../contracts/apps/ics20/errors/IERC20LockboxAdapterErrors.sol)
-- Tests: [`test/apps/ics20/ERC20LockboxAdapterTest.t.sol`](../test/apps/ics20/ERC20LockboxAdapterTest.t.sol)
+- Contract: [`contracts/apps/ics20/ERC20LockboxAdapter.sol`](../../contracts/apps/ics20/ERC20LockboxAdapter.sol)
+- Interface: [`contracts/apps/ics20/interfaces/IERC20LockboxAdapter.sol`](../../contracts/apps/ics20/interfaces/IERC20LockboxAdapter.sol)
+- Errors: [`contracts/apps/ics20/errors/IERC20LockboxAdapterErrors.sol`](../../contracts/apps/ics20/errors/IERC20LockboxAdapterErrors.sol)
+- Tests: [`test/apps/ics20/ERC20LockboxAdapterTest.t.sol`](../../test/apps/ics20/ERC20LockboxAdapterTest.t.sol)
 
 ## When you need it
 
@@ -199,7 +199,7 @@ ics20Transfer.activateEscrow(clientId, tokens);
 
 ### Scripted deployment
 
-[`scripts/ERC20LockboxAdapterDeploy.s.sol`](../scripts/ERC20LockboxAdapterDeploy.s.sol) performs the steps above in
+[`scripts/ERC20LockboxAdapterDeploy.s.sol`](../../scripts/ERC20LockboxAdapterDeploy.s.sol) performs the steps above in
 that order. It reads its configuration from the environment:
 
 | Variable | Meaning |

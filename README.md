@@ -149,7 +149,7 @@ attestor sidecars, and Slither.
 
 ## Running it end to end
 
-Bring-up runbooks live in **[docs/E2E.md](docs/E2E.md)** — Cosmos↔Ethereum,
+Bring-up runbooks live in **[docs/runbooks/E2E.md](docs/runbooks/E2E.md)** — Cosmos↔Ethereum,
 Cosmos↔OP, Cosmos↔Arbitrum, Cosmos↔Base, running against an L2 you did not
 deploy, sending test packets in both directions, and the failure modes each
 step produces.
@@ -159,11 +159,11 @@ step produces.
 The repository also contains independent CosmWasm clients for OP Sepolia, Base
 Sepolia, and Arbitrum Sepolia. Their deployment evidence requirements,
 host-query wiring, and verification commands are documented in
-[docs/L2_CLIENTS.md](docs/L2_CLIENTS.md).
+[docs/runbooks/L2_CLIENTS.md](docs/runbooks/L2_CLIENTS.md).
 
 ## Production deployment
 
-See [docs/PRODUCTION_DEPLOYMENT.md](docs/PRODUCTION_DEPLOYMENT.md) before using
+See [docs/runbooks/PRODUCTION_DEPLOYMENT.md](docs/runbooks/PRODUCTION_DEPLOYMENT.md) before using
 the production AccessManager deployment scripts. It documents the governance
 timelock requirement, the escrow launch gate, and the scheduled light-client
 provisioning flow.
@@ -193,7 +193,7 @@ COSMOS_PRIVATE_KEY=$KEY_OP_PATH  ./relayer start --config config.op.json &
 ```
 
 Full reasoning, including the one other command that shares the Cosmos key:
-[docs/E2E.md](docs/E2E.md#signing-keys-when-several-processes-share-a-chain).
+[docs/runbooks/E2E.md](docs/runbooks/E2E.md#signing-keys-when-several-processes-share-a-chain).
 
 ## Optional GPU proving
 
