@@ -134,7 +134,7 @@ services and Slither.
 |---|---|
 | [docs/runbooks/E2E_LOCAL.md](docs/runbooks/E2E_LOCAL.md) | Bringing up Cosmos↔Ethereum, Cosmos↔OP, Cosmos↔Arbitrum and Cosmos↔Base; sending test packets in both directions; the signing-key rules when several relayer processes run side by side; the failures each step can produce |
 | [docs/runbooks/E2E_TESTNET.md](docs/runbooks/E2E_TESTNET.md) | Relaying against a public L2 testnet (OP Sepolia, Arbitrum Sepolia, Base Sepolia): values to fill in by hand, provider limits |
-| [docs/runbooks/L2_CLIENTS.md](docs/runbooks/L2_CLIENTS.md) | The CosmWasm clients for OP Sepolia, Base Sepolia and Arbitrum Sepolia: deployment evidence, host-query wiring, verification commands |
+| [docs/runbooks/L2_CLIENTS.md](docs/runbooks/L2_CLIENTS.md) | The CosmWasm clients for OP, Base and Arbitrum: client state and profile, attestor rotation, the signed update contract, provisional attestations, validation |
 | [docs/runbooks/PRODUCTION_DEPLOYMENT.md](docs/runbooks/PRODUCTION_DEPLOYMENT.md) | The production AccessManager deployment scripts: governance timelock, escrow launch gate, scheduled light-client provisioning. Read it before using those scripts |
 | [docs/runbooks/ATTESTOR.md](docs/runbooks/ATTESTOR.md) | Operating and recovering the attestor services |
 | [docs/runbooks/MISBEHAVIOUR.md](docs/runbooks/MISBEHAVIOUR.md) | Responding to misbehaviour (equivocation) on the Cosmos chain |

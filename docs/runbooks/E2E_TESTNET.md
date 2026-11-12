@@ -5,15 +5,27 @@ Arbitrum Sepolia or Base Sepolia. The Cosmos chain is still the local Gaia node,
 L2 contracts are still deployed with the test script `E2ETestDeployL2`. For a production
 deployment see [PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md).
 
-Read [E2E_LOCAL.md](E2E_LOCAL.md) first. Each flow here replaces the first step of the matching
-local flow,
-and the following sections of that runbook apply unchanged:
+Read [E2E_LOCAL.md](E2E_LOCAL.md) first, and complete steps 1 and 2 of its Ethereum flow (prover
+artifacts and relayer binary). Each flow below is complete in itself: it runs the attestor against
+an existing L2 where the local flow starts its own. These sections of the local runbook apply
+unchanged:
 
 - [Gaia binary](E2E_LOCAL.md#gaia-binary)
 - [Prover key and verifier must be a pair](E2E_LOCAL.md#prover-key-and-verifier-must-be-a-pair)
 - [Signing keys when several processes share a chain](E2E_LOCAL.md#signing-keys-when-several-processes-share-a-chain)
 - [Sending a test packet](E2E_LOCAL.md#sending-a-test-packet)
 - [Failure modes](E2E_LOCAL.md#failure-modes)
+
+## Table of contents
+
+- [OP Sepolia](#op-sepolia)
+  - [Values to fill in by hand (OP)](#values-to-fill-in-by-hand-op)
+- [Arbitrum Sepolia](#arbitrum-sepolia)
+  - [Values to fill in by hand (Arbitrum)](#values-to-fill-in-by-hand-arbitrum)
+- [Base Sepolia](#base-sepolia)
+  - [Values to fill in by hand (Base)](#values-to-fill-in-by-hand-base)
+- [Values the tooling fills in](#values-the-tooling-fills-in)
+- [One RPC budget, two processes](#one-rpc-budget-two-processes)
 
 ## OP Sepolia
 
@@ -57,8 +69,7 @@ cp relayer/config.op.example.json relayer/config.json
 
 Then fill in the fields listed in "Values to fill in by hand (OP)" below.
 
-**Step 4.** Deploy the L2 contracts with a key funded ON THAT L2. DO THIS BEFORE STARTING THE
-ATTESTOR if both share one rate-limited RPC: see "One RPC budget, two processes" below.
+**Step 4.** Deploy the L2 contracts with a key funded ON THAT L2. If the attestor and this deploy share one rate-limited RPC, run this step before step 1: see "One RPC budget, two processes" below.
 
 ```bash
 DST_CHAIN=opstack L2_RPC=http://<host>:8545 RELAYER_CONFIG=relayer/config.json \
@@ -135,8 +146,9 @@ cast call $PORTAL "respectedGameType()(uint32)"  --rpc-url $L1_RPC_URL
 **The replica must serve `eth_getProof` below its head.** The relayer proves the
 router account at the attested height, which trails the head, and op-reth's default
 proof window is small: a node serving only `latest` fails every build with
-`distance to target block exceeds maximum proof window`. The mode-2 bring-up in
-`run_op_attestor.sh` starts op-reth with `--rpc.eth-proof-window=100000`; an external
+`distance to target block exceeds maximum proof window`. When `run_op_attestor.sh`
+starts its own replica (given `OP_RETH_BIN` and `OP_NODE_BIN`), it runs op-reth with
+`--rpc.eth-proof-window=100000`; an external
 replica needs the operator to have done the same. Check before starting:
 
 ```bash
@@ -198,8 +210,7 @@ cp relayer/config.arbitrum.example.json relayer/config.json
 
 Then fill in the fields listed in "Values to fill in by hand (Arbitrum)" below.
 
-**Step 4.** Deploy the L2 contracts with a key funded ON Arbitrum Sepolia. DO THIS BEFORE
-STARTING THE ATTESTOR if both share one rate-limited RPC: see "One RPC budget, two processes"
+**Step 4.** Deploy the L2 contracts with a key funded ON Arbitrum Sepolia. If the attestor and this deploy share one rate-limited RPC, run this step before step 1: see "One RPC budget, two processes"
 below.
 
 ```bash
@@ -342,8 +353,8 @@ cp relayer/config.base.example.json relayer/config.json
 Then fill in the fields listed in "Values to fill in by hand (Base)" below.
 
 **Step 4.** Deploy the L2 contracts with a key funded ON Base Sepolia. `MODULE_NAME` is still
-required: `dst_chain` is "opstack" and would also match cosmos-to-op. DO THIS BEFORE STARTING
-THE ATTESTOR if both share one rate-limited RPC: see "One RPC budget, two processes" below.
+required: `dst_chain` is "opstack" and would also match cosmos-to-op. With `L2_RPC` and
+`MODULE_NAME` set, `DST_CHAIN` selects nothing else, so `opstack` and `base` behave the same here. If the attestor and this deploy share one rate-limited RPC, run this step before step 1: see "One RPC budget, two processes" below.
 
 ```bash
 DST_CHAIN=opstack MODULE_NAME=cosmos-to-base \

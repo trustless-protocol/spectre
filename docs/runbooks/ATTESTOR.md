@@ -1,5 +1,23 @@
 # Attestor operations and divergence
 
+An **attestor** is an off-chain daemon that signs the identity of an L2 block (number, hash and
+state root). The L2 light clients on Cosmos (OP, Base, Arbitrum) verify neither the rollup's L1
+contracts nor a ZK proof: they accept an L2 header only when it carries Ed25519 signatures from a
+threshold of the attestors pinned in the client. Each attestor checks a block against a node it
+reads itself before signing. The relayer asks the attestors for signatures and for the highest
+height they have attested. Component details are in
+[attestor/optimism](../../attestor/optimism/README.md) (OP and Base) and
+[attestor/arbitrum](../../attestor/arbitrum/README.md); the client side is in
+[L2_CLIENTS.md](L2_CLIENTS.md).
+
+## Table of contents
+
+- [Supported transport boundary](#supported-transport-boundary)
+- [Error redaction](#error-redaction)
+- [What to watch](#what-to-watch)
+- [Opt-in early Arbitrum assertions](#opt-in-early-arbitrum-assertions)
+- [`VerifyStateRoot` mismatch or divergence](#verifystateroot-mismatch-or-divergence)
+
 ## Supported transport boundary
 
 Direct `AttestorService` gRPC is a same-host sidecar interface. Native

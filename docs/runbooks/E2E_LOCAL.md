@@ -6,6 +6,29 @@ Running against a public L2 testnet is in [E2E_TESTNET.md](E2E_TESTNET.md).
 Prerequisites are in [the README](../../README.md#requirements); these runbooks assume
 the toolchain is in place and add Docker + Kurtosis on top.
 
+## Table of contents
+
+- [Before you start](#before-you-start)
+  - [Terms](#terms)
+  - [One L1, shared between rollups](#one-l1-shared-between-rollups)
+- [Local Cosmos ↔ Ethereum E2E](#local-cosmos--ethereum-e2e)
+  - [Gaia binary](#gaia-binary)
+  - [Steps](#steps)
+- [Local Cosmos ↔ OP E2E](#local-cosmos--op-e2e)
+- [Local Cosmos ↔ Arbitrum E2E](#local-cosmos--arbitrum-e2e)
+- [Local Cosmos ↔ Base E2E](#local-cosmos--base-e2e)
+  - [Base devnet commands](#base-devnet-commands)
+- [Adding an L2 to a deployment that already relays Cosmos↔Ethereum](#adding-an-l2-to-a-deployment-that-already-relays-cosmosethereum)
+- [Sending a test packet](#sending-a-test-packet)
+  - [Return-direction latency is set by the attestor, not the prover](#return-direction-latency-is-set-by-the-attestor-not-the-prover)
+  - [Sending back (L2 → Cosmos)](#sending-back-l2--cosmos)
+- [Automated timeout recovery test](#automated-timeout-recovery-test)
+- [`router_deploy_block`: where packet-flush log lookups start](#router_deploy_block-where-packet-flush-log-lookups-start)
+- [Signing keys when several processes share a chain](#signing-keys-when-several-processes-share-a-chain)
+- [Relayer logs](#relayer-logs)
+- [Prover key and verifier must be a pair](#prover-key-and-verifier-must-be-a-pair)
+- [Failure modes](#failure-modes)
+
 ## Before you start
 
 This section applies to every flow below.
@@ -19,13 +42,28 @@ Two things that are easy to get wrong before you start:
 
 - **The circuit artifacts are not in the repo.** `.gitignore` excludes every
   `contracts/verifiers/Groth16Verifier_N*.sol`, so a fresh clone has none and
-  `forge build` fails on `E2ETestDeployL2`'s import. Step 1 of the first runbook
-  below is mandatory, not optional, and the `bin/` it writes must stay paired with
+  `forge build` fails on `E2ETestDeployL2`'s import. Step 1 of
+  [Local Cosmos ↔ Ethereum E2E](#local-cosmos--ethereum-e2e) is mandatory, and the `bin/` it writes must stay paired with
   the verifiers it emitted, because each `Setup()` produces a different verifying
   key. Deploying verifiers from one run and proving with another's `pk.bin` makes
   every proof revert on chain.
 - **Gaia must be the custom-host build.** The scripts require the checkout to be on
   `test/ibc-host-customs`; see [Gaia binary](#gaia-binary) below.
+
+### Terms
+
+| Term | Meaning |
+|---|---|
+| Relay path | One source → destination pair, served by one `./relayer start` process. Cosmos↔Ethereum is one path; Cosmos↔OP is another |
+| Module | One entry in the `modules` array of the relayer config. The **forward module** relays Cosmos → EVM (`cosmos-to-eth`, `cosmos-to-op`); the **return module** relays EVM → Cosmos (`eth-to-cosmos`, `op-to-cosmos`) |
+| Enclave | Kurtosis's isolated environment that holds the devnet services |
+| Handoff | The env file a node script writes for the scripts that follow it, such as `.eth-devnet-run/eth.env` or `.op-devnet-run/attestor.env` |
+| Attestor | The daemon whose signatures the L2 clients on Cosmos trust. See [ATTESTOR.md](ATTESTOR.md) |
+| Frontier | The highest L2 height an attestor has attested. The relayer cannot relay an L2 packet above it |
+| Derived root | A root the attestor reads from its own replica at its configured head, independent of any proposal on L1 |
+| Game | An OP Stack dispute-game proposal on L1 (`DisputeGameFactory`) |
+| `head_kind` | The L2 head the return module relays at: `unsafe`, `safe` or `finalized`. It must match the attestor's `ATTESTATION_HEAD` |
+| Fulu | The Ethereum fork the devnet L1 runs from genesis |
 
 ### One L1, shared between rollups
 
@@ -46,171 +84,6 @@ Sharing is per **enclave**, and the defaults differ: `run_optimism_node.sh` and
 plain ETH↔Cosmos devnet (`run_eth_node.sh` on its own) uses `my-testnet` and is a
 separate L1. Set `ENCLAVE` explicitly to put them together.
 
-### Signing keys when several processes share a chain
-
-`start` serves exactly one relay path per process, so any deployment with more than
-one path runs more than one process. Two rules follow, and they are not the same
-rule for the two chains.
-
-**Every `start` process needs its own `COSMOS_PRIVATE_KEY`.** This holds for *every*
-path, including one that looks like it only writes to an EVM chain: a Cosmos→L2
-process still refunds expired Cosmos-origin packets **on Cosmos** through its timeout
-scanner. So the running example (one `cosmos↔eth` process plus one `cosmos↔l2`
-process against the same Cosmos chain) needs two keys, not one:
-
-| Process | Writes Cosmos from |
-| --- | --- |
-| `cosmos↔eth` | the eth→cosmos direction, and `ScanCosmosTimeouts` refunds |
-| `cosmos↔l2` | the l2→cosmos return leg, and `ScanCosmosTimeouts` refunds |
-| `cosmos→l2`, forward only | `ScanCosmosTimeouts` refunds |
-
-There is no `start` configuration that never writes to Cosmos, which is why the rule
-has no exceptions to remember.
-
-Sharing one key means sharing one account sequence, and nothing coordinates the two
-processes. Each reads the sequence from committed state before signing, so the
-collision window is a whole block, not an instant. If both processes talk to the same
-RPC node the loser fails at CheckTx, which the relayer treats as transient and
-retries, which is wasteful but safe. If they talk to **different** nodes both pass CheckTx and
-the loser fails at DeliverTx instead, which is classified as a deterministic on-chain
-failure: a single-packet transaction is then **dropped**, and its funds sit in escrow
-until the timeout scanner refunds them. A shared key turns an infrastructure race into
-a failed user transfer.
-
-**`ETH_PRIVATE_KEY` only needs to differ between processes writing the same EVM
-chain.** Nonces are tracked per `{chain id, address}`, so the `cosmos↔eth` process
-(L1) and the `cosmos↔l2` process (L2) can share one key: different chains, independent
-nonces. Two `cosmos↔eth` processes relaying two Cosmos sources into the *same* L1 do
-need separate keys.
-
-A shared ETH key also degrades more gracefully than a shared Cosmos one: an
-unrecognised broadcast error invalidates the cached nonce and returns a transient
-error, so the packet is re-queued rather than dropped.
-
-**`start` enforces both rules**, with one advisory lock per contended resource, all
-under `/tmp/spectre-relayer-<uid>/`.
-
-The EVM half takes one lock per nonce domain it can write: a file per
-`{chain id, address}`, named `evm-signer-<chain id>-<address>.lock`
-(`cmd/evm_signer_lock.go`). The chain id is resolved from each configured
-endpoint at startup rather than read from the config, so the lock names the domain
-the process will actually write. A `cosmos<->eth` and a `cosmos<->l2` process write
-different chains, take different locks, and may share one key -- the guard permits
-exactly what the rule above permits.
-
-The Cosmos half takes one lock on the signing address alone, named
-`cosmos-signer-<address>.lock` (`cmd/cosmos_signer_lock.go`). Deliberately nothing
-else is in that name -- not the chain id, not the config path, not the state
-directory. A lock named after anything the runbook tells operators to vary per
-process is not a lock: the two processes it exists to catch each take their own file
-and both start. The directory itself reads no environment variable for the same
-reason, since `.env` is loaded before the lock is taken.
-
-Either lock refuses to boot and names the address and the lock file, instead of
-colliding at the first submission. Both are `flock`, so they reach one user on one
-machine; two hosts sharing a key still collide and nothing local can see it.
-
-**A second ETH key is not usable until it is funded AND granted the router's
-`RELAYER_ROLE`.** A key that lacks funds and a key that lacks the role fail in the same way from
-the relayer's side: `E2ETestDeploy.s.sol:95-96` builds
-a one-element relayer list and grants the role to `msg.sender` alone, so any key
-other than the deployer's is unauthorized. `updateApplicationState` then reverts with
-a bare custom error: no revert string, and nothing in the relayer log beyond
-`execution reverted`. Funding the address does not help; it is authorization, not
-gas. `cast run <tx>` names the cause in one line: `canCall(<signer>, <ICS26Router>,
-0x9c11bece) -> false`.
-
-Grant it from the AccessManager admin, which is the account that deployed the
-contracts. `RELAYER_ROLE` is `1` (`contracts/shared/access/IBCRolesLib.sol:14`):
-
-```bash
-AM=$(cast call <ICS26Router> "authority()(address)" --rpc-url $RPC)
-cast send $AM "grantRole(uint64,address,uint32)" 1 <second-relayer-address> 0 \
-  --private-key <deployer-key> --rpc-url $RPC
-```
-
-Then fund the address for gas. Repeat per extra EVM signer, and per chain: a key
-authorized on the L1 router has no standing on an L2 router.
-
-**`create-clients-cosmos` and `update-eth-client` sign with the same key.** They are
-the commands besides `start` that write to Cosmos, so running either against a chain a
-`start` process is already relaying will collide. Give it its own key, or run it while
-`start` is stopped. The other commands do not touch the Cosmos signer: `update-client`
-and `create-clients-eth` submit to Ethereum, `submit-misbehaviour` submits to Ethereum
-under its own `MISBEHAVIOUR_PRIVATE_KEY`, and `genesis` broadcasts nothing.
-
-Keys can be set per process without touching `relayer/.env`: `godotenv` does not
-override a variable that is already set, so the export wins. Each runbook below
-copies its example to `relayer/config.json`, so running two paths at once means
-naming the second copy something else:
-
-```bash
-COSMOS_PRIVATE_KEY=$KEY_ETH_PATH ./relayer start --config config.json &
-COSMOS_PRIVATE_KEY=$KEY_OP_PATH  ./relayer start --config config.op.json &
-```
-
-Each key is a distinct account and needs its own gas balance on the Cosmos chain.
-
-## Relayer logs
-
-Every log line of the relayer carries a level. `--log-level` /
-`RELAYER_LOG_LEVEL` (`debug`, `info`, `warn`, `error`; default `info`) and
-`--log-format` / `RELAYER_LOG_FORMAT` (`json`, `console`, `auto`; default `auto`)
-are accepted by every subcommand. The flag takes precedence over the variable.
-
-- **Source of the variables.** They are read from the process environment.
-  `relayer/.env` is loaded inside each command, after the logger exists, so
-  values there have no effect.
-- **Invalid values.** An invalid value never stops the relayer. It is ignored
-  and reported in the log, and the default is used.
-- **JSON format.** Each line has `level`, `ts` (epoch seconds), `caller`, `msg`
-  and, under `start`, `relay_path`. This is the format a log viewer reads. If
-  the relayer runs with a terminal attached (`docker run -t`), pass
-  `--log-format json` explicitly, because `auto` picks `console`.
-- **Failed commands.** cobra prints its own `Error: ...` line and the usage text
-  as plain lines. The same error is then logged once at `fatal`. Alert on the
-  `fatal` line.
-- **gnark.** gnark has its own logger, which by default prints three console
-  lines on stdout for every proof. The relayer routes it through the same
-  stream. These lines read `[gnark] <message>`, carry `"component":"gnark"` and
-  no `caller`, and keep gnark's own fields under a `gnark` key (`took` is in
-  milliseconds), so they cannot shadow `level` or `msg`. The per-proof lines are
-  `debug`; a warning or an error from gnark keeps its level.
-
-## Prover key and verifier must be a pair
-
-Every Cosmos → EVM update (`updateApplicationState`, `updateConsensusState`) carries a
-Groth16 proof made with `relayer/bin/n4/pk.bin` and checked by the
-`Groth16Verifier_N4` registered in `SignatureVerifier.buckets(4)` on the destination
-chain (L1 or L2). The two come from one `scripts/solidity/build-prover-artifacts.sh`
-run. If they are from different setups nothing fails at deploy or at send time:
-the packet is accepted on Cosmos and the relayer then logs `ProofVerificationFailed()` on
-every attempt and re-queues it forever. `pk.bin` is git-ignored and cannot be recovered
-once lost; a set generated elsewhere (for example with `go run ./prover/cmd <dir>`) is a
-different setup, even though it looks identical.
-
-`scripts/local/check_prover_pairing.sh` checks this and exits 1 with a warning banner:
-
-```bash
-# Before deploying: r1cs/pk/vk/verifier on disk are the set that
-# build-prover-artifacts.sh published together (.artifacts/solidity/prover/provenance.json).
-# r1cs/pk/vk are read from where the relayer will load them: PROVER_BIN_DIR from the
-# environment, else from relayer/.env, else ./bin (relative to relayer/; --relayer-dir
-# overrides) -- not blindly from relayer/bin.
-# deploy_eth_contracts.sh and deploy_l2_contracts.sh already run this and stop on a mismatch.
-./scripts/local/check_prover_pairing.sh
-
-# Before sending a packet or starting the relayer: additionally, the verifier registered
-# on-chain is byte-identical to what forge compiled from the local Groth16Verifier_N4.sol.
-# Needs a `forge build` of the current source (matched by content hash, not by timestamp); --signature-verifier defaults to .l2-deployment.json.
-./scripts/local/check_prover_pairing.sh --rpc <evm-rpc> [--signature-verifier <addr>]
-```
-
-`PROVER_PAIRING=warn` prints the banner but continues. On a mismatch, regenerate the set
-with `scripts/solidity/build-prover-artifacts.sh --force`, then redeploy the contracts and
-recreate both clients (a new router also changes `l2_router` in the Cosmos-side client
-profile). See the `ProofVerificationFailed()` row in the L2 [Failure modes](#failure-modes) table.
-
 ## Local Cosmos ↔ Ethereum E2E
 
 End-to-end run on local Cosmos + Ethereum nodes. Requires Docker + Kurtosis on
@@ -221,7 +94,8 @@ top of the toolchain in [Requirements](../../README.md#requirements).
 The Cosmos scripts need the custom Gaia build carrying the IBC host changes: most
 visibly the 08-wasm Stargate allowlist entry for `ClientStatus`, without which L2
 client creation fails with `status Unknown`. They default to `../gaia/build/gaiad`
-and require that checkout to be **on** `test/ibc-host-customs`:
+and require that checkout to be **on** `test/ibc-host-customs`. This repository does not record
+where that Gaia fork is hosted; get the checkout from the team.
 
 ```bash
 cd ../gaia
@@ -243,60 +117,35 @@ $GAIAD version                         # -> test/ibc-host-customs-<sha>
 strings $GAIAD | grep -c ClientStatus  # -> non-zero
 ```
 
-### Prover artifacts for a local run
-
-`go run ./prover/cmd ./bin ../contracts/verifiers`
-already defaults `-buckets` to `"4"` (`relayer/prover/cmd/main.go:35`), which
-is the only bucket the local single-validator chain uses: no edit needed.
-Compiling the full family takes 30+ minutes (bucket 128 alone is ~30 min); to
-build the full production set, or a specific subset, pass it explicitly:
-
-```bash
-go run ./prover/cmd -buckets 4,8,16,32,64,128 ./bin ../contracts/verifiers
-```
-
-Each value must be a member of the protocol's bucket family declared in
-`relayer/prover/witness/buckets.go:14` (`SupportedBuckets`); an unsupported
-value is rejected before any compile starts (`relayer/prover/cmd/main.go:217-219`).
-`-list-buckets` prints the resolved set without building anything.
-
-The repo ships **no** generated verifiers: `.gitignore` excludes
-`contracts/verifiers/Groth16Verifier_N*.sol`, so `git ls-tree` lists none and a
-fresh clone has none. Step 1 below writes them, and `forge build` fails without
-it (`scripts/E2ETestDeployL2.s.sol` imports `Groth16Verifier_N4`).
-
-Whatever buckets you compile must cover the chain's quorum: a signer count with
-no bucket makes `SignatureVerifier.verifyBatchProof` revert `UnknownBucket(N)`.
-Chains larger than the local devnet need the bigger buckets built and deployed.
-
 ### Steps
 
-**Step 1.** REQUIRED on a fresh clone: compile per-bucket circuits + emit
-`Groth16Verifier_N{N}.sol`. Neither the circuit artifacts nor the verifiers are committed.
-Re-run when circuit code changes, and redeploy the verifiers with it, because a new Setup()
-means a new verifying key and stale verifiers reject every proof. CPU default:
+Run every command from the repository root unless a step says otherwise.
+
+**Step 1.** Build the prover artifacts and the verifier contract. Follow steps 1 to 3 of
+[Build and test](../../README.md#build-and-test), which end with:
 
 ```bash
-cd relayer
-go run ./prover/cmd ./bin ../contracts/verifiers
+just build-prover-artifacts
 ```
 
-GPU variant:
+This builds bucket N=4, the only bucket the local single-validator chain needs, and records which
+proving key belongs to which verifier. Step 3 checks that record (see
+[Prover key and verifier must be a pair](#prover-key-and-verifier-must-be-a-pair)), so do not
+generate the artifacts with `go run ./prover/cmd` directly. A chain with more signers needs a
+larger bucket: a signer count with no bucket makes `SignatureVerifier.verifyBatchProof` revert
+`UnknownBucket(N)`.
+
+**Step 2.** Build the relayer binary. The linker needs the library path described in
+[Garaga FFI](../../README.md#garaga-ffi).
 
 ```bash
-go run -tags=icicle ./prover/cmd -gpu-prove ./bin ../contracts/verifiers
-```
-
-**Step 2.** Build the relayer binary
-
-```bash
-go build -o relayer ./cmd
+(cd relayer && go build -o relayer ./cmd)
 ```
 
 GPU build:
 
 ```bash
-go build -tags=icicle -o relayer ./cmd
+(cd relayer && go build -tags=icicle -o relayer ./cmd)
 ```
 
 **Step 3.** Start Ethereum first and wait until the beacon node finalizes. Beacon RPC is pinned
@@ -356,6 +205,7 @@ Tendermint light client wired to that id (writing `spectre_client`). Both write 
 script in step 3 patches all three in.
 
 ```bash
+cd relayer
 ./relayer create-clients-cosmos --config config.json --wasm-checksum <hex-from-wasm.sh>
 ./relayer create-clients-eth    --config config.json --trust-level 2/3
 ```
@@ -392,7 +242,8 @@ SAME L1 router, its own `ETH_PRIVATE_KEY` too. See "Signing keys when several pr
 chain" above for why, for what each extra ETH key has to be granted, and for the cases where
 sharing one ETH key is fine.
 
-**Step 7.** Send packet
+**Step 7.** Send a packet. The relayer keeps running in the first terminal, so open a second
+terminal at the repository root.
 
 ```bash
 . ./scripts/local/gaiad_binary.sh
@@ -429,6 +280,10 @@ WRAPPED=$(cast call <ICS20Transfer> 'ibcERC20Contract(string)(address)' \
 cast call "$WRAPPED" 'balanceOf(address)(uint256)' <receiver> --rpc-url <eth-rpc>
 ```
 
+`<cosmos-client-on-eth>` is `ics26_client_id` in the `cosmos-to-eth` module of
+`relayer/config.json` (`cosmoshub-1` in the example), `<eth-rpc>` is `eth_rpc_url` in the same
+module, and `<receiver>` is the address used in step 7.
+
 And the ack on the Cosmos side:
 
 ```bash
@@ -439,64 +294,20 @@ And the ack on the Cosmos side:
 Send an ICS-20 transfer from Cosmos to trigger a client update + `recvPacket`
 round-trip; the `[UpdateCosmosClient]` log line reports the chosen bucket.
 
-### `router_deploy_block`: where packet-flush log lookups start
-
-Optional, for every EVM source. The packet-flush backstop fetches each outstanding
-packet's event with `eth_getLogs`; this setting picks the block range it searches.
-
-- **Unset (`0`):** walks back from the head at most **64 windows**. A window is the
-  first of these that applies:
-  1. `log_scan_chunk`, on an L2 return module that sets it;
-  2. the span the provider narrowed to after refusing a wider range: once narrowed,
-     it stays narrowed for every later lookup in the process;
-  3. otherwise **10 000 blocks**.
-
-  So the walk covers `64 × window` blocks, not a fixed 640 000. With the 10 000
-  default that is about 89 days on L1 (12 s blocks), about 15 days on a 2 s L2, and
-  about 44 hours on Arbitrum (~0.25 s blocks). With `log_scan_chunk: 10` (Alchemy free
-  tier) it is **640 blocks, under 3 minutes on Arbitrum**. An older event is skipped
-  with `no log in the newest N blocks ... giving up on it this pass`; `N` is
-  approximate if the window narrowed during that walk.
-- **Set:** the first query is one call over `[router_deploy_block, head]`, which
-  covers the whole history **only if the provider serves that range in one call**. If
-  it refuses, the relayer narrows the window and walks back from the head as above:
-  never below `router_deploy_block`, but still capped at 64 windows. On a provider
-  with a range cap, a deploy block therefore does **not** reach events older than
-  `64 × cap` blocks: for those, use a provider without a range cap. On an uncapped
-  provider, a deploy block far below the oldest outstanding packet costs one wider
-  `eth_getLogs` per outstanding sequence per flush pass.
-
-On a node with pruned history (`pruned history unavailable`), the relayer starts at
-the lowest block the node still serves and logs `provider has pruned history below
-block N`. Events older than that need an archive provider. This mostly hits L1 geth
-nodes.
-
-| Log line | Meaning |
-|----------|---------|
-| `[... Flush] provider has pruned history below block N` | The node dropped older logs; lookups start at N. Older packets need an archive provider. |
-| `[... Flush] seq=N: no log in the newest M blocks ... giving up` | The event is older than the 64-window walk. On an uncapped provider, set `router_deploy_block`. On a capped one (`provider refused a ... log range` earlier in the log, or `log_scan_chunk` set), a deploy block does not help; use a provider without a range cap. |
-
-**Value:** the block the router **proxy** was deployed at (`ics26_address`, or
-`l2_router` on an L2). Too low only widens the query; too high silently hides older
-packets. When unsure, go lower. From the forge broadcast of the deploy
-(`E2ETestDeployL2.s.sol` for an L2), or the proxy's creation tx in a block explorer:
-
-```bash
-jq -r --arg a "<ics26_address>" '.receipts[]
-  | select((.contractAddress // "" | ascii_downcase) == ($a | ascii_downcase))
-  | .blockNumber' broadcast/E2ETestDeploy.s.sol/<chain-id>/run-latest.json | xargs cast to-dec
-```
-
-**Module:** Ethereum → `cosmos-to-eth`. L2 → the return module (`op-to-cosmos`,
-`arbitrum-to-cosmos`, `base-to-cosmos`); the forward module ignores it. The
-`config.*.example.json` files already carry the key as `0`.
-
 ## Local Cosmos ↔ OP E2E
 
 Brings up an L1 + OP Stack L2 + Cosmos and relays both directions. The L1 is shared:
 `run_optimism_node.sh` calls `run_eth_node.sh` for it (Fulu-from-genesis, the same
 `eth-network-params.yaml` the ETH↔Cosmos devnet uses), which reuses the enclave's L1
 if one is already up. See [One L1, shared between rollups](#one-l1-shared-between-rollups).
+
+**Before step 1.** Complete steps 1 and 2 of [Local Cosmos ↔ Ethereum E2E](#local-cosmos--ethereum-e2e)
+(prover artifacts and relayer binary) and build the [Gaia binary](#gaia-binary). Then create the
+relayer config for this path, because step 4 patches it:
+
+```bash
+cp relayer/config.op.example.json relayer/config.json
+```
 
 **Step 1.** L1 (Fulu) + OP Stack L2 in one Kurtosis enclave. Ends with games proposed and
 `.op-devnet-run/attestor.env` written (L1/L2/op-node/beacon endpoints).
@@ -570,6 +381,14 @@ Kurtosis enclave if OP already brought one up, or creates the same local L1 itse
 through `run_eth_node.sh` when the enclave does not exist. See
 [One L1, shared between rollups](#one-l1-shared-between-rollups).
 
+**Before step 1.** Complete steps 1 and 2 of [Local Cosmos ↔ Ethereum E2E](#local-cosmos--ethereum-e2e)
+(prover artifacts and relayer binary) and build the [Gaia binary](#gaia-binary). Then create the
+relayer config for this path, because step 4 patches it:
+
+```bash
+cp relayer/config.arbitrum.example.json relayer/config.json
+```
+
 **Step 1.** L1 (Fulu) + Arbitrum Nitro/BoLD L2 in one Kurtosis enclave. Ends with a finalized
 AssertionCreated check and `.arbitrum-devnet-run/attestor.env` written (L1/L2/beacon/Nitro
 feed/RollupCore endpoints).
@@ -608,32 +427,7 @@ L2_DEPLOYER_PRIVATE_KEY=bcdf20249abf0ed6d944c0288fad489e33f66b3960d9e6229c1cd214
 
 It patches the forward module whose `dst_chain` is arbitrum.
 
-**Step 5.** Clients. Cosmos side first, one invocation per kind, then the L2 side (SpectreClient
-deployed + addClient'd). The Arbitrum client does not anchor to an Ethereum client, so create it
-on its own:
-
-```bash
-cd relayer
-./relayer create-clients-cosmos --config config.json --l2-config <arb-l2-config.json>
-```
-
-Only run the Ethereum half (`--wasm-checksum`, no `--l2-config`) if this config also relays
-Cosmos<->Ethereum AND that client does not exist yet. Re-running it against a working deployment
-rewrites the cosmos-to-eth module's `cosmos_wasm_client_id` and repoints the path at a client
-the Sepolia-side SpectreClient was never registered against; every recvPacket then reverts on a
-counterparty mismatch.
-
-```bash
-./relayer create-clients-eth --config config.json --trust-level 2/3
-```
-
-**Step 6.** Relay both directions.
-
-```bash
-./relayer start --config config.json
-```
-
-Copy `relayer/arb-l2-config.example.json` and fill in three values. It is the same
+**Before step 5.** Copy `relayer/arb-l2-config.example.json` as `relayer/arb-l2-config.json` and fill in the values listed below. It is the same
 shape as OP's and Base's `--l2-config`: five profile keys and nothing else. There is
 no `protocol` block, no `assertions_mapping_slot` and no `rollup` address in it: the
 client verifies no assertion, so nothing about BoLD reaches it. Those values configure
@@ -649,6 +443,31 @@ the **attestor**, not the client.
 
 `l2_header_fork` is `london`, not `prague` as on OP and Base: Nitro emits none of the
 post-London optional header fields.
+
+**Step 5.** Clients. Cosmos side first, one invocation per kind, then the L2 side (SpectreClient
+deployed + addClient'd). The Arbitrum client does not anchor to an Ethereum client, so create it
+on its own:
+
+```bash
+cd relayer
+./relayer create-clients-cosmos --config config.json --l2-config arb-l2-config.json
+```
+
+Only run the Ethereum half (`--wasm-checksum`, no `--l2-config`) if this config also relays
+Cosmos<->Ethereum AND that client does not exist yet. Re-running it against a working deployment
+rewrites the cosmos-to-eth module's `cosmos_wasm_client_id` and repoints the path at a client
+the EVM-side SpectreClient was never registered against; every recvPacket then reverts on a
+counterparty mismatch.
+
+```bash
+./relayer create-clients-eth --config config.json --trust-level 2/3
+```
+
+**Step 6.** Relay both directions.
+
+```bash
+./relayer start --config config.json
+```
 
 ## Local Cosmos ↔ Base E2E
 
@@ -668,6 +487,14 @@ L1 as those instead.
 `relayer/chain/chain.go`), enforced when a module is parsed (`classifyModule` in
 `relayer/cmd/config.go`). The two are told apart by module **name** and client id, which is
 why the deploy step below needs `MODULE_NAME`.
+
+**Before step 1.** Complete steps 1 and 2 of [Local Cosmos ↔ Ethereum E2E](#local-cosmos--ethereum-e2e)
+(prover artifacts and relayer binary) and build the [Gaia binary](#gaia-binary). Then create the
+relayer config for this path, because step 4 patches it:
+
+```bash
+cp relayer/config.base.example.json relayer/config.json
+```
 
 **Step 1.** L1 (Fulu) + Base L2. Brings the L1 up via `run_eth_node.sh` if the enclave does not
 exist. Ends with `.base-devnet-run/attestor.env` written.
@@ -947,6 +774,223 @@ fee from that account, which would hide the refund. Stop any relayer already run
 the config first, or the state-directory lock refuses the test's relayer.
 `L2_TIMEOUT_LOG_DIR` keeps the relayer logs, and `RELAYER_BINARY` runs a prebuilt binary
 instead of building one; `L2_TIMEOUT_WINDOW` and `L2_TIMEOUT_SETTLE` tune the waits.
+
+## `router_deploy_block`: where packet-flush log lookups start
+
+Optional, for every EVM source. The packet-flush backstop fetches each outstanding
+packet's event with `eth_getLogs`; this setting picks the block range it searches.
+
+- **Unset (`0`):** walks back from the head at most **64 windows**. A window is the
+  first of these that applies:
+  1. `log_scan_chunk`, on an L2 return module that sets it;
+  2. the span the provider narrowed to after refusing a wider range: once narrowed,
+     it stays narrowed for every later lookup in the process;
+  3. otherwise **10 000 blocks**.
+
+  So the walk covers `64 × window` blocks, not a fixed 640 000. With the 10 000
+  default that is about 89 days on L1 (12 s blocks), about 15 days on a 2 s L2, and
+  about 44 hours on Arbitrum (~0.25 s blocks). With `log_scan_chunk: 10` (Alchemy free
+  tier) it is **640 blocks, under 3 minutes on Arbitrum**. An older event is skipped
+  with `no log in the newest N blocks ... giving up on it this pass`; `N` is
+  approximate if the window narrowed during that walk.
+- **Set:** the first query is one call over `[router_deploy_block, head]`, which
+  covers the whole history **only if the provider serves that range in one call**. If
+  it refuses, the relayer narrows the window and walks back from the head as above:
+  never below `router_deploy_block`, but still capped at 64 windows. On a provider
+  with a range cap, a deploy block therefore does **not** reach events older than
+  `64 × cap` blocks: for those, use a provider without a range cap. On an uncapped
+  provider, a deploy block far below the oldest outstanding packet costs one wider
+  `eth_getLogs` per outstanding sequence per flush pass.
+
+On a node with pruned history (`pruned history unavailable`), the relayer starts at
+the lowest block the node still serves and logs `provider has pruned history below
+block N`. Events older than that need an archive provider. This mostly hits L1 geth
+nodes.
+
+| Log line | Meaning |
+|----------|---------|
+| `[... Flush] provider has pruned history below block N` | The node dropped older logs; lookups start at N. Older packets need an archive provider. |
+| `[... Flush] seq=N: no log in the newest M blocks ... giving up` | The event is older than the 64-window walk. On an uncapped provider, set `router_deploy_block`. On a capped one (`provider refused a ... log range` earlier in the log, or `log_scan_chunk` set), a deploy block does not help; use a provider without a range cap. |
+
+**Value:** the block the router **proxy** was deployed at (`ics26_address`, or
+`l2_router` on an L2). Too low only widens the query; too high silently hides older
+packets. When unsure, go lower. From the forge broadcast of the deploy
+(`E2ETestDeployL2.s.sol` for an L2), or the proxy's creation tx in a block explorer:
+
+```bash
+jq -r --arg a "<ics26_address>" '.receipts[]
+  | select((.contractAddress // "" | ascii_downcase) == ($a | ascii_downcase))
+  | .blockNumber' broadcast/E2ETestDeploy.s.sol/<chain-id>/run-latest.json | xargs cast to-dec
+```
+
+**Module:** Ethereum → `cosmos-to-eth`. L2 → the return module (`op-to-cosmos`,
+`arbitrum-to-cosmos`, `base-to-cosmos`); the forward module ignores it. The
+`config.*.example.json` files already carry the key as `0`.
+
+## Signing keys when several processes share a chain
+
+`start` serves exactly one relay path per process, so any deployment with more than
+one path runs more than one process. Two rules follow, and they are not the same
+rule for the two chains.
+
+**Every `start` process needs its own `COSMOS_PRIVATE_KEY`.** This holds for *every*
+path, including one that looks like it only writes to an EVM chain: a Cosmos→L2
+process still refunds expired Cosmos-origin packets **on Cosmos** through its timeout
+scanner. So the running example (one `cosmos↔eth` process plus one `cosmos↔l2`
+process against the same Cosmos chain) needs two keys, not one:
+
+| Process | Writes Cosmos from |
+| --- | --- |
+| `cosmos↔eth` | the eth→cosmos direction, and `ScanCosmosTimeouts` refunds |
+| `cosmos↔l2` | the l2→cosmos return leg, and `ScanCosmosTimeouts` refunds |
+| `cosmos→l2`, forward only | `ScanCosmosTimeouts` refunds |
+
+There is no `start` configuration that never writes to Cosmos, which is why the rule
+has no exceptions to remember.
+
+Sharing one key means sharing one account sequence, and nothing coordinates the two
+processes. Each reads the sequence from committed state before signing, so the
+collision window is a whole block, not an instant. If both processes talk to the same
+RPC node the loser fails at CheckTx, which the relayer treats as transient and
+retries, which is wasteful but safe. If they talk to **different** nodes both pass CheckTx and
+the loser fails at DeliverTx instead, which is classified as a deterministic on-chain
+failure: a single-packet transaction is then **dropped**, and its funds sit in escrow
+until the timeout scanner refunds them. A shared key turns an infrastructure race into
+a failed user transfer.
+
+**`ETH_PRIVATE_KEY` only needs to differ between processes writing the same EVM
+chain.** Nonces are tracked per `{chain id, address}`, so the `cosmos↔eth` process
+(L1) and the `cosmos↔l2` process (L2) can share one key: different chains, independent
+nonces. Two `cosmos↔eth` processes relaying two Cosmos sources into the *same* L1 do
+need separate keys.
+
+A shared ETH key also degrades more gracefully than a shared Cosmos one: an
+unrecognised broadcast error invalidates the cached nonce and returns a transient
+error, so the packet is re-queued rather than dropped.
+
+**`start` enforces both rules**, with one advisory lock per contended resource, all
+under `/tmp/spectre-relayer-<uid>/`.
+
+The EVM half takes one lock per nonce domain it can write: a file per
+`{chain id, address}`, named `evm-signer-<chain id>-<address>.lock`
+(`cmd/evm_signer_lock.go`). The chain id is resolved from each configured
+endpoint at startup rather than read from the config, so the lock names the domain
+the process will actually write. A `cosmos<->eth` and a `cosmos<->l2` process write
+different chains, take different locks, and may share one key -- the guard permits
+exactly what the rule above permits.
+
+The Cosmos half takes one lock on the signing address alone, named
+`cosmos-signer-<address>.lock` (`cmd/cosmos_signer_lock.go`). Deliberately nothing
+else is in that name -- not the chain id, not the config path, not the state
+directory. A lock named after anything the runbook tells operators to vary per
+process is not a lock: the two processes it exists to catch each take their own file
+and both start. The directory itself reads no environment variable for the same
+reason, since `.env` is loaded before the lock is taken.
+
+Either lock refuses to boot and names the address and the lock file, instead of
+colliding at the first submission. Both are `flock`, so they reach one user on one
+machine; two hosts sharing a key still collide and nothing local can see it.
+
+**A second ETH key is not usable until it is funded AND granted the router's
+`RELAYER_ROLE`.** A key that lacks funds and a key that lacks the role fail in the same way from
+the relayer's side: `E2ETestDeploy.s.sol:95-96` builds
+a one-element relayer list and grants the role to `msg.sender` alone, so any key
+other than the deployer's is unauthorized. `updateApplicationState` then reverts with
+a bare custom error: no revert string, and nothing in the relayer log beyond
+`execution reverted`. Funding the address does not help; it is authorization, not
+gas. `cast run <tx>` names the cause in one line: `canCall(<signer>, <ICS26Router>,
+0x9c11bece) -> false`.
+
+Grant it from the AccessManager admin, which is the account that deployed the
+contracts. `RELAYER_ROLE` is `1` (`contracts/shared/access/IBCRolesLib.sol:14`):
+
+```bash
+AM=$(cast call <ICS26Router> "authority()(address)" --rpc-url $RPC)
+cast send $AM "grantRole(uint64,address,uint32)" 1 <second-relayer-address> 0 \
+  --private-key <deployer-key> --rpc-url $RPC
+```
+
+Then fund the address for gas. Repeat per extra EVM signer, and per chain: a key
+authorized on the L1 router has no standing on an L2 router.
+
+**`create-clients-cosmos` and `update-eth-client` sign with the same key.** They are
+the commands besides `start` that write to Cosmos, so running either against a chain a
+`start` process is already relaying will collide. Give it its own key, or run it while
+`start` is stopped. The other commands do not touch the Cosmos signer: `update-client`
+and `create-clients-eth` submit to Ethereum, `submit-misbehaviour` submits to Ethereum
+under its own `MISBEHAVIOUR_PRIVATE_KEY`, and `genesis` broadcasts nothing.
+
+Keys can be set per process without touching `relayer/.env`: `godotenv` does not
+override a variable that is already set, so the export wins. Each runbook below
+copies its example to `relayer/config.json`, so running two paths at once means
+naming the second copy something else:
+
+```bash
+COSMOS_PRIVATE_KEY=$KEY_ETH_PATH ./relayer start --config config.json &
+COSMOS_PRIVATE_KEY=$KEY_OP_PATH  ./relayer start --config config.op.json &
+```
+
+Each key is a distinct account and needs its own gas balance on the Cosmos chain.
+
+## Relayer logs
+
+Every log line of the relayer carries a level. `--log-level` /
+`RELAYER_LOG_LEVEL` (`debug`, `info`, `warn`, `error`; default `info`) and
+`--log-format` / `RELAYER_LOG_FORMAT` (`json`, `console`, `auto`; default `auto`)
+are accepted by every subcommand. The flag takes precedence over the variable.
+
+- **Source of the variables.** They are read from the process environment.
+  `relayer/.env` is loaded inside each command, after the logger exists, so
+  values there have no effect.
+- **Invalid values.** An invalid value never stops the relayer. It is ignored
+  and reported in the log, and the default is used.
+- **JSON format.** Each line has `level`, `ts` (epoch seconds), `caller`, `msg`
+  and, under `start`, `relay_path`. This is the format a log viewer reads. If
+  the relayer runs with a terminal attached (`docker run -t`), pass
+  `--log-format json` explicitly, because `auto` picks `console`.
+- **Failed commands.** cobra prints its own `Error: ...` line and the usage text
+  as plain lines. The same error is then logged once at `fatal`. Alert on the
+  `fatal` line.
+- **gnark.** gnark has its own logger, which by default prints three console
+  lines on stdout for every proof. The relayer routes it through the same
+  stream. These lines read `[gnark] <message>`, carry `"component":"gnark"` and
+  no `caller`, and keep gnark's own fields under a `gnark` key (`took` is in
+  milliseconds), so they cannot shadow `level` or `msg`. The per-proof lines are
+  `debug`; a warning or an error from gnark keeps its level.
+
+## Prover key and verifier must be a pair
+
+Every Cosmos → EVM update (`updateApplicationState`, `updateConsensusState`) carries a
+Groth16 proof made with `relayer/bin/n4/pk.bin` and checked by the
+`Groth16Verifier_N4` registered in `SignatureVerifier.buckets(4)` on the destination
+chain (L1 or L2). The two come from one `scripts/solidity/build-prover-artifacts.sh`
+run. If they are from different setups nothing fails at deploy or at send time:
+the packet is accepted on Cosmos and the relayer then logs `ProofVerificationFailed()` on
+every attempt and re-queues it forever. `pk.bin` is git-ignored and cannot be recovered
+once lost; a set generated elsewhere (for example with `go run ./prover/cmd <dir>`) is a
+different setup, even though it looks identical.
+
+`scripts/local/check_prover_pairing.sh` checks this and exits 1 with a warning banner:
+
+```bash
+# Before deploying: r1cs/pk/vk/verifier on disk are the set that
+# build-prover-artifacts.sh published together (.artifacts/solidity/prover/provenance.json).
+# r1cs/pk/vk are read from where the relayer will load them: PROVER_BIN_DIR from the
+# environment, else from relayer/.env, else ./bin (relative to relayer/; --relayer-dir
+# overrides) -- not blindly from relayer/bin.
+# deploy_eth_contracts.sh and deploy_l2_contracts.sh already run this and stop on a mismatch.
+./scripts/local/check_prover_pairing.sh
+
+# Before sending a packet or starting the relayer: additionally, the verifier registered
+# on-chain is byte-identical to what forge compiled from the local Groth16Verifier_N4.sol.
+# Needs a `forge build` of the current source (matched by content hash, not by timestamp); --signature-verifier defaults to .l2-deployment.json.
+./scripts/local/check_prover_pairing.sh --rpc <evm-rpc> [--signature-verifier <addr>]
+```
+
+`PROVER_PAIRING=warn` prints the banner but continues. On a mismatch, regenerate the set
+with `scripts/solidity/build-prover-artifacts.sh --force`, then redeploy the contracts and
+recreate both clients (a new router also changes `l2_router` in the Cosmos-side client
+profile). See the `ProofVerificationFailed()` row in the L2 [Failure modes](#failure-modes) table.
 
 ## Failure modes
 

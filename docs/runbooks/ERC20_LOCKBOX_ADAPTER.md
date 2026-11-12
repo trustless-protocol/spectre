@@ -8,6 +8,25 @@ or burn.
 - Errors: [`contracts/apps/ics20/errors/IERC20LockboxAdapterErrors.sol`](../../contracts/apps/ics20/errors/IERC20LockboxAdapterErrors.sol)
 - Tests: [`test/apps/ics20/ERC20LockboxAdapterTest.t.sol`](../../test/apps/ics20/ERC20LockboxAdapterTest.t.sol)
 
+## Table of contents
+
+- [Use case](#use-case)
+- [Rationale](#rationale)
+- [Mechanism](#mechanism)
+  - [Not a user-facing token](#not-a-user-facing-token)
+- [Denomination and scaling](#denomination-and-scaling)
+- [The reserve](#the-reserve)
+- [Deployment](#deployment)
+  - [Preconditions](#preconditions)
+  - [Steps](#steps)
+  - [Scripted deployment](#scripted-deployment)
+- [Operations](#operations)
+  - [Monitoring](#monitoring)
+  - [Top-up](#top-up)
+  - [Rate limits](#rate-limits)
+- [Limits and known behaviours](#limits-and-known-behaviours)
+- [Testing](#testing)
+
 ## Use case
 
 By default, the first packet carrying a new Cosmos denom makes `ICS20Transfer` deploy a fresh

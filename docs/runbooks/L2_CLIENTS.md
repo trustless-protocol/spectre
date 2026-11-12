@@ -14,6 +14,16 @@ router, commitment slot and canonical execution-header fork.
 > operational key-custody review and authenticated OP/Base/Arbitrum E2E all pass against the exact
 > candidate diff.
 
+## Table of contents
+
+- [Live 08-wasm surface](#live-08-wasm-surface)
+- [Creation and profile](#creation-and-profile)
+- [Governed attestor rotation](#governed-attestor-rotation)
+- [Signed update contract](#signed-update-contract)
+- [Provisional attestations](#provisional-attestations)
+- [Packet proofs](#packet-proofs)
+- [Fixtures and validation](#fixtures-and-validation)
+
 ## Live 08-wasm surface
 
 Each L2 artifact exports only the entry points used by the current client lifecycle:
@@ -119,8 +129,8 @@ This operation is a proactive rotation mechanism: use it before a retiring key c
 to restore liveness when an unavailable key has not already produced untrusted updates. It is not
 post-compromise recovery. A frozen client stays frozen, and consensus states accepted under the old
 key remain in the client store. If a key may already have been abused, the current contract must be
-replaced by a newly created client, including the packet sequence and receipt coordination described
-in the E2E runbook. A follow-up recovery PR will implement IBC-go's authority-only
+replaced by a newly created client, including coordination of packet sequences and
+receipts, for which no procedure is written yet. A follow-up recovery PR will implement IBC-go's authority-only
 `MsgRecoverClient`/`migrate_client_store` substitute-client flow; that lifecycle operation remains
 unsupported in these artifacts.
 

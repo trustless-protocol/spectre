@@ -10,6 +10,16 @@ CometBFT node serves the branch it committed, so evidence must come from
 administratively independent peers, an evidence service, or existing Cosmos
 tooling.
 
+## Table of contents
+
+- [1. Confirm the incident](#1-confirm-the-incident)
+- [2. Produce standard IBC evidence](#2-produce-standard-ibc-evidence)
+- [3. Verify permissions](#3-verify-permissions)
+- [4. Generate and inspect calldata](#4-generate-and-inspect-calldata)
+- [5. Submit](#5-submit)
+- [6. Verify the freeze](#6-verify-the-freeze)
+- [7. Recovery](#7-recovery)
+
 ## 1. Confirm the incident
 
 Typical signals are conflicting block hashes reported by independent validators,

@@ -5,6 +5,36 @@ removes the bootstrap account before returning the deployment addresses.
 `ProductionVerify.s.sol` must be run against the same addresses and environment
 configuration after deployment.
 
+## Table of contents
+
+- [Running the scripts](#running-the-scripts)
+- [Governance requirements](#governance-requirements)
+- [Escrow launch gate](#escrow-launch-gate)
+- [Light-client provisioning](#light-client-provisioning)
+  - [Governed client migration](#governed-client-migration)
+  - [Migrating the Ethereum 08-wasm client on Cosmos](#migrating-the-ethereum-08-wasm-client-on-cosmos)
+- [Pausing](#pausing)
+- [Escrow upgrade compatibility](#escrow-upgrade-compatibility)
+  - [Migrating existing `RefImplIBCERC20` proxies](#migrating-existing-refimplibcerc20-proxies)
+- [Upgrading a deployment that predates the AccessManager](#upgrading-a-deployment-that-predates-the-accessmanager)
+
+## Running the scripts
+
+Both scripts are Foundry scripts and read their configuration from environment variables.
+
+```bash
+forge script scripts/ProductionDeploy.s.sol:ProductionDeploy --rpc-url <rpc> --broadcast
+forge script scripts/ProductionVerify.s.sol:ProductionVerify --rpc-url <rpc>
+```
+
+| Script | Variables it reads |
+|---|---|
+| Both | `GOVERNANCE_ADMIN`, `BOOTSTRAP_ACCOUNT`, `RELAYER_ACCOUNT`, `PAUSER_1`, `PAUSER_2`, `UNPAUSER_ACCOUNT`, `UPGRADER_ACCOUNT`, `RATE_LIMITER_ACCOUNT`, `MISBEHAVIOUR_WATCHER`, `SECURITY_DELAY`, `PRODUCTION_ESCROW_CONFIG`, `VERIFIER_N4` to `VERIFIER_N128` |
+| `ProductionVerify` only | `ACCESS_MANAGER`, `ICS26_ROUTER`, `ICS20_TRANSFER`, `SIGNATURE_VERIFIER` (the addresses the deployment returned), and the optional `PRODUCTION_LIGHT_CLIENTS` |
+
+The scripts are the reference for each variable's format and for which ones are optional; this
+runbook explains the ones that carry a safety decision.
+
 ## Governance requirements
 
 `GOVERNANCE_ADMIN` must be an OpenZeppelin `TimelockController`, or a compatible

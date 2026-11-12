@@ -9,10 +9,9 @@ Each test boots a full devnet from scratch and is slow; `just test-e2e` allows u
 120 minutes per invocation (`-timeout 120m` in the `justfile`). The suite runs in CI
 and locally.
 
-Spectre's relayer is an **event-driven daemon**, not the upstream Rust gRPC
-service. Tests therefore *wait* for the daemon to drive each step (via
-`require.Eventually` polling the post-relay end state) instead of requesting a
-relay tx over gRPC and broadcasting it themselves.
+Spectre's relayer is an **event-driven daemon**. Tests therefore *wait* for the
+daemon to drive each step, with `require.Eventually` polling the end state after
+the relay. They do not build or broadcast relay transactions themselves.
 
 ## Prerequisites
 
