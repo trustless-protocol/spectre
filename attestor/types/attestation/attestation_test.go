@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
@@ -189,5 +190,110 @@ func TestSigningBytesRejectsInvalidIdentity(t *testing.T) {
 				t.Fatal("SigningBytes succeeded for invalid identity")
 			}
 		})
+	}
+}
+
+func singleKeyConfig(key []byte) AttestorConfig {
+	return AttestorConfig{PublicKeys: [][]byte{key}, Threshold: 1}
+}
+
+func TestValidateForInstallRejectsSmallOrderKeys(t *testing.T) {
+	// Five y coordinates, each with either sign bit. A shorter list means an encoding was lost.
+	if len(smallOrderPublicKeys) != 10 {
+		t.Fatalf("small-order table has %d entries, want 10", len(smallOrderPublicKeys))
+	}
+	seen := map[string]bool{}
+	for _, key := range smallOrderPublicKeys {
+		if len(key) != PublicKeyLength || seen[string(key)] {
+			t.Fatalf("small-order table entry %x is malformed or repeated", key)
+		}
+		seen[string(key)] = true
+
+		config := singleKeyConfig(key)
+		err := config.ValidateForInstall()
+		if err == nil || !strings.Contains(err.Error(), "small-order") {
+			t.Fatalf("ValidateForInstall(%x) = %v, want a small-order error", key, err)
+		}
+		// A client that already holds such a key must keep loading, and SetHash goes through Validate.
+		if err := config.Validate(); err != nil {
+			t.Fatalf("Validate(%x) = %v, want the on-every-call rules to keep accepting it", key, err)
+		}
+	}
+}
+
+func TestHasCanonicalYAgainstIntegerComparison(t *testing.T) {
+	p := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 255), big.NewInt(19))
+	top := new(big.Int).Lsh(big.NewInt(1), 255)
+	for delta := int64(-20); delta <= 20; delta++ {
+		y := new(big.Int).Add(p, big.NewInt(delta))
+		if y.Cmp(top) >= 0 {
+			continue // not a 255-bit value
+		}
+		bigEndian := y.FillBytes(make([]byte, PublicKeyLength))
+		for _, sign := range []byte{0x00, 0x80} {
+			key := make([]byte, PublicKeyLength)
+			for i, b := range bigEndian {
+				key[PublicKeyLength-1-i] = b
+			}
+			key[PublicKeyLength-1] |= sign
+			if got, want := hasCanonicalY(key), y.Cmp(p) < 0; got != want {
+				t.Fatalf("hasCanonicalY(p%+d, sign %#x) = %v, want %v", delta, sign, got, want)
+			}
+		}
+	}
+}
+
+func TestValidateForInstallRejectsNonCanonicalY(t *testing.T) {
+	// y = p and y = p + 1 are second encodings of y = 0 and y = 1, and y = 2^255 - 1 is p + 18.
+	for _, hexKey := range []string{
+		"edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+		"eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+		"eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+		"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+		"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+	} {
+		err := singleKeyConfig(mustHex(hexKey)).ValidateForInstall()
+		if err == nil || !strings.Contains(err.Error(), "non-canonical") {
+			t.Fatalf("ValidateForInstall(%s) = %v, want a non-canonical error", hexKey, err)
+		}
+	}
+}
+
+func TestValidateForInstallAcceptsOrdinaryKeys(t *testing.T) {
+	keys := [][]byte{}
+	// The keys shipped in the example configs.
+	for _, b64 := range []string{
+		"XZ+76qOWCo/r113X56pAXt0hi3AZpY9LU44nF4vCMmg=",
+		"gojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+	} {
+		key, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, key)
+	}
+	for i := 0; i < 64; i++ {
+		seed := make([]byte, ed25519.SeedSize)
+		seed[0] = byte(i)
+		seed[1] = 0xa5
+		keys = append(keys, ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey))
+	}
+	for _, key := range keys {
+		if err := singleKeyConfig(key).ValidateForInstall(); err != nil {
+			t.Fatalf("ValidateForInstall(%x) = %v, want an ordinary key accepted", key, err)
+		}
+	}
+}
+
+func TestValidateForInstallKeepsTheOnEveryCallRules(t *testing.T) {
+	// The key rules index into the key, so Validate must reject a short one first.
+	for _, config := range []AttestorConfig{
+		{},
+		{PublicKeys: [][]byte{make([]byte, PublicKeyLength-1)}, Threshold: 1},
+		{PublicKeys: [][]byte{mustHex(strings.Repeat("11", 32)), mustHex(strings.Repeat("11", 32))}, Threshold: 1},
+	} {
+		if err := config.ValidateForInstall(); err == nil {
+			t.Fatalf("ValidateForInstall(%+v) succeeded, want the Validate error", config)
+		}
 	}
 }

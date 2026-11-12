@@ -55,11 +55,30 @@ pub enum ContractError {
     #[error("invalid Ethereum client state: {0}")]
     InvalidClientState(&'static str),
 
+    #[error("invalid Ethereum consensus state: {0}")]
+    InvalidConsensusState(&'static str),
+
+    #[error("invalid fork parameters for {fork}: {reason}")]
+    InvalidForkParameters {
+        /// The fork the rule failed for.
+        fork: &'static str,
+        /// The rule that failed.
+        reason: &'static str,
+    },
+
     #[error("client state not found")]
     ClientStateNotFound,
 
     #[error("consensus state not found")]
     ConsensusStateNotFound,
+
+    #[error("trusted slot {trusted_slot} is not the latest slot {latest_slot}")]
+    TrustedSlotNotLatest {
+        /// The slot the client message names as its trusted consensus state.
+        trusted_slot: u64,
+        /// The latest slot of the client.
+        latest_slot: u64,
+    },
 
     #[error("invalid revision number {0}; only revision zero is supported")]
     InvalidRevision(u64),

@@ -73,7 +73,10 @@ func (a *Adapter) AttestedRootAtOrBelow(_ context.Context, height uint64, policy
 	return toCoreRoot(root), true, nil
 }
 
-// Status reads the last local replica snapshot without triggering refresh.
+// Status reads the last local replica snapshot without triggering refresh. The
+// route is ready once a snapshot exists and the run loop that refreshes it is
+// still coming back around: a loop parked on a call that never returns leaves
+// the snapshot, and so the feed, frozen, and must not read as serving.
 func (a *Adapter) Status(_ context.Context) (core.FeedStatus, error) {
 	status := core.FeedStatus{
 		SrcChain:        a.attestor.SrcChain(),
@@ -81,7 +84,7 @@ func (a *Adapter) Status(_ context.Context) (core.FeedStatus, error) {
 		Pending:         uint64(len(a.attestor.Store().Pending())),
 	}
 	if snapshot, found := a.attestor.LastSyncStatus(); found {
-		status.Ready = true
+		status.Ready = a.attestor.RunnerAlive()
 		status.ReplicaSeen = true
 		status.ReplicaUnsafe = snapshot.UnsafeL2
 		status.ReplicaSafe = snapshot.SafeL2

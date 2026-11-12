@@ -3,16 +3,35 @@
 How to bridge a Cosmos-native denom into an ERC20 that **already exists on Ethereum** and cannot mint
 or burn.
 
-- Contract: [`contracts/apps/ics20/ERC20LockboxAdapter.sol`](../contracts/apps/ics20/ERC20LockboxAdapter.sol)
-- Interface: [`contracts/apps/ics20/interfaces/IERC20LockboxAdapter.sol`](../contracts/apps/ics20/interfaces/IERC20LockboxAdapter.sol)
-- Errors: [`contracts/apps/ics20/errors/IERC20LockboxAdapterErrors.sol`](../contracts/apps/ics20/errors/IERC20LockboxAdapterErrors.sol)
-- Tests: [`test/apps/ics20/ERC20LockboxAdapterTest.t.sol`](../test/apps/ics20/ERC20LockboxAdapterTest.t.sol)
+- Contract: [`contracts/apps/ics20/ERC20LockboxAdapter.sol`](../../contracts/apps/ics20/ERC20LockboxAdapter.sol)
+- Interface: [`contracts/apps/ics20/interfaces/IERC20LockboxAdapter.sol`](../../contracts/apps/ics20/interfaces/IERC20LockboxAdapter.sol)
+- Errors: [`contracts/apps/ics20/errors/IERC20LockboxAdapterErrors.sol`](../../contracts/apps/ics20/errors/IERC20LockboxAdapterErrors.sol)
+- Tests: [`test/apps/ics20/ERC20LockboxAdapterTest.t.sol`](../../test/apps/ics20/ERC20LockboxAdapterTest.t.sol)
 
-## When you need it
+## Table of contents
+
+- [Use case](#use-case)
+- [Rationale](#rationale)
+- [Mechanism](#mechanism)
+  - [Not a user-facing token](#not-a-user-facing-token)
+- [Denomination and scaling](#denomination-and-scaling)
+- [The reserve](#the-reserve)
+- [Deployment](#deployment)
+  - [Preconditions](#preconditions)
+  - [Steps](#steps)
+  - [Scripted deployment](#scripted-deployment)
+- [Operations](#operations)
+  - [Monitoring](#monitoring)
+  - [Top-up](#top-up)
+  - [Rate limits](#rate-limits)
+- [Limits and known behaviours](#limits-and-known-behaviours)
+- [Testing](#testing)
+
+## Use case
 
 By default, the first packet carrying a new Cosmos denom makes `ICS20Transfer` deploy a fresh
-`IBCERC20` voucher in `_getOrCreateIBCERC20`. That voucher mints on receive and burns on send —
-elastic supply, always 1:1 with what the Cosmos side escrowed, zero operational burden. **Use it
+`IBCERC20` voucher in `_getOrCreateIBCERC20`. That voucher mints on receive and burns on send:
+elastic supply, always 1:1 with what the Cosmos side escrowed, and nothing to operate. **Use it
 unless you have a specific reason not to.**
 
 The adapter exists for one situation: an ERC20 with holders, listings and integrations already
@@ -33,7 +52,7 @@ If the token is not yet distributed, redeploying it with `IMintableAndBurnable` 
 is strictly simpler than this adapter. See `test/utils/RefImplIBCERC20.sol` for a
 reference implementation.
 
-## Why an adapter is needed at all
+## Rationale
 
 `onRecvPacket` uses the registered token address for two things at once:
 
@@ -44,13 +63,13 @@ escrow.send(IERC20(erc20Address), receiver, packetData.amount);
 ```
 
 The address must be mintable **and** be the token the receiver ends up holding. A fixed-supply ERC20
-fails the first, so it cannot be registered directly — `setCustomERC20` would accept it because it
+fails the first, so it cannot be registered directly: `setCustomERC20` would accept it because it
 performs no compatibility check, and every packet would then fail forever.
 
 The adapter satisfies both roles: it presents the minimal ERC20 surface the core calls, while the
 real token moves in and out of a reserve the adapter itself holds. Holding the reserve in the
 *adapter* rather than in the escrow is what makes this work without touching `ICS20Transfer` or
-`Escrow` — the adapter moves its own tokens and never needs an allowance from the escrow.
+`Escrow`: the adapter moves its own tokens and never needs an allowance from the escrow.
 
 ## Mechanism
 
@@ -94,8 +113,8 @@ and call `sendTransfer` instead.
 
 ## Denomination and scaling
 
-All IBC-facing amounts — packet amounts, `mint`/`burn`/`transfer` arguments, rate limits, `capacity()`
-— are in **denom units** (the Cosmos exponent, e.g. 6 for `uatom`). The underlying moves in
+All IBC-facing amounts (packet amounts, `mint`/`burn`/`transfer` arguments, rate limits, `capacity()`)
+are in **denom units** (the Cosmos exponent, e.g. 6 for `uatom`). The underlying moves in
 **underlying units**, multiplied by `scale`:
 
 ```
@@ -104,7 +123,7 @@ scale = 10 ** (underlyingDecimals - denomDecimals)
 
 `decimals()` reports the *denom* exponent, not the underlying's.
 
-The constructor requires `underlyingDecimals >= denomDecimals` (`AdapterInvalidDecimals`) — the
+The constructor requires `underlyingDecimals >= denomDecimals` (`AdapterInvalidDecimals`): the
 reverse would need division on the inbound path and would truncate user funds. The exponent
 difference may not exceed 77, the largest power of ten representable by `uint256`. The constructor
 also cross-checks the declared value against the token's own `decimals()` when the token exposes one
@@ -136,15 +155,47 @@ Underlying can leave the reserve only when a registered escrow spends credit cre
 authenticated ICS20 flow. This removes the operator custody path and preserves the invariant that
 every normal release corresponds to native tokens escrowed on Cosmos.
 
-For an emergency reserve evacuation, governance may send a standard, backed ICS20 transfer from the
-Nyx governance account to an Ethereum Safe. Native NYM is escrowed on Nyx and the normal receive path
-releases the matching reserve to the Safe. This needs no custom IBC or chain code. It is limited by
-governance's spendable native NYM, adapter capacity, and the escrow rate limit; an unbacked send must
-never be used.
+For an emergency reserve evacuation, the Cosmos chain's governance may send a standard, backed ICS20
+transfer from its governance account to an Ethereum Safe. The native token is escrowed on the Cosmos
+chain and the normal receive path releases the matching reserve to the Safe. This needs no custom IBC
+or chain code. It is limited by governance's spendable native balance, the adapter capacity and the
+escrow rate limit. An unbacked send must never be used.
 
 ## Deployment
 
 Order matters. `setCustomERC20` and enabling the launch gate are irreversible.
+
+### Preconditions
+
+**Do not pre-fund the adapter.** It intentionally has no direct withdrawal or rescue function. If
+the escrow, decimals or denom mapping is wrong, a balance sent before the checks below may be
+unreachable even through the emergency IBC path. Verify the underlying token's transfer behaviour
+separately, complete the on-chain preflight and confirm both mappings before transferring the
+material reserve.
+
+**The denom string must be exact.** `onRecvPacket` builds it as
+`"transfer/" + destinationClientId + "/" + baseDenom`, using `ICS20Lib.getDenomPrefix`. A wrong
+string means the adapter is never found, a fresh `IBCERC20` is deployed for the real path, and neither
+mapping can be overwritten: only an `ICS20Transfer` upgrade can repair the denom.
+
+**All preparation must land before the first inbound packet.** Registration after the fact is
+impossible; funding after the fact merely bounces transfers in the meantime. For a new inactive
+client behind the launch gate, activation last provides that boundary. For an already-active client,
+pause packet processing or use an equivalent atomic maintenance procedure while installing the
+adapter; otherwise an inbound packet can create the default voucher before `setCustomERC20` lands.
+
+**The escrow must already exist.** Use governance's `createEscrow`; do not bootstrap production by
+sending an unrelated token. Once the permanent launch gate is enabled, packet processing rejects an
+unprovisioned or inactive client. `activateEscrow` also rejects the adapter until its escrow rate
+limit is non-zero.
+
+`setCustomERC20` requires `ERC20_CUSTOMIZER_ROLE`. `Escrow.setRateLimit` requires the global
+`RATE_LIMITER_ROLE` with zero execution delay. The adapter's own restricted functions (`addEscrow`,
+`setLowReserveThreshold`) are gated by the `AccessManager` passed at construction. Because every
+adapter is a new AccessManager target, selector-role wiring does not carry over automatically; the
+AccessManager admin can perform the initial setup.
+
+### Steps
 
 ```solidity
 string memory clientId = "eth-main";
@@ -173,7 +224,7 @@ adapter.addEscrow(escrow);
 Escrow(escrow).setRateLimit(address(adapter), 50_000e6);
 adapter.setLowReserveThreshold(100_000e6);
 
-// 5. Verify every value, then register the exact denom — ONE-SHOT,
+// 5. Verify every value, then register the exact denom (ONE-SHOT),
 // requires ERC20_CUSTOMIZER_ROLE.
 require(adapter.ics20() == address(ics20Transfer));
 require(address(adapter.underlying()) == address(underlying));
@@ -199,7 +250,7 @@ ics20Transfer.activateEscrow(clientId, tokens);
 
 ### Scripted deployment
 
-[`scripts/ERC20LockboxAdapterDeploy.s.sol`](../scripts/ERC20LockboxAdapterDeploy.s.sol) performs the steps above in
+[`scripts/ERC20LockboxAdapterDeploy.s.sol`](../../scripts/ERC20LockboxAdapterDeploy.s.sol) performs the steps above in
 that order. It reads its configuration from the environment:
 
 | Variable | Meaning |
@@ -233,50 +284,22 @@ around that.
 It prints a JSON receipt (`adapter`, `underlying`, `escrow`, `denom`, `scale`, `reserve`, `capacity`). It does not
 check `DENOM_DECIMALS` against the counterparty, and it does not enable the launch gate.
 
-**Do not pre-fund the adapter.** It intentionally has no direct withdrawal or rescue function. If
-the escrow, decimals or denom mapping is wrong, a balance sent before the checks above may be
-unreachable even through the emergency IBC path. Verify the underlying token's transfer behaviour
-separately, complete the on-chain preflight and confirm both mappings before transferring the
-material reserve.
-
-**The denom string must be exact.** `onRecvPacket` builds it as
-`"transfer/" + destinationClientId + "/" + baseDenom`, using `ICS20Lib.getDenomPrefix`. A wrong
-string means the adapter is never found, a fresh `IBCERC20` is deployed for the real path, and neither
-mapping can be overwritten — the denom is bricked short of an `ICS20Transfer` upgrade.
-
-**All preparation must land before the first inbound packet.** Registration after the fact is
-impossible; funding after the fact merely bounces transfers in the meantime. For a new inactive
-client behind the launch gate, activation last provides that boundary. For an already-active client,
-pause packet processing or use an equivalent atomic maintenance procedure while installing the
-adapter; otherwise an inbound packet can create the default voucher before `setCustomERC20` lands.
-
-**The escrow must already exist.** Use governance's `createEscrow`; do not bootstrap production by
-sending an unrelated token. Once the permanent launch gate is enabled, packet processing rejects an
-unprovisioned or inactive client. `activateEscrow` also rejects the adapter until its escrow rate
-limit is non-zero.
-
-`setCustomERC20` requires `ERC20_CUSTOMIZER_ROLE`. `Escrow.setRateLimit` requires the global
-`RATE_LIMITER_ROLE` with zero execution delay. The adapter's own restricted functions (`addEscrow`,
-`setLowReserveThreshold`) are gated by the `AccessManager` passed at construction. Because every
-adapter is a new AccessManager target, selector-role wiring does not carry over automatically; the
-AccessManager admin can perform the initial setup.
-
 ## Operations
 
 ### Monitoring
 
-`capacity()` is the number to alert on — remaining inbound headroom,
+`capacity()` is the number to alert on: the remaining inbound headroom,
 already in denom units. `setLowReserveThreshold` arms a `ReserveLow(capacity, threshold)` event
 emitted on the downward crossing only, so the alert does not repeat on every subsequent transfer.
 
 Alert **proactively**. Once the reserve cannot cover a transfer, `_release` reverts with
 `AdapterInsufficientReserve`, but the outcome depends on the packet path:
 
-- On a new receive, `ICS26Router.onRecvPacket` catches the revert and writes an error
-  acknowledgement. The sender's funds unlock on Cosmos, and topping up later does not retry the
+- On a new receive, `ICS26Router.recvPacket` catches the revert of the application's
+  `onRecvPacket` and writes an error acknowledgement. The sender's funds unlock on Cosmos, and topping up later does not retry the
   transfer; the user must send again.
-- On an error-acknowledgement or timeout refund, `ICS26Router.onAcknowledgementPacket` and
-  `onTimeoutPacket` do not catch the revert. The relayer transaction keeps reverting, with the
+- On an error-acknowledgement or timeout refund, `ICS26Router.ackPacket` and
+  `timeoutPacket` do not catch the revert of `onAcknowledgementPacket` or `onTimeoutPacket`. The relayer transaction keeps reverting, with the
   sender's funds still escrowed on Cosmos, until the reserve is topped up and the refund succeeds.
 
 The reserve is a shared pool and does not earmark capacity for pending refunds. Set the threshold
@@ -293,13 +316,13 @@ recovered.
 ### Rate limits
 
 Escrow rate limits key on the *registered* token address, i.e. the adapter, and are denominated in
-denom units. Setting one caps how fast the reserve can drain and gives the top-up runbook a guaranteed window
+denom units. Setting one caps how fast the reserve can drain and gives the top-up procedure a guaranteed window
 (`test_success_rateLimitAppliesToAdapter`).
 
 ## Limits and known behaviours
 
 **One adapter per denom.** `setCustomERC20` rejects a token that is already mapped, so the same base
-denom arriving through a second client id — which produces a different denom path — needs a second
+denom arriving through a second client id, which produces a different denom path, needs a second
 adapter with its own separate reserve. This does not prevent an existing adapter token from being
 forwarded over another registered client escrow.
 

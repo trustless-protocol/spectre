@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	attestortypes "attestor/types"
+
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -28,6 +30,7 @@ func TestConfigValidateAppliesSafeDefaults(t *testing.T) {
 	}
 	if config.AttestationHead != HeadFinalized ||
 		config.PollInterval != defaultPollInterval ||
+		config.CallTimeout != attestortypes.DefaultCallTimeout ||
 		config.BootstrapLookbackBlocks != defaultBootstrapLookback ||
 		config.DerivedGapBlocks != defaultDerivedGapBlocks ||
 		config.MaxDerivedRoots != defaultMaxDerivedRoots {
@@ -79,6 +82,7 @@ func TestConfigValidateFailureMatrix(t *testing.T) {
 		{name: "invalid head", mutate: func(c *Config) { c.AttestationHead = Head("confirmed") }, want: "attestation_head"},
 		{name: "missing state path", mutate: func(c *Config) { c.StatePath = "" }, want: "state_path"},
 		{name: "negative poll interval", mutate: func(c *Config) { c.PollInterval = -time.Second }, want: "poll_interval"},
+		{name: "negative call timeout", mutate: func(c *Config) { c.CallTimeout = -time.Second }, want: "call_timeout"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			config := validConfig()
@@ -86,6 +90,28 @@ func TestConfigValidateFailureMatrix(t *testing.T) {
 			err := config.Validate()
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("Validate error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// A URL that fails to parse is quoted by the parse error; it must not be
+// echoed with its key into the startup log.
+func TestConfigValidateDoesNotEchoTheKeyOfAnUnparsableURL(t *testing.T) {
+	for name, set := range map[string]func(*Config){
+		"L1 RPC":     func(c *Config) { c.L1RpcUrl = "http://[::1/v2/SECRET-KEY" },
+		"op-node":    func(c *Config) { c.OpNodeRpcUrl = "http://[::1/v2/SECRET-KEY" },
+		"L1 hint ws": func(c *Config) { c.L1WsUrl = "ws://[::1/ws/SECRET-KEY" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			config := validConfig()
+			set(&config)
+			err := config.Validate()
+			if err == nil {
+				t.Fatal("Validate accepted an unparsable URL")
+			}
+			if strings.Contains(err.Error(), "SECRET-KEY") {
+				t.Fatalf("Validate error %q echoes the key", err)
 			}
 		})
 	}

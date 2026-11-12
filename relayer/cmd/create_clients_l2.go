@@ -86,7 +86,9 @@ func (c *l2ClientConfig) validate() error {
 	if _, err := c.routerAddress(); err != nil {
 		return err
 	}
-	if err := c.Attestors.Validate(); err != nil {
+	// This config creates a client, so the install-time key rules apply: the wasm client would
+	// refuse the same set on chain, and an operator should hear it before broadcasting.
+	if err := c.Attestors.ValidateForInstall(); err != nil {
 		return fmt.Errorf("l2-config: invalid attestors: %w", err)
 	}
 	return nil

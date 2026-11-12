@@ -1,6 +1,6 @@
 # Authenticated L2 ICS-08 clients
 
-Spectre builds three checksum-distinct 08-wasm artifacts with unchanged filenames:
+Spectre builds three 08-wasm artifacts for L2s, each with its own checksum:
 
 - `cw-ics08-wasm-arbitrum`;
 - `cw-ics08-wasm-base`; and
@@ -14,13 +14,23 @@ router, commitment slot and canonical execution-header fork.
 > operational key-custody review and authenticated OP/Base/Arbitrum E2E all pass against the exact
 > candidate diff.
 
+## Table of contents
+
+- [Live 08-wasm surface](#live-08-wasm-surface)
+- [Creation and profile](#creation-and-profile)
+- [Governed attestor rotation](#governed-attestor-rotation)
+- [Signed update contract](#signed-update-contract)
+- [Provisional attestations](#provisional-attestations)
+- [Packet proofs](#packet-proofs)
+- [Fixtures and validation](#fixtures-and-validation)
+
 ## Live 08-wasm surface
 
 Each L2 artifact exports only the entry points used by the current client lifecycle:
 
 - `instantiate` stores explicitly supplied client and consensus state;
 - `sudo` handles update, misbehaviour, membership and non-membership operations; and
-- `query` handles client-message verification, misbehaviour checks, timestamps and status; and
+- `query` handles client-message verification, misbehaviour checks, timestamps and status;
 - `migrate` validates or atomically replaces the active attestor set during a governed code
   migration.
 
@@ -65,6 +75,13 @@ The only accepted profile identifiers are `op_attestor_v1`, `base_attestor_v1` a
 `arbitrum_attestor_v1`. Public keys must be unique, byte-sorted, exactly 32 bytes each and contain
 at most 32 members. The threshold must be between one and the member count.
 
+Creation and `replace_attestors` also refuse keys that no honest attestor holds
+(`AttestorConfig::validate_for_install`, `packages/l2-client/src/state.rs`): the ten encodings of
+small-order points, and any `y` coordinate at or above the field prime. A small-order key such as
+the identity verifies a signature nobody made, so one such attestor would let anyone sign for it. The
+check applies only when a set is installed. A client that already holds such a key keeps loading, and
+should be rotated away from it.
+
 These development artifacts are fresh-authenticated-state-only. A client state missing `attestors`
 is rejected with a typed error before any migration write; create a fresh authenticated client
 instead. The strict signed-header and required-attestors schemas prevent unsigned state or messages
@@ -102,12 +119,18 @@ accepted immediately after a successful replacement.
 Rotation applies only to an already-valid authenticated client. It cannot add attestors to legacy
 unsigned state; both `keep_attestors` and `replace_attestors` fail without writes for that input.
 
+The checksum has to be new every time. ibc-go refuses a migration to the checksum the client already
+runs (`ErrWasmCodeExists`, `modules/light-clients/08-wasm/v10@v10.3.0/keeper/keeper.go:154-156`) and
+refuses to store code whose checksum it already holds (`keeper.go:109-111`). A second rotation
+therefore needs a built artifact whose bytes, and so checksum, differ from the one the client runs,
+even though the attestor set is the only thing that changes.
+
 This operation is a proactive rotation mechanism: use it before a retiring key can be abused, or
 to restore liveness when an unavailable key has not already produced untrusted updates. It is not
 post-compromise recovery. A frozen client stays frozen, and consensus states accepted under the old
 key remain in the client store. If a key may already have been abused, the current contract must be
-replaced by a newly created client, including the packet sequence and receipt coordination described
-in the E2E runbook. A follow-up recovery PR will implement IBC-go's authority-only
+replaced by a newly created client, including coordination of packet sequences and
+receipts, for which no procedure is written yet. A follow-up recovery PR will implement IBC-go's authority-only
 `MsgRecoverClient`/`migrate_client_store` substitute-client flow; that lifecycle operation remains
 unsupported in these artifacts.
 
@@ -145,16 +168,22 @@ SHA256("SPECTRE_L2_ATTESTATION_V1")
 ```
 
 The statement remains exactly 164 bytes. Finality (`unsafe`, `safe`, or `finalized`) is an
-off-chain selection policy and is intentionally not another signed field. Therefore every
-finality tier must use disjoint attestor/KMS keys. Each attestor daemon rejects
-`VerifyStateRoot` requests whose `run_mode` does not exactly match its configured attestation
-head (`attestor/optimism/adapter/adapter.go`), so a single daemon can't be tricked into signing
-for the wrong tier. **Current limitation:** the relayer config loader does not itself check for
-public-key overlap across `head_kind` values or across config files/processes — a single config
-only ever declares one relay path (`relayer/cmd/config.go`), so there is no cross-tier
-comparison to make within one file, and nothing today compares keys across an operator's
-multiple config files or processes. Cross-tier key separation is presently an operational
-discipline the operator must enforce, not a validated invariant.
+off-chain selection policy and is intentionally not another signed field.
+
+**Every finality tier must therefore use disjoint attestor/KMS keys.** The reasoning is in the
+[OP operator guide](../../attestor/optimism/GUIDE.md#configuration-reference): a weaker-tier daemon
+can be asked for a signature bound to a stricter client's router and set hash, so every key the two
+tiers share lowers by one the number of other keys that would have to sign a block the stricter
+tier would refuse.
+
+Each attestor daemon rejects `VerifyStateRoot` requests whose `run_mode` does not exactly match
+its configured attestation head (`attestor/optimism/adapter/adapter.go`), so a single daemon cannot
+be made to sign for the wrong tier.
+
+**Current limitation:** nothing checks for public-key overlap between tiers. A config declares one
+relay path (`relayer/cmd/config.go`), so there is no comparison to make within one file, and
+nothing compares keys across an operator's config files or processes. Operators must enforce the
+separation themselves.
 
 Signature structure and Ed25519 verification complete before router-proof traversal. The contract
 then validates the configured header fork, derives the L2 block hash and verifies the router
@@ -189,6 +218,32 @@ client trusts its active attestor set for block identity. Removing a root from t
 therefore does not revoke a consensus state Cosmos has already stored, nor reverse packets
 processed against it. Conflicting same-height updates are rejected, and freezing the client
 requires explicit authenticated misbehaviour.
+
+**A replaced root is freeze evidence.** The signed statement binds the domain, chain ID, router,
+attestor-set hash, block number, block hash and state root, and nothing else
+(`build_attestation_statement` in `packages/l2-client/src/verification.rs`): not `provisional`, not a finality tier. When a
+provisional root is lost and the attestor then signs a different block identity for the same
+height, both certificates are valid, the client cannot tell the replacement from equivocation, and
+anyone who holds both can submit them as misbehaviour. The client freezes at that height
+(`packages/l2-client/src/runtime.rs`) and stays frozen. A deployment whose attestors sign
+roots that can still be lost accepts this.
+
+Whether a third party can obtain both certificates
+depends on who can reach the attestors' gRPC API, which these artifacts do not decide. A
+certificate is `threshold` signatures and each daemon supplies one, so the question is who can
+reach at least `threshold` of the client's attestors. That API is plaintext and unauthenticated,
+`VerifyStateRoot` signs for any caller that names a height at or below the configured head
+together with that block's state root, and the listen address is operator configuration
+(`server.address` for OP, `grpc_listen_address` for Arbitrum) with no loopback restriction in the
+code.
+
+At `unsafe` and `safe`, a caller that reaches `threshold` of the client's attestors on both
+sides of a reorg can assemble both certificates, so bind each daemon to loopback or a private
+network and expose it only to the relayers that serve the client.
+
+Binding the finality tier into
+the statement would change the wire format of the attestor, the contract and the relayer
+together, and is not part of the current artifacts.
 
 **The default accepts pending Arbitrum assertions, deliberately.** `include_provisional` defaults to
 `true` for every `head_kind` except `finalized` (`relayer/cmd/build_l2_source.go`). A confirmed-only
@@ -240,7 +295,8 @@ go run ../scripts/generate-l2-attestation-fixtures.go \
 ```
 
 The combined validator regenerates those vectors to a temporary file, checks the committed digest,
-runs Rust and Go tests, builds all four Wasm artifacts and verifies their interfaces:
+runs Rust and Go tests, builds all four Wasm artifacts (the three L2 clients and the Ethereum client) and verifies their
+interfaces:
 
 ```bash
 scripts/validate-l2-clients.sh

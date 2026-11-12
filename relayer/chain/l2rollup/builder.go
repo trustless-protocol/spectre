@@ -20,7 +20,7 @@ const headerBuildTimeout = 90 * time.Second
 // Arbitrum on this path. The interface stays because the signature slice will add a
 // second implementation — one that also carries an attestor signature.
 type HeaderBuilder interface {
-	// Name is the registry `builder` name (e.g. "l2-opstack", "l2-arbitrum").
+	// Name is the builder name ("l2-op", "l2-base" or "l2-arbitrum").
 	Name() string
 	// BuildHeader builds the client message header for request and returns the L2
 	// block the header COMMITS. The caller advances client state by that height, not

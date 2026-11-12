@@ -1,4 +1,4 @@
-# Cosmos Equivocation Incident Runbook
+# Cosmos equivocation incident
 
 Use this procedure for proof-backed, same-height Cosmos equivocation: two valid
 commits for the same chain ID and height with different block hashes. A
@@ -9,6 +9,16 @@ The relayer does not detect equivocation by polling one RPC endpoint. A correct
 CometBFT node serves the branch it committed, so evidence must come from
 administratively independent peers, an evidence service, or existing Cosmos
 tooling.
+
+## Table of contents
+
+- [1. Confirm the incident](#1-confirm-the-incident)
+- [2. Produce standard IBC evidence](#2-produce-standard-ibc-evidence)
+- [3. Verify permissions](#3-verify-permissions)
+- [4. Generate and inspect calldata](#4-generate-and-inspect-calldata)
+- [5. Submit](#5-submit)
+- [6. Verify the freeze](#6-verify-the-freeze)
+- [7. Recovery](#7-recovery)
 
 ## 1. Confirm the incident
 
@@ -174,18 +184,19 @@ and client updates through this client should now fail closed.
 Do not unfreeze automatically. Selecting the canonical branch is a governance
 action.
 
-In the production topology, `ICS26Router.unfreezeClient(clientId)` is not
-mapped to `UNPAUSER_ROLE`; AccessManager therefore restricts it to the default
-`ADMIN_ROLE`. `GOVERNANCE_ADMIN` (the governance timelock) holds that role and
-must schedule and execute the router call. The router then calls
-`SpectreClient.unfreeze()` using the `DEFAULT_ADMIN_ROLE` it holds on the
-client. `UNPAUSER_ACCOUNT` can call `unpause()` but cannot unfreeze a client.
-Confirm these addresses against the production deployment receipt before the
-incident; do not infer them from the relayer key. In direct role-managed mode,
-the configured SpectreClient `DEFAULT_ADMIN_ROLE` holder must call
-`unfreeze()`. In permissionless mode (`roleManager == address(0)`), no account
-can call `unfreeze()`; recovery requires governance migration to a replacement
-client.
+Who can unfreeze depends on the deployment topology:
+
+| Topology | Who unfreezes | How |
+|---|---|---|
+| Production (router-managed) | `GOVERNANCE_ADMIN`, the governance timelock | It schedules and executes `ICS26Router.unfreezeClient(clientId)`. The router then calls `SpectreClient.unfreeze()` with the `DEFAULT_ADMIN_ROLE` it holds on the client |
+| Direct role-managed | The holder of `DEFAULT_ADMIN_ROLE` on the SpectreClient | It calls `unfreeze()` |
+| Permissionless (`roleManager == address(0)`) | No account | Recovery requires a governance migration to a replacement client |
+
+In the production topology, `unfreezeClient` is not mapped to `UNPAUSER_ROLE`, so
+AccessManager restricts it to the default `ADMIN_ROLE`. `UNPAUSER_ACCOUNT` can call
+`unpause()` but cannot unfreeze a client. Confirm these addresses against the
+production deployment receipt before the incident; do not infer them from the
+relayer key.
 
 Record both pieces of evidence, the submission transaction hash, the selected
 branch, and the governance decision in the incident report.

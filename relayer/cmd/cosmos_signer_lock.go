@@ -30,7 +30,7 @@ import (
 // value the operator is told to vary per process is not a lock: the two
 // processes it exists to catch each take their own file and both start. That is
 // the shape this guard shipped with, and it disabled the guard in exactly the
-// documented multi-process setup (docs/E2E.md: "give each source ... its own
+// documented multi-process setup (docs/runbooks/E2E_LOCAL.md: "give each source ... its own
 // state directory"), which is the only setup where it matters.
 //
 // The known cost of keying on the address alone: one key relaying two DIFFERENT

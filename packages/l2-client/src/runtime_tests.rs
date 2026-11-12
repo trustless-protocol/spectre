@@ -561,3 +561,40 @@ fn invalid_or_unserializable_attestor_replacement_is_atomic() {
     ));
     assert_eq!(storage_snapshot(&storage), before);
 }
+
+#[test]
+fn small_order_attestor_keys_are_rejected_at_install_and_rotation_but_not_on_load() {
+    let identity = {
+        let mut key = vec![0; 32];
+        key[0] = 1;
+        Binary::from(key)
+    };
+
+    // Install: nothing is written.
+    let mut storage = MockStorage::new();
+    let (mut client, consensus) = bootstrap();
+    client.attestors.public_keys = vec![identity.clone()];
+    assert!(matches!(
+        runtime::instantiate(&mut storage, &client, &consensus, vec![9], 10),
+        Err(Error::InvalidAttestorPublicKey)
+    ));
+    assert_eq!(storage_snapshot(&storage), [None, None, None]);
+    // The same client still passes the validation that runs on every call.
+    assert!(client.validate().is_ok());
+
+    // Rotation: the stored client is left untouched.
+    let (client, consensus) = bootstrap();
+    runtime::instantiate(&mut storage, &client, &consensus, vec![9], 10).unwrap();
+    let before = storage_snapshot(&storage);
+    assert!(matches!(
+        runtime::migrate::<Profile>(
+            &mut storage,
+            MigrateMsg::ReplaceAttestors {
+                public_keys: vec![identity],
+                threshold: 1,
+            },
+        ),
+        Err(Error::InvalidAttestorPublicKey)
+    ));
+    assert_eq!(storage_snapshot(&storage), before);
+}

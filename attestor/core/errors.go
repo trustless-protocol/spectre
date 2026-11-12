@@ -49,6 +49,12 @@ func (e *Error) Unwrap() error { return e.Err }
 
 // NewError creates a classified error. A nil cause is valid for pure input or
 // route errors.
+//
+// The message is what a gRPC caller sees; the cause is not (see mapError in
+// attestor/grpc). Put what was being done in the message and the upstream error
+// in the cause. A message that quotes an upstream error would hand its text,
+// and any API key in the endpoint URL it quotes, to every peer that can reach
+// the unauthenticated API.
 func NewError(kind ErrorKind, message string, cause error) error {
 	return &Error{Kind: kind, Msg: message, Err: cause}
 }

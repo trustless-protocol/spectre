@@ -98,3 +98,27 @@ func TestDialEthRPCLeavesWebSocketUnbounded(t *testing.T) {
 		t.Fatalf("WebSocket call took %s, want more than HTTP timeout %s", elapsed, httpTimeout)
 	}
 }
+
+// A dial error reaches the process log at startup, and an RPC provider's API
+// key travels in the URL: the error may name the endpoint, never the key.
+func TestDialEthRPCErrorsDoNotQuoteTheKey(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		url  string
+	}{
+		{"unparsable url", "http://[::1/v2/SECRET-KEY"},
+		{"refused websocket", "ws://127.0.0.1:1/ws/SECRET-KEY"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, err := DialEthRPC(ctx, tc.url, time.Second)
+			if err == nil {
+				t.Fatalf("DialEthRPC(%q) succeeded", tc.url)
+			}
+			if strings.Contains(err.Error(), "SECRET-KEY") {
+				t.Fatalf("DialEthRPC error %q carries the key", err)
+			}
+		})
+	}
+}

@@ -52,6 +52,8 @@ pub enum Error {
     InvalidAttestorThreshold,
     #[error("invalid attestor public key length")]
     InvalidAttestorPublicKeyLength,
+    #[error("invalid attestor public key")]
+    InvalidAttestorPublicKey,
     #[error("invalid attestor signature count")]
     InvalidAttestorSignatureCount,
     #[error("invalid attestor index")]

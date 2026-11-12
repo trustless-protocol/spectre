@@ -2975,6 +2975,7 @@ dependencies = [
  "alloy-primitives 1.6.1",
  "alloy-rlp",
  "cosmwasm-std",
+ "curve25519-dalek",
  "ed25519-zebra",
  "ethereum-trie-db 0.1.0",
  "hex",

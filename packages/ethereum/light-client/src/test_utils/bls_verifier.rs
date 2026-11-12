@@ -3,6 +3,8 @@
 use ethereum_types::consensus::bls::{BlsPublicKey, BlsSignature};
 use thiserror::Error;
 
+use crate::verify::BlsVerify;
+
 /// Test implementation of the BLS verifier
 #[allow(clippy::module_name_repetitions)]
 pub struct TestBlsVerifier;
@@ -68,4 +70,21 @@ pub fn aggreagate(public_keys: &[BlsPublicKey]) -> Result<BlsPublicKey, BlsError
     };
 
     Ok(BlsPublicKey::from(pubkey.as_bytes()))
+}
+
+impl BlsVerify for TestBlsVerifier {
+    type Error = BlsError;
+
+    fn fast_aggregate_verify(
+        &self,
+        public_keys: &[BlsPublicKey],
+        msg: alloy_primitives::B256,
+        signature: BlsSignature,
+    ) -> Result<(), BlsError> {
+        fast_aggregate_verify(public_keys, msg, signature)
+    }
+
+    fn aggregate(&self, public_keys: &[BlsPublicKey]) -> Result<BlsPublicKey, BlsError> {
+        aggreagate(public_keys)
+    }
 }

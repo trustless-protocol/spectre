@@ -3,13 +3,22 @@ package opstack
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"net/url"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	attestortypes "attestor/types"
+
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 type fakeGames struct {
@@ -295,6 +304,51 @@ func TestMismatchIsRetainedWhenChallengeHookFails(t *testing.T) {
 	}
 	if pending := a.store.Pending(); len(pending) != 0 {
 		t.Fatalf("pending after hook failure = %+v", pending)
+	}
+}
+
+// hangingHook never returns until its context ends, like a challenge
+// transaction submitted to an endpoint that does not answer.
+type hangingHook struct{}
+
+func (hangingHook) OnMismatch(ctx context.Context, _ ProposedRoot, _ [32]byte) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// The hook is called with the loop's context and, once it submits a challenge
+// transaction, will make network calls. A hook that never returns must be cut
+// like any other call: the verdict stays recorded, the failure is logged, and the
+// pass goes on.
+func TestHungChallengeHookIsCutAndTheVerdictKept(t *testing.T) {
+	claim := root(0xaa)
+	local := root(0xab)
+	games := &fakeGames{games: []ProposedRoot{game(0, 0, 100, claim)}}
+	replica := &fakeReplica{
+		status:  SyncStatus{SafeL2: 100, FinalizedL2: 100},
+		outputs: map[uint64][32]byte{100: local},
+	}
+	a := newTestAttestor(t, HeadSafe, games, replica, hangingHook{})
+	a.cfg.CallTimeout = 50 * time.Millisecond
+	core, logs := observer.New(zapcore.ErrorLevel)
+	a.logger = zap.New(core).Sugar()
+
+	done := make(chan error, 1)
+	go func() { done <- a.runOnce(context.Background()) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runOnce: a cut hook must not fail the pass: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a hung challenge hook parked the pass")
+	}
+	if got := a.store.state.Mismatches; len(got) != 1 || got[0].LocalRoot != local {
+		t.Fatalf("mismatches after a cut hook = %+v", got)
+	}
+	failure := logs.FilterMessageSnippet("challenge hook failed")
+	if failure.Len() != 1 || !strings.Contains(failure.All()[0].Message, "challenge hook exceeded its 50ms deadline") {
+		t.Fatalf("hook failure log = %v, want one line naming the hook and its deadline", failure.All())
 	}
 }
 
@@ -754,5 +808,369 @@ func TestPruneDerivedKeepsGamesAndProvisional(t *testing.T) {
 	}
 	if removed := s.PruneDerived(2); removed != 0 {
 		t.Fatalf("second prune removed %d, want 0", removed)
+	}
+}
+
+// hangingReplica parks SyncStatus until its context ends, like a connection
+// whose response never arrives.
+type hangingReplica struct{ fakeReplica }
+
+func (h *hangingReplica) SyncStatus(ctx context.Context) (SyncStatus, error) {
+	<-ctx.Done()
+	return SyncStatus{}, ctx.Err()
+}
+
+// stallingReplica serves its first SyncStatus and parks on every later one.
+type stallingReplica struct {
+	fakeReplica
+	calls atomic.Int32
+}
+
+func (s *stallingReplica) SyncStatus(ctx context.Context) (SyncStatus, error) {
+	if s.calls.Add(1) == 1 {
+		return s.status, nil
+	}
+	<-ctx.Done()
+	return SyncStatus{}, ctx.Err()
+}
+
+// hangingGames parks the finalized factory view until its context ends.
+type hangingGames struct{ fakeGames }
+
+func (h *hangingGames) FinalizedView(ctx context.Context) (gameSource, uint64, error) {
+	<-ctx.Done()
+	return nil, 0, ctx.Err()
+}
+
+// testClock is a clock the test advances by hand; it is read by the run loop's
+// goroutine and the test's, so it is atomic.
+type testClock struct{ ns atomic.Int64 }
+
+func newTestClock(at time.Time) *testClock {
+	c := &testClock{}
+	c.ns.Store(at.UnixNano())
+	return c
+}
+
+func (c *testClock) now() time.Time          { return time.Unix(0, c.ns.Load()) }
+func (c *testClock) advance(d time.Duration) { c.ns.Add(int64(d)) }
+
+func captureWarnings(a *OpStackAttestor) *observer.ObservedLogs {
+	core, logs := observer.New(zapcore.WarnLevel)
+	a.logger = zap.New(core).Sugar()
+	return logs
+}
+
+func waitUntil(t *testing.T, what string, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !condition() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+func counterTotal(t *testing.T, registry *prometheus.Registry, name string) float64 {
+	t.Helper()
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatalf("gather metrics: %v", err)
+	}
+	for _, family := range families {
+		if family.GetName() != name {
+			continue
+		}
+		var total float64
+		for _, metric := range family.GetMetric() {
+			total += metric.GetCounter().GetValue()
+		}
+		return total
+	}
+	return 0
+}
+
+func stopRun(t *testing.T, cancel context.CancelFunc, done <-chan error) {
+	t.Helper()
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run after cancel: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after its context was cancelled")
+	}
+}
+
+// A call that never returns used to park the single feed goroutine forever:
+// no error, no backoff, no log, no metric. The call bound turns it into an
+// ordinary failed pass, and the log line names the call that was cut.
+func TestHungOpNodeCallIsCutAndLogged(t *testing.T) {
+	a := newTestAttestor(t, HeadSafe, &fakeGames{}, &fakeReplica{}, nil)
+	a.replica = &hangingReplica{}
+	a.cfg.CallTimeout = 50 * time.Millisecond
+	a.cfg.PollInterval = 10 * time.Millisecond
+	logs := captureWarnings(a)
+	registry := prometheus.NewRegistry()
+	a.metrics = NewMetrics(registry)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx) }()
+	defer stopRun(t, cancel, done)
+
+	waitUntil(t, "the hung call to be cut and logged", func() bool {
+		return logs.FilterMessageSnippet("attestation pass failed").Len() == 1
+	})
+	message := logs.FilterMessageSnippet("attestation pass failed").All()[0].Message
+	if !strings.Contains(message, "op-node SyncStatus exceeded its 50ms deadline") ||
+		!strings.Contains(message, "nothing affirmed, retrying in 1m0s") {
+		t.Fatalf("log line %q does not name the call, its deadline and the backoff", message)
+	}
+	if got := counterTotal(t, registry, "spectre_op_attestor_pass_failures_total"); got != 1 {
+		t.Fatalf("pass failure counter = %v, want 1", got)
+	}
+}
+
+func TestRunBoundsTheBootstrapOfAFreshStore(t *testing.T) {
+	a := newTestAttestor(t, HeadSafe, &fakeGames{}, &fakeReplica{}, nil)
+	fresh, err := LoadStore(filepath.Join(t.TempDir(), "fresh.json"))
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	a.store = fresh
+	a.games = &hangingGames{}
+	a.cfg.CallTimeout = 50 * time.Millisecond
+
+	done := make(chan error, 1)
+	go func() { done <- a.Run(context.Background()) }()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "bootstrap failed") ||
+			!strings.Contains(err.Error(), "factory FinalizedView exceeded its 50ms deadline") {
+			t.Fatalf("Run error = %v, want a bootstrap failure naming the call and its deadline", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a hung bootstrap parked Run")
+	}
+}
+
+// RunnerAlive is what tells a parked loop from a healthy one: LastSyncStatus
+// keeps returning the last snapshot either way, so health that read only that
+// stayed SERVING over a frozen feed.
+func TestRunnerAliveTellsAParkedLoopFromAHealthyOne(t *testing.T) {
+	rep := &stallingReplica{}
+	rep.status = SyncStatus{SafeL2: 150, UnsafeL2: 160, FinalizedL2: 150}
+	a := newTestAttestor(t, HeadSafe, &fakeGames{}, &fakeReplica{}, nil)
+	a.replica = rep
+	clock := newTestClock(time.Unix(5000, 0))
+	a.now = clock.now
+	// A long call bound keeps the second pass parked in its first call for the
+	// whole test, so what is measured is the heartbeat and not the bound.
+	a.cfg.CallTimeout = time.Hour
+	a.cfg.PollInterval = 10 * time.Millisecond
+	staleAfter := time.Hour + 20*time.Millisecond
+
+	if a.RunnerAlive() {
+		t.Fatal("a loop that never started is alive")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx) }()
+	defer stopRun(t, cancel, done)
+
+	waitUntil(t, "the first pass to record a snapshot and the loop to beat", func() bool {
+		_, found := a.LastSyncStatus()
+		return found && a.RunnerAlive()
+	})
+	waitUntil(t, "the second pass to park", func() bool { return rep.calls.Load() >= 2 })
+
+	clock.advance(30 * time.Minute)
+	if !a.RunnerAlive() {
+		t.Fatal("a call that has run for less than the call bound read as a dead loop")
+	}
+	clock.advance(staleAfter)
+	if _, found := a.LastSyncStatus(); !found {
+		t.Fatal("the snapshot disappeared")
+	}
+	if a.RunnerAlive() {
+		t.Fatal("a loop parked beyond the call bound and two ticks still reads as alive")
+	}
+}
+
+// A pass that fails is not a parked loop: it is reported by the log and the
+// failure counter, and it backs off, but the loop keeps coming back around.
+func TestRunnerStaysAliveWhilePassesFail(t *testing.T) {
+	a := newTestAttestor(t, HeadSafe, &fakeGames{}, &fakeReplica{statusErr: errors.New("op-node unavailable")}, nil)
+	clock := newTestClock(time.Unix(5000, 0))
+	a.now = clock.now
+	// staleAfter is about 1s, well under the 1m failure backoff, so the loop
+	// is only alive through the backoff if it beats without running a pass.
+	a.cfg.CallTimeout = time.Second
+	a.cfg.PollInterval = 10 * time.Millisecond
+	logs := captureWarnings(a)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx) }()
+	defer stopRun(t, cancel, done)
+
+	waitUntil(t, "the failing pass to be logged", func() bool {
+		return logs.FilterMessageSnippet("attestation pass failed").Len() == 1
+	})
+	clock.advance(30 * time.Second) // inside the 1m backoff: ticks arrive, no pass runs
+	// The advance left the last beat 30s old, far past staleAfter: only a beat
+	// at the new time makes the loop alive again.
+	waitUntil(t, "the loop to beat again during the backoff", a.RunnerAlive)
+	if got := logs.FilterMessageSnippet("attestation pass failed").Len(); got != 1 {
+		t.Fatalf("%d passes failed, want 1: the backoff should have held the next pass back", got)
+	}
+	if _, found := a.LastSyncStatus(); found {
+		t.Fatal("a failed pass recorded a snapshot")
+	}
+}
+
+// hookedReplica runs a hook inside each OutputAtBlock call, before the output is
+// read: the place a slow endpoint, or one that advances a test clock, is stood
+// in for.
+type hookedReplica struct {
+	fakeReplica
+	hook  func(ctx context.Context, call int) error
+	calls atomic.Int32
+}
+
+func (h *hookedReplica) OutputAtBlock(ctx context.Context, l2Block uint64) ([32]byte, error) {
+	call := int(h.calls.Add(1))
+	if h.hook != nil {
+		if err := h.hook(ctx, call); err != nil {
+			return [32]byte{}, err
+		}
+	}
+	return h.fakeReplica.OutputAtBlock(ctx, l2Block)
+}
+
+// newPendingGames builds an attestor with n ingested games that the replica
+// already covers, so a pass decides each of them with one OutputAtBlock call.
+func newPendingGames(t *testing.T, n int) (*OpStackAttestor, *hookedReplica) {
+	t.Helper()
+	games := &fakeGames{}
+	outputs := map[uint64][32]byte{}
+	for i := 0; i < n; i++ {
+		claim := root(byte(i + 1))
+		games.games = append(games.games, game(uint64(i), 0, 100+uint64(i), claim))
+		outputs[100+uint64(i)] = claim
+	}
+	replica := &hookedReplica{fakeReplica: fakeReplica{
+		status:  SyncStatus{SafeL2: 200, UnsafeL2: 200, FinalizedL2: 200},
+		outputs: outputs,
+	}}
+	a := newTestAttestor(t, HeadSafe, games, &fakeReplica{}, nil)
+	a.replica = replica
+	return a, replica
+}
+
+// A pass is a loop over work the runner does not control, and it can take far
+// longer than any one call. Each call here is well inside its bound; only their
+// sum is longer than one call's bound. A deadline on the whole pass would cut it
+// and send it to the failure backoff, with the games behind the cut waiting for
+// the next pass.
+func TestALongPassOfSlowCallsIsNotCut(t *testing.T) {
+	const games = 10
+	a, replica := newPendingGames(t, games)
+	a.cfg.CallTimeout = 100 * time.Millisecond
+	a.cfg.PollInterval = time.Hour // only the immediate first pass runs
+	replica.hook = func(ctx context.Context, _ int) error {
+		select {
+		case <-time.After(20 * time.Millisecond):
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	logs := captureWarnings(a)
+
+	started := time.Now()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx) }()
+	defer stopRun(t, cancel, done)
+
+	waitUntil(t, "every game to be decided in the first pass", func() bool {
+		return a.store.NextGameIndex() == games && len(a.store.Pending()) == 0
+	})
+	if took := time.Since(started); took <= a.cfg.CallTimeout {
+		t.Fatalf("the pass took %s, no longer than one call's bound %s: the test proves nothing", took, a.cfg.CallTimeout)
+	}
+	if got := logs.FilterMessageSnippet("attestation pass failed").Len(); got != 0 {
+		t.Fatalf("%d pass failures logged for a slow but healthy replica", got)
+	}
+}
+
+// A pass can legitimately run far longer than the staleness window. It stays
+// alive because the runner beats as each call returns, not only when the loop
+// comes back around.
+func TestRunnerStaysAliveThroughALongPassOfSlowCalls(t *testing.T) {
+	const games = 10
+	a, replica := newPendingGames(t, games)
+	clock := newTestClock(time.Unix(5000, 0))
+	a.now = clock.now
+	a.cfg.CallTimeout = time.Hour
+	a.cfg.PollInterval = 10 * time.Millisecond
+	staleAfter := attestortypes.FeedStaleAfter(a.cfg.CallTimeout, a.cfg.PollInterval)
+
+	const perCall = 40 * time.Minute // each call "takes" this long on the test clock
+	var sampled []bool
+	replica.hook = func(context.Context, int) error {
+		clock.advance(perCall)
+		sampled = append(sampled, a.RunnerAlive()) // while the call is in flight
+		return nil
+	}
+
+	a.heartbeat.Beat(a.now()) // the loop has started
+	startedAt := clock.now()
+	if err := a.runOnce(context.Background()); err != nil {
+		t.Fatalf("runOnce: %v", err)
+	}
+	if span := clock.now().Sub(startedAt); span <= 2*staleAfter {
+		t.Fatalf("the pass spanned %s on the test clock, not longer than twice the %s window: the test proves nothing", span, staleAfter)
+	}
+	if len(sampled) < games {
+		t.Fatalf("%d calls sampled, want at least %d", len(sampled), games)
+	}
+	for call, alive := range sampled {
+		if !alive {
+			t.Fatalf("the loop read as dead during call %d of a pass whose calls each returned inside the window", call+1)
+		}
+	}
+	if !a.RunnerAlive() {
+		t.Fatal("the loop reads as dead after a pass whose last call just returned")
+	}
+}
+
+// The pass failure line is where a transport error is logged at run time, and
+// net/http quotes the full endpoint URL in it; an RPC provider's API key is in
+// that URL.
+func TestPassFailureLogDoesNotQuoteTheEndpointKey(t *testing.T) {
+	transport := &url.Error{Op: "Post", URL: "http://127.0.0.1:9545/rpc?apikey=SECRET-KEY", Err: io.EOF}
+	a := newTestAttestor(t, HeadSafe, &fakeGames{}, &fakeReplica{statusErr: fmt.Errorf("optimism_syncStatus failed: %w", transport)}, nil)
+	a.cfg.PollInterval = 10 * time.Millisecond
+	logs := captureWarnings(a)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx) }()
+	defer stopRun(t, cancel, done)
+
+	waitUntil(t, "the failing pass to be logged", func() bool {
+		return logs.FilterMessageSnippet("attestation pass failed").Len() == 1
+	})
+	message := logs.FilterMessageSnippet("attestation pass failed").All()[0].Message
+	if strings.Contains(message, "SECRET-KEY") || strings.Contains(message, "apikey") {
+		t.Fatalf("log line %q carries the endpoint key", message)
+	}
+	if !strings.Contains(message, `Post "http://127.0.0.1:9545": EOF`) {
+		t.Fatalf("log line %q should still name the host and the failure", message)
 	}
 }

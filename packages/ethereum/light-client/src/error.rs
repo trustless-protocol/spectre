@@ -210,6 +210,9 @@ pub enum EthereumIBCError {
     #[error("client's store period must be equal to update's finalized period")]
     StorePeriodMustBeEqualToFinalizedPeriod,
 
+    #[error("client's store period must be equal to update's attested period")]
+    StorePeriodMustBeEqualToAttestedPeriod,
+
     #[error("failed to compute slot at timestamp with  \
         (timestamp ({timestamp}) - genesis ({genesis})) / seconds_per_slot ({seconds_per_slot}) + genesis_slot ({genesis_slot})"
     )]
@@ -225,6 +228,14 @@ pub enum EthereumIBCError {
 
     #[error("storage roots are not conflicting: {0} == {0}")]
     MisbehaviourStorageRootsMatch(B256),
+
+    #[error(
+        "misbehaviour is signed in sync committee period {signature_period}, before the client's latest period {latest_period}"
+    )]
+    MisbehaviourSignedByPastCommittee {
+        signature_period: u64,
+        latest_period: u64,
+    },
 
     #[error(
         "update must be against a previous consensus state: \

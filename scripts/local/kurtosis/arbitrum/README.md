@@ -6,10 +6,10 @@ Kurtosis enclave. It intentionally does not deploy Ethereum.
 Use the repository wrapper rather than invoking the package directly:
 
 ```sh
-# Arbitrum only — the wrapper brings the shared L1 up itself:
+# Arbitrum only: the wrapper brings the shared L1 up itself.
 ./scripts/local/run_arbitrum_node.sh
 
-# …or share one L1 with OP by starting that stack first:
+# Or share one L1 with OP (the two scripts can run in either order):
 ./scripts/local/run_optimism_node.sh
 ./scripts/local/run_arbitrum_node.sh
 ```

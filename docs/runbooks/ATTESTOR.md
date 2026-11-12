@@ -1,4 +1,22 @@
-# Attestor operations and divergence runbook
+# Attestor operations and divergence
+
+An **attestor** is an off-chain daemon that signs the identity of an L2 block (number, hash and
+state root). The L2 light clients on Cosmos (OP, Base, Arbitrum) verify neither the rollup's L1
+contracts nor a ZK proof: they accept an L2 header only when it carries Ed25519 signatures from a
+threshold of the attestors pinned in the client. Each attestor checks a block against a node it
+reads itself before signing. The relayer asks the attestors for signatures and for the highest
+height they have attested. Component details are in
+[attestor/optimism](../../attestor/optimism/README.md) (OP and Base) and
+[attestor/arbitrum](../../attestor/arbitrum/README.md); the client side is in
+[L2_CLIENTS.md](L2_CLIENTS.md).
+
+## Table of contents
+
+- [Supported transport boundary](#supported-transport-boundary)
+- [Error redaction](#error-redaction)
+- [What to watch](#what-to-watch)
+- [Opt-in early Arbitrum assertions](#opt-in-early-arbitrum-assertions)
+- [`VerifyStateRoot` mismatch or divergence](#verifystateroot-mismatch-or-divergence)
 
 ## Supported transport boundary
 
@@ -20,8 +38,27 @@ grpcurl -plaintext -d '{}' 127.0.0.1:3001 attestor.AttestorService/Info
 curl -fsS http://127.0.0.1:9090/metrics | grep spectre_.*_attestor
 ```
 
+Use the ports of the deployment. The example configs put the Arbitrum metrics on
+`9090` and the OP metrics on `3000`; the devnet scripts publish gRPC on `3001`
+unless `GRPC_PORT` is set.
+
 Every production gRPC request must include the configured `src_chain`; an
 empty value is rejected rather than inferred from a single feed.
+
+## Error redaction
+
+A failed request returns the code of the error's class and one classified
+message (for example `read replica finalized head`), never the upstream error
+behind it. That error quotes the RPC endpoint URL, and a provider's API key can
+be in its path or query, so any peer that reaches the unauthenticated API would
+read it out of an upstream outage. The cause is in the attestor's own log as
+`attestor gRPC <method> failed (<message>): <cause>`. Every URL in that line is
+reduced to scheme and host, as it is in the other lines that log an upstream
+failure (`attestation pass failed`, `Arbitrum assertion attestation failed`,
+`attestor runtime refresh failed`, the Nitro new-head subscription lines, the OP
+`DisputeGameCreated` hint line), in dial and configuration errors at startup,
+and in the fatal error that ends the process. A key that is part of the host
+name is not removed.
 
 ## What to watch
 
@@ -34,13 +71,18 @@ The Arbitrum endpoint exports `spectre_arbitrum_attestor_*`, labeled only by
 | `runtime_refresh_failures_total` increases | Nitro unavailable/rate-limited | Inspect RPC error and backoff log; reduce backfill concurrency or use a dedicated endpoint |
 | `assertion_next_l1_block` and `assertions_pending` increase | Finalized-L1 ingestion/reconciliation is behind | Check L1 finalized head, RollupCore RPC, and block-range settings |
 | `assertion_ingest_head` stops moving | No new successful assertion ingest snapshot | Check `l1_ingest_head`, selected L1 tag, hash-based status RPC support and `assertion_sync_failures_total`; the durable cursor still tracks finalized logs only |
+| `assertion_sync_failures_total` increases and the log says `finalized L1 block N is behind the assertion cursor M` | The L1 RPC answered a finalized-block read from behind, as a lagging backend behind a load balancer or a failover does. The pass is refused before it changes anything, so no assertion is pruned | Normally clears once the backend catches up. If it persists, the endpoint is permanently behind, or serves a different chain than the one `attestor_state_path` was built against |
+| `assertion_sync_failures_total` increases and the log says `<call> exceeded its … deadline` (for example `L1 AssertionStatus`) | That L1 or Nitro call did not return within `assertion_call_timeout` and was cut, which fails the pass. What was committed before the cut is kept, and the next pass retries from the durable state | Check the endpoint that stopped answering (a WebSocket connection that stays open but drops a response, for example) |
+| gRPC health is NOT_SERVING while `nitro_*_head` still moves | Neither the assertion loop nor any of its L1 or Nitro calls has made progress for `assertion_call_timeout` plus two `assertion_poll_interval`s | Look at the last `Arbitrum assertion attestation failed` line; a loop that logs nothing is blocked somewhere the call bound does not reach (a stalled disk write, for example), so restart it |
 | `assertion_revocations_total` increases | An assertion was withdrawn before L1 finality | Inspect L1 reorg/head regression or policy-change logs; inspect Cosmos state before retrying packets |
 | `roots_provisional` remains high | Finalized recheck is waiting | Compare Nitro finalized head with the provisional heights |
 | `finalized_divergence_total`, `finalized_reorg_total`, or `mismatch_records` increases | Earlier evidence disagreed with the authoritative recheck | Follow the divergence procedure below |
 | `persistence_failures_total` increases | New feed state was not made durable | Stop relay progression, repair storage, and restart only after state-file inspection |
 
-OP uses the analogous `spectre_op_attestor_*` metrics. `Info` is a useful
-point-in-time diagnostic but is not a replacement for these histories.
+OP uses the analogous `spectre_op_attestor_*` metrics, listed in the
+[OP operator guide](../../attestor/optimism/GUIDE.md#metrics-reference). Its failed passes, including
+those caused by a call cut at `call_timeout_seconds`, count in `pass_failures_total`. `Info` is a
+useful point-in-time diagnostic but is not a replacement for these histories.
 
 ## Opt-in early Arbitrum assertions
 
@@ -67,7 +109,10 @@ Early provisional relay admits L1 reorg and assertion challenge risk. Feed
 withdrawal cannot undo Cosmos consensus states or packets already accepted.
 The Wasm client authenticates signatures, rejects conflicting same-height
 updates, and can freeze on explicit authenticated misbehaviour; it has no
-automatic provisional-root replacement or rollback.
+automatic provisional-root replacement or rollback. A root the attestor replaces
+after signing it is itself such evidence, because the signed statement does not
+say whether the root was provisional. See
+[Provisional attestations](L2_CLIENTS.md#provisional-attestations).
 
 ## `VerifyStateRoot` mismatch or divergence
 

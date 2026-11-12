@@ -1,7 +1,7 @@
 //! This module contains the sudo message handlers
 
 use cosmwasm_std::{to_json_binary, Binary, Deps, DepsMut};
-use ethereum_light_client::update::update_consensus_state;
+use ethereum_light_client::{header::Header, update::update_consensus_state};
 use ibc_proto::ibc::{
     core::client::v1::Height as IbcProtoHeight,
     lightclients::wasm::v1::ConsensusState as WasmConsensusState,
@@ -15,8 +15,9 @@ use crate::{
         VerifyMembershipMsg, VerifyNonMembershipMsg,
     },
     state::{
-        consensus_db_key, encode_client_state, encode_consensus_state, get_eth_client_state,
-        get_eth_consensus_state, get_wasm_client_state, store_client_state, HOST_CLIENT_STATE_KEY,
+        consensus_db_key, encode_client_state, encode_consensus_state,
+        ensure_trusted_slot_is_latest, get_eth_client_state, get_eth_consensus_state,
+        get_wasm_client_state, store_client_state, HOST_CLIENT_STATE_KEY,
     },
     ContractError,
 };
@@ -107,8 +108,12 @@ pub fn update_state(
         return Err(ContractError::Frozen);
     }
     let header_bz: Vec<u8> = update_state_msg.client_message.into();
-    let header = serde_json::from_slice(&header_bz)
+    let header: Header = serde_json::from_slice(&header_bz)
         .map_err(ContractError::DeserializeClientMessageFailed)?;
+    // The header was verified against `trusted_slot`, and the update below is applied on top of the
+    // latest consensus state. `verify_client_message` only accepts the two being the same, and this
+    // keeps the apply step from relying on that having run.
+    ensure_trusted_slot_is_latest(&eth_client_state, header.trusted_slot)?;
     let eth_consensus_state = get_eth_consensus_state(deps.storage, eth_client_state.latest_slot)?;
 
     let (updated_slot, updated_consensus_state, updated_client_state) =

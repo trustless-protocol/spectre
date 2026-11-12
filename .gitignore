@@ -106,3 +106,6 @@ specs/
 # 805-line stale copy of subscriber/cosmos.go reached main in #457.
 *.orig
 *.rej
+
+# Local Claude Code configuration (skills, commands, settings) is per-developer
+.claude/

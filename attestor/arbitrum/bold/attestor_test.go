@@ -10,6 +10,7 @@ import (
 	"time"
 
 	arbitrum "attestor/arbitrum"
+	attestortypes "attestor/types"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -165,6 +166,13 @@ func TestNewAssertionAttestorFailureMatrix(t *testing.T) {
 			},
 			want: "poll interval",
 		},
+		{
+			name: "negative call timeout",
+			make: func() (AssertionSource, CommitmentResolver, *arbitrum.AttestedRootStore, AssertionAttestorConfig) {
+				return source, resolver, store, AssertionAttestorConfig{CallTimeout: -time.Second}
+			},
+			want: "call timeout",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			source, resolver, store, config := tc.make()
@@ -179,7 +187,9 @@ func TestNewAssertionAttestorFailureMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAssertionAttestor defaults: %v", err)
 	}
-	if loop.config.PollInterval != defaultAssertionPollInterval || loop.config.MaxL1BlockRange != defaultMaxL1BlockRange {
+	if loop.config.PollInterval != defaultAssertionPollInterval ||
+		loop.config.CallTimeout != attestortypes.DefaultCallTimeout ||
+		loop.config.MaxL1BlockRange != defaultMaxL1BlockRange {
 		t.Fatalf("defaults = %+v", loop.config)
 	}
 }

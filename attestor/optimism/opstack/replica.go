@@ -6,6 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"time"
+
+	attestortypes "attestor/types"
+	"attestor/types/redact"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -26,10 +30,15 @@ type ReplicaClient struct {
 	c *rpc.Client
 }
 
-func DialReplica(ctx context.Context, url string) (*ReplicaClient, error) {
-	c, err := rpc.DialContext(ctx, url)
+// DialReplica connects to the op-node RPC. An HTTP(S) endpoint carries the same
+// transport timeout DialEthRPC gives the L1 client: a reachable op-node can
+// accept a request and never answer, and go-ethereum applies no client timeout
+// itself. A WebSocket or IPC endpoint carries none; the caller's context is
+// what bounds a call on it (the run loop's call bound).
+func DialReplica(ctx context.Context, url string, timeout time.Duration) (*ReplicaClient, error) {
+	c, err := attestortypes.DialRPC(ctx, url, timeout)
 	if err != nil {
-		return nil, fmt.Errorf("failed to dial op-node rpc %s: %w", url, err)
+		return nil, fmt.Errorf("failed to dial op-node rpc %s: %w", redact.URL(url), redact.Error(err))
 	}
 	return &ReplicaClient{c: c}, nil
 }

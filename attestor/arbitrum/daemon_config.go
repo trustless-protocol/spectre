@@ -13,6 +13,9 @@ import (
 	"strings"
 	"time"
 
+	attestortypes "attestor/types"
+	"attestor/types/redact"
+
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -39,6 +42,7 @@ type DaemonConfig struct {
 	AssertionStatusOffset      uint8        `json:"assertion_status_offset"`
 	AssertionStartBlock        uint64       `json:"assertion_start_block"`
 	AssertionPollInterval      string       `json:"assertion_poll_interval"`
+	AssertionCallTimeout       string       `json:"assertion_call_timeout"`
 	AssertionMaxBlockRange     uint64       `json:"assertion_max_block_range"`
 	AttestorStatePath          string       `json:"attestor_state_path"`
 	NitroRPCURL                string       `json:"nitro_rpc_url"`
@@ -148,6 +152,9 @@ func (c DaemonConfig) Validate() error {
 	if _, err := c.AssertionPollDuration(); err != nil {
 		return err
 	}
+	if _, err := c.AssertionCallTimeoutDuration(); err != nil {
+		return err
+	}
 	if c.AttestorStatePath == "" || !filepath.IsAbs(c.AttestorStatePath) {
 		return errors.New("attestor_state_path must resolve to an absolute path")
 	}
@@ -238,6 +245,16 @@ func (c DaemonConfig) AssertionPollDuration() (time.Duration, error) {
 	return parsePositiveDuration(c.AssertionPollInterval, "assertion_poll_interval")
 }
 
+// AssertionCallTimeoutDuration returns the deadline for one upstream call the
+// assertion loop makes to L1 or Nitro. An omitted value defaults to
+// attestortypes.DefaultCallTimeout.
+func (c DaemonConfig) AssertionCallTimeoutDuration() (time.Duration, error) {
+	if c.AssertionCallTimeout == "" {
+		return attestortypes.DefaultCallTimeout, nil
+	}
+	return parsePositiveDuration(c.AssertionCallTimeout, "assertion_call_timeout")
+}
+
 // AssertionBlockRange returns the maximum number of finalized L1 blocks read
 // in one log query.
 func (c DaemonConfig) AssertionBlockRange() uint64 {
@@ -284,7 +301,7 @@ func validateRPCURL(raw, field string, allowedSchemes ...string) error {
 	}
 	parsed, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("parse %s: %w", field, err)
+		return fmt.Errorf("parse %s: %w", field, redact.Error(err))
 	}
 	allowed := false
 	for _, scheme := range allowedSchemes {

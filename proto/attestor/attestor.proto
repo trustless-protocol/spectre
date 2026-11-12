@@ -65,7 +65,7 @@ message AttestedRoot {
   //   - "assertion" (Arbitrum): provisional until the BoLD assertion is
   //     confirmed at finalized L1 and Nitro's finalized head reaches the L2
   //     block. While pending, the assertion can still lose a challenge.
-  // See docs/L2_CLIENTS.md, "Provisional attestations".
+  // See docs/runbooks/L2_CLIENTS.md, "Provisional attestations".
   bool provisional = 5;
 
   // AttestedAt is the Unix timestamp when the local verifier accepted it.

@@ -27,6 +27,7 @@ type fakePorts struct {
 	verifyErr   error
 	lastRequest core.BlockIdentityRequest
 	updates     chan core.FrontierUpdate
+	watchErr    error
 }
 
 func (f *fakePorts) AttestedUpTo(context.Context, core.AttestationPolicy) (core.AttestedRoot, bool, error) {
@@ -53,6 +54,9 @@ func (f *fakePorts) Status(context.Context) (core.FeedStatus, error) {
 }
 
 func (f *fakePorts) WatchFrontier(context.Context, core.WatchRequest) (<-chan core.FrontierUpdate, error) {
+	if f.watchErr != nil {
+		return nil, f.watchErr
+	}
 	if f.updates == nil {
 		return nil, core.NewError(core.ErrorUnavailable, "watch unavailable", nil)
 	}
