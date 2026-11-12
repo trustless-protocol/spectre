@@ -95,7 +95,7 @@ func TestAcquireCosmosSignerLock(t *testing.T) {
 	})
 
 	// Reported by @DongLieu on #467. The lock used to be created under
-	// filepath.Dir(RELAYER_RECOVERY_STATE_FILE), and docs/runbooks/E2E.md tells the
+	// filepath.Dir(RELAYER_RECOVERY_STATE_FILE), and docs/runbooks/E2E_LOCAL.md tells the
 	// operator to give each source its own state directory -- so the two
 	// processes this guard exists to catch took two different lock files and both
 	// started. The guard was off in precisely the setup that needs it.

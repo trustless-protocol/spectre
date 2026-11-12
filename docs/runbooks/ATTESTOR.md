@@ -1,4 +1,4 @@
-# Attestor operations and divergence runbook
+# Attestor operations and divergence
 
 ## Supported transport boundary
 
@@ -20,8 +20,14 @@ grpcurl -plaintext -d '{}' 127.0.0.1:3001 attestor.AttestorService/Info
 curl -fsS http://127.0.0.1:9090/metrics | grep spectre_.*_attestor
 ```
 
+Use the ports of the deployment. The example configs put the Arbitrum metrics on
+`9090` and the OP metrics on `3000`; the devnet scripts publish gRPC on `3001`
+unless `GRPC_PORT` is set.
+
 Every production gRPC request must include the configured `src_chain`; an
 empty value is rejected rather than inferred from a single feed.
+
+## Error redaction
 
 A failed request returns the code of the error's class and one classified
 message (for example `read replica finalized head`), never the upstream error
@@ -55,7 +61,8 @@ The Arbitrum endpoint exports `spectre_arbitrum_attestor_*`, labeled only by
 | `finalized_divergence_total`, `finalized_reorg_total`, or `mismatch_records` increases | Earlier evidence disagreed with the authoritative recheck | Follow the divergence procedure below |
 | `persistence_failures_total` increases | New feed state was not made durable | Stop relay progression, repair storage, and restart only after state-file inspection |
 
-OP uses the analogous `spectre_op_attestor_*` metrics; its failed passes, including
+OP uses the analogous `spectre_op_attestor_*` metrics, listed in the
+[OP operator guide](../../attestor/optimism/GUIDE.md#metrics-reference). Its failed passes, including
 those caused by a call cut at `call_timeout_seconds`, count in `pass_failures_total`. `Info` is a
 useful point-in-time diagnostic but is not a replacement for these histories.
 
@@ -86,8 +93,8 @@ The Wasm client authenticates signatures, rejects conflicting same-height
 updates, and can freeze on explicit authenticated misbehaviour; it has no
 automatic provisional-root replacement or rollback. A root the attestor replaces
 after signing it is itself such evidence, because the signed statement does not
-say whether the root was provisional; see "Provisional attestations" in
-`docs/runbooks/L2_CLIENTS.md`.
+say whether the root was provisional. See
+[Provisional attestations](L2_CLIENTS.md#provisional-attestations).
 
 ## `VerifyStateRoot` mismatch or divergence
 

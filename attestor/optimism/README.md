@@ -1,13 +1,16 @@
 # OP Stack Attestor
 
 The attestor answers one question for the relayer: **is this OP Stack chain's
-state legit, so packets can be relayed against it?** It is the OP Stack
-counterpart of our Groth16 prover for Cosmos sources — an **independent
+state valid, so packets can be relayed against it?** It is the OP Stack
+counterpart of the Groth16 prover for Cosmos sources: an **independent
 verifier the relay path consumes**, running as its own binary with its own
-lifecycle. It drives an operator-owned **verify-mode replica** (op-node +
+lifecycle. It reads an operator-owned **verify-mode replica** (op-node +
 op-reth) that re-derives the L2 chain from data posted on Ethereum L1, and
-**byte-compares** output roots against that self-computed state — replay,
-not trust.
+**byte-compares** output roots against the state that replica computed.
+
+**Base uses this attestor too.** Base speaks the op-node RPC namespace, so there is no
+separate Base attestor: `scripts/local/run_base_attestor.sh` is a symlink to
+`run_op_attestor.sh` and reads the Base devnet handoff.
 
 - To deploy, configure, and operate it: the **[Operator Guide](GUIDE.md)**.
 - The signed update contract and finality tiers of the L2 clients that consume this
@@ -39,13 +42,13 @@ attestor/optimism/
 │                     core ports; owns no settlement logic or persistence
 ├── client/           typed Go client mirroring the store's read interface
 ├── cmd/              the `attestor` binary (own config loader, metrics, gRPC)
-└── bindings/         GENERATED abigen bindings — never hand-edit
+└── bindings/         GENERATED abigen bindings, never hand-edit
 ```
 
 The gRPC transport itself lives in the shared `attestor/grpc` and
 `attestor/host` packages, not a per-chain `server/` package.
 
-Its own Go module, **no cgo** — builds and tests without `libgaraga_rs.so`.
+The attestor is its own Go module with **no cgo**: it builds and tests without `libgaraga_rs.so`.
 The gRPC proto (`../../proto/attestor/attestor.proto`, generated via
 `../../buf.gen.attestor.yaml`) is the **only contract** with the relayer.
 Both sidecars import its shared generated Go module from
@@ -54,8 +57,8 @@ Both sidecars import its shared generated Go module from
 ## gRPC API (`attestor.AttestorService`)
 
 The attested-root feed it serves holds two entry types: **derived roots**
-(`source: "derived"` — the replica's own output at the gating head; the feed
-the relay path consumes) and **game-verified roots** (`source: "game"` —
+(`source: "derived"`: the replica's own output at the gating head, which is the feed
+the relay path consumes) and **game-verified roots** (`source: "game"`:
 `DisputeGameFactory` proposals byte-compared against honest derivation).
 Provisional semantics are defined in the Operator Guide's
 [trust levels](GUIDE.md#trust-levels).
@@ -72,20 +75,20 @@ A failed call returns its gRPC code and a classified message only (for example
 `read replica finalized head`). The upstream error behind it is not returned,
 because it quotes the op-node or L1 URL and an RPC provider's API key can be
 part of that URL; it is in the attestor's log with URLs reduced to scheme and
-host (see the [runbook](../../docs/runbooks/ATTESTOR_RUNBOOK.md#supported-transport-boundary)).
+host (see the [runbook](../../docs/runbooks/ATTESTOR.md#error-redaction)).
 
 Go consumers use `attestor/optimism/client` (`client.Dial(addr)`), which
-mirrors the store's read interface — in-process and sidecar consumption are
+mirrors the store's read interface, so in-process and sidecar consumption are
 interchangeable.
 
 ## Development
 
 ```bash
 just build-attestor           # binary at attestor/optimism/attestor
-just test-attestor            # go test -v ./... — no network needed
+just test-attestor            # go test -v ./... (no network needed)
 ```
 
 Unit tests cover the verdict state machine, cursor rules,
 provisional→confirmed plus both divergence directions, derived
 gap/reverify/prune, store persistence/corruption, bootstrap binary search,
-and op-node JSON-RPC marshalling — all with fakes, no network.
+and op-node JSON-RPC marshalling. All of them use fakes and need no network.

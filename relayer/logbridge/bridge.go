@@ -11,7 +11,7 @@
 //
 // Install routes the standard logger into zap, which writes the level as a field.
 // The token is removed from the message first, so the logged text is the text that
-// was always there: docs/runbooks/E2E.md and scripts/ match on it, and that must not move.
+// was always there: docs/runbooks/E2E_LOCAL.md and scripts/ match on it, and that must not move.
 //
 // Choosing a level is a statement about the operator, not about verbosity:
 //

@@ -87,7 +87,7 @@ words are the UpdateClient, Membership and Misbehaviour module addresses, in
 that order. A client created through a factory or with `CREATE2` has no such
 transaction: its arguments are in the factory call's input or in the internal
 call trace of the transaction that created it. Migrate any client whose
-misbehaviour module has no code (see Governed client migration).
+misbehaviour module has no code (see [Governed client migration](#governed-client-migration)).
 
 `addClient` (both overloads) rejects a light-client address that holds no code
 and a counterparty whose Merkle prefix has no elements, so the scheduled
@@ -126,7 +126,7 @@ made before the client is registered.
 A frozen client rejects `verifyMembership` and `verifyNonMembership`
 (`SpectreClient.sol`, `notFrozen`), so acknowledgements and timeouts, and with
 them every refund of an escrowed transfer, stop until the client is unfrozen
-(a governance action, see `MISBEHAVIOUR_RUNBOOK.md`) or replaced by a migration.
+(a governance action, see [MISBEHAVIOUR.md](MISBEHAVIOUR.md#7-recovery)) or replaced by a migration.
 Without a migrator in place, a migration also has to wait for the role grant to
 clear the governance delay before its own wait of at least 48 hours can start.
 Grant the role, with a non-zero delay, for every launch client **before** its
@@ -234,6 +234,10 @@ ICS20Transfer is closed:
 
 ## Escrow upgrade compatibility
 
+**Rule: upgrade the Escrow beacon, the IBCERC20 beacon and ICS20Transfer atomically.
+If that is not possible, upgrade the Escrow beacon first, then the IBCERC20 beacon and
+ICS20Transfer atomically with each other.** The rest of this section gives the reasons.
+
 The token-layer correctness upgrade changes the `Escrow.recvCallback` and
 `Escrow.sendRefund` ABI. Upgrade the Escrow beacon before, or atomically with,
 the ICS20Transfer implementation; activating the new transfer implementation
@@ -248,7 +252,7 @@ same direction. `Escrow` gains `burn(IMintableAndBurnable,uint256)` and
 ICS20Transfer starts calling it instead of burning through the token directly,
 so the Escrow beacon must again be upgraded before, or atomically with, the
 ICS20Transfer implementation. A new transfer implementation against an old
-escrow reverts on any send that returns a voucher to its source chain — the
+escrow reverts on any send that returns a voucher to its source chain, because the
 function it calls does not exist there.
 
 The token side changes too: `IMintableAndBurnable.burn` becomes `burn(uint256)`,
@@ -266,7 +270,7 @@ The Escrow beacon is the exception: its new `burn` is unreachable until
 ICS20Transfer calls it, so it can be upgraded on its own at any point
 beforehand.
 
-So either upgrade all three atomically — the recommended path — or upgrade the
+So either upgrade all three atomically, which is the recommended path, or upgrade the
 Escrow beacon first and then the IBCERC20 beacon **and** ICS20Transfer
 atomically with each other. No send returning a voucher to its source chain may
 be relayed while those two are out of step.
@@ -278,7 +282,7 @@ the escrow. `mint(address,uint256)` is unchanged.
 
 ### Migrating existing `RefImplIBCERC20` proxies
 
-The updated `RefImplIBCERC20` appends its escrow address to the existing
+The updated `RefImplIBCERC20` (the reference custom ERC20 in `test/utils/`) appends its escrow address to the existing
 ERC-7201 storage namespace. Proxies initialized by the older reference
 implementation have only the preserved `_ics20` field, so their owner must
 migrate the new escrow field atomically with the implementation upgrade:

@@ -132,11 +132,12 @@ services and Slither.
 
 | Document | Covers |
 |---|---|
-| [docs/runbooks/E2E.md](docs/runbooks/E2E.md) | Bringing up Cosmos↔Ethereum, Cosmos↔OP, Cosmos↔Arbitrum and Cosmos↔Base; running against an L2 you did not deploy; sending test packets in both directions; the signing-key rules when several relayer processes run side by side; the failures each step can produce |
+| [docs/runbooks/E2E_LOCAL.md](docs/runbooks/E2E_LOCAL.md) | Bringing up Cosmos↔Ethereum, Cosmos↔OP, Cosmos↔Arbitrum and Cosmos↔Base; sending test packets in both directions; the signing-key rules when several relayer processes run side by side; the failures each step can produce |
+| [docs/runbooks/E2E_TESTNET.md](docs/runbooks/E2E_TESTNET.md) | Relaying against a public L2 testnet (OP Sepolia, Arbitrum Sepolia, Base Sepolia): values to fill in by hand, provider limits |
 | [docs/runbooks/L2_CLIENTS.md](docs/runbooks/L2_CLIENTS.md) | The CosmWasm clients for OP Sepolia, Base Sepolia and Arbitrum Sepolia: deployment evidence, host-query wiring, verification commands |
 | [docs/runbooks/PRODUCTION_DEPLOYMENT.md](docs/runbooks/PRODUCTION_DEPLOYMENT.md) | The production AccessManager deployment scripts: governance timelock, escrow launch gate, scheduled light-client provisioning. Read it before using those scripts |
-| [docs/runbooks/ATTESTOR_RUNBOOK.md](docs/runbooks/ATTESTOR_RUNBOOK.md) | Operating and recovering the attestor services |
-| [docs/runbooks/MISBEHAVIOUR_RUNBOOK.md](docs/runbooks/MISBEHAVIOUR_RUNBOOK.md) | Responding to misbehaviour (equivocation) on the Cosmos chain |
+| [docs/runbooks/ATTESTOR.md](docs/runbooks/ATTESTOR.md) | Operating and recovering the attestor services |
+| [docs/runbooks/MISBEHAVIOUR.md](docs/runbooks/MISBEHAVIOUR.md) | Responding to misbehaviour (equivocation) on the Cosmos chain |
 | [docs/runbooks/ERC20_LOCKBOX_ADAPTER.md](docs/runbooks/ERC20_LOCKBOX_ADAPTER.md) | Deploying and operating an ERC20 lockbox adapter |
 
 ## GPU proving
@@ -224,7 +225,7 @@ RELAYER_LOG_LEVEL=debug RELAYER_LOG_FORMAT=console ./relayer start --config conf
 
 The notes for operators (where the variables are read from, the JSON fields,
 failed commands, gnark lines) are in
-[docs/runbooks/E2E.md](docs/runbooks/E2E.md#relayer-logs).
+[docs/runbooks/E2E_LOCAL.md](docs/runbooks/E2E_LOCAL.md#relayer-logs).
 
 ## Benchmark mode
 

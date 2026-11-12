@@ -1,22 +1,26 @@
 # `CosmWasm` ICS-08 Ethereum Light Client
 
-This repository contains a `CosmWasm` implementation of an Ethereum light client, designed for integration with [`ibc-go`](https://github.com/cosmos/ibc-go)'s [`08-wasm`](https://github.com/cosmos/ibc-go/tree/main/modules/light-clients/08-wasm) client wrapper. It manages IBC client and consensus states, delegating all light client-specific logic to the core module in [`packages/ethereum/light-client`](../../packages/ethereum/light-client).
+This program is a `CosmWasm` implementation of an Ethereum light client, designed for integration with [`ibc-go`](https://github.com/cosmos/ibc-go)'s [`08-wasm`](https://github.com/cosmos/ibc-go/tree/main/modules/light-clients/08-wasm) client wrapper. It manages IBC client and consensus states, delegating all light client-specific logic to the core module in [`packages/ethereum/light-client`](../../packages/ethereum/light-client).
 
 ## Light Client Functions
 
 ### Update Client Logic
 
-The `update_client` functionality is based on the [Ethereum Light Client Sync Protocol](https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/light-client/sync-protocol.md), with key modifications to support **historical updates** — a feature necessary for multiple IBC relayers to independently run.
+The `update_client` functionality is based on the [Ethereum Light Client Sync Protocol](https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/light-client/sync-protocol.md).
 
-Each update also includes an account proof for the Ethereum `IBCStore.sol` contract, allowing the `CosmWasm` contract to verify the commitment root on Ethereum. This enables IBC clients on Cosmos chains to validate Ethereum-side IBC state using the storage root of `IBCStore`.
+Every header must be anchored at the client's latest slot: `trusted_slot` has to equal `latest_slot`, or the update fails with `TrustedSlotNotLatest`. Historical updates are not supported. An older consensus state is refused as an anchor because the keys of a past sync committee carry no stake any more and could forge a root.
+
+Each update stores the execution state root, the timestamp and the slot of the finalized header.
 
 ### Membership Proofs
 
-We support Merkle-Patricia Trie (MPT) inclusion and exclusion proofs to verify the (non-)membership of IBC commitments in the `IBCStore.sol` contract on Ethereum. These proofs ensure that the IBC handler on Ethereum has committed to the expected state.
+The client verifies Merkle-Patricia Trie (MPT) inclusion and exclusion proofs for IBC commitments held by the `ICS26Router` contract on Ethereum (`ibc_contract_address` in the client state; the commitments live in its `IBCStoreUpgradeable` storage). Each proof carries an account proof of that contract against the stored execution state root, followed by a storage proof of the commitment.
 
-### Misbehavior Handling
+### Misbehaviour Handling
 
-Misbehavior is defined as the submission of two conflicting—but individually valid—light client updates for the same block height. Upon detecting such a case, the light client will **freeze**, halting further updates. Recovery requires a governance proposal to reset or reinitialize the client.
+Misbehaviour is the submission of two conflicting light client updates for the same block height, each valid on its own. When the client detects it, it **freezes** and rejects every later update.
+
+A frozen client is unfrozen only by a governance `MsgMigrateContract` with the `reinstantiate` migration, which deletes every stored consensus state and writes a new bootstrap. See [Migrating the Ethereum 08-wasm client on Cosmos](../../docs/runbooks/PRODUCTION_DEPLOYMENT.md#migrating-the-ethereum-08-wasm-client-on-cosmos). The IBC sudo messages `migrate_client_store` (substitute-client recovery) and `verify_upgrade_and_update_state` are not supported and return `UnsupportedLifecycleOperation`.
 
 ## Deployment
 
@@ -35,12 +39,17 @@ just build-cw-ics08-wasm-eth
 
 ### Storing the Wasm Binary
 
-Once built, the wasm binary needs to be stored on the Cosmos chain. This can be done by following the [IBC-Go documentation](https://ibc.cosmos.network/v10/ibc/light-clients/wasm/governance/#storing-new-wasm-light-client-byte-code) for deploying `CosmWasm` contracts.
+Once built, the wasm binary needs to be stored on the Cosmos chain through governance. On the local devnet, `scripts/local/wasm.sh` submits and passes the proposal and prints the checksum. On any other chain, follow the [IBC-Go documentation](https://ibc.cosmos.network/v10/ibc/light-clients/wasm/governance/#storing-new-wasm-light-client-byte-code).
 
 ### Creating the Light Client
 
-The relayer-api can be used to get a transaction that creates the light client on the Cosmos chain where the bytecode is stored via [`CreateClientRequest`](https://github.com/cosmos/solidity-ibc-eureka/blob/98d1aa429d15e49a6986679604002000c070d7fe/proto/relayer/relayer.proto#L55). The `checksum_hex` field must be passed as a parameter in this request, which is the checksum of the wasm bytecode in hex format.
+The relayer creates the client on the Cosmos chain where the bytecode is stored. `--wasm-checksum` is the checksum of the wasm bytecode in hex:
 
+```bash
+./relayer create-clients-cosmos --config config.json --wasm-checksum <hex>
+```
+
+The full sequence is in [docs/runbooks/E2E_LOCAL.md](../../docs/runbooks/E2E_LOCAL.md#local-cosmos--ethereum-e2e).
 
 ## Acknowledgements
 

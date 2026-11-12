@@ -69,12 +69,6 @@ build-cw-ics08-wasm-op:
 build-cw-ics08-wasm-l2-native:
 	cargo build --target wasm32-unknown-unknown --release --package cw-ics08-wasm-arbitrum --package cw-ics08-wasm-base --package cw-ics08-wasm-op
 
-# Capture fixed-block L1/L2 proof evidence. The configuration is local-only because it contains RPC URLs.
-# The resulting fixture must be reviewed before it is added as a supported network configuration.
-[group('generate')]
-capture-l2-fixture config out:
-	cd relayer && go run ./l2fixtures/cmd -config {{config}} -out ../{{out}}
-
 # Install the Go relayer for use in the e2e tests.
 # Builds with an explicit -o name because the package dir is `cmd/`, so a plain
 # `go install ./cmd/...` would land at $GOPATH/bin/cmd, not $GOPATH/bin/relayer.
@@ -261,7 +255,7 @@ test-e2e testname: clean-foundry install-go-relayer build-prover-artifacts
 
 # Run the Cosmos -> L2 pause/expire/restart timeout test against a running OP or Base devnet.
 # For example, `just test-l2-timeout relayer/config.json`. The sender defaults to the devnet's
-# `test2` key (it must not be the relayer's COSMOS_PRIVATE_KEY); see docs/runbooks/E2E.md.
+# `test2` key (it must not be the relayer's COSMOS_PRIVATE_KEY); see docs/runbooks/E2E_LOCAL.md.
 [group('test')]
 test-l2-timeout config:
 	@echo "Running the L2 timeout lifecycle test against {{config}}..."
