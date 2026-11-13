@@ -59,6 +59,9 @@ func Start(logger *zap.Logger) *cobra.Command {
 			if err := validateStartupKeys(); err != nil {
 				return err
 			}
+			if err := validateSpendingCaps(); err != nil {
+				return err
+			}
 
 			runCtx, stopSignals := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stopSignals()

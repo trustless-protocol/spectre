@@ -1098,8 +1098,33 @@ func replacementFees(stdCtx context.Context, endpoint services.EVMEndpoint, tx *
 	return gasPrice, tipCap, feeCap
 }
 
+// cappedReplacementFees is replacementFees held at the operator's caps. It says
+// so when a cap binds: from then on a stuck transaction cannot be outbid, and the
+// log line is what tells the operator why it is not moving.
+func cappedReplacementFees(stdCtx context.Context, endpoint services.EVMEndpoint, tx *types.Transaction, caps evmFeeCaps) (gasPrice, tipCap, feeCap *big.Int) {
+	wantPrice, wantTip, wantFee := replacementFees(stdCtx, endpoint, tx)
+	gasPrice = caps.clampGasPrice(wantPrice)
+	if wantTip == nil || wantFee == nil {
+		if gasPrice.Cmp(wantPrice) != 0 {
+			log.Printf("WARN [SendEthTx] fee cap reached: replacement for %s held at gasPrice=%s wei (wanted %s); the node may refuse it",
+				tx.Hash().Hex(), gasPrice, wantPrice)
+		}
+		return gasPrice, nil, nil
+	}
+	tipCap, feeCap = caps.clampDynamic(wantTip, wantFee)
+	if tipCap.Cmp(wantTip) != 0 || feeCap.Cmp(wantFee) != 0 {
+		log.Printf("WARN [SendEthTx] fee cap reached: replacement for %s held at feeCap=%s tip=%s wei (wanted feeCap=%s tip=%s); the node may refuse it",
+			tx.Hash().Hex(), feeCap, tipCap, wantFee, wantTip)
+	}
+	return gasPrice, tipCap, feeCap
+}
+
 func (h *Handler) bumpGasAndResubmit(stdCtx context.Context, endpoint services.EVMEndpoint, tx *types.Transaction, auth *bind.TransactOpts, attempt int) (*types.Transaction, error) {
-	bumpedGasPrice, bumpedTipCap, bumpedFeeCap := replacementFees(stdCtx, endpoint, tx)
+	caps, err := loadEVMFeeCaps()
+	if err != nil {
+		return nil, err
+	}
+	bumpedGasPrice, bumpedTipCap, bumpedFeeCap := cappedReplacementFees(stdCtx, endpoint, tx, caps)
 
 	var newTx *types.Transaction
 	if tx.Type() == types.DynamicFeeTxType {
@@ -1184,7 +1209,11 @@ func (h *Handler) cancelAbandonedTx(
 	from common.Address,
 	chainID *big.Int,
 ) (cancelOutcome, error) {
-	gasPrice, tipCap, feeCap := replacementFees(stdCtx, endpoint, tx)
+	caps, err := loadEVMFeeCaps()
+	if err != nil {
+		return cancelUnresolved, err
+	}
+	gasPrice, tipCap, feeCap := cappedReplacementFees(stdCtx, endpoint, tx, caps)
 
 	// Two shapes, not three: the cancellation carries no calldata, so an
 	// access-list original is replaced by a legacy transaction. Nodes compare
@@ -1210,6 +1239,9 @@ func (h *Handler) cancelAbandonedTx(
 		})
 	}
 
+	if err := caps.check(cancelTx); err != nil {
+		return cancelUnresolved, fmt.Errorf("cancellation for nonce %d: %w", tx.Nonce(), err)
+	}
 	signedCancel, err := types.SignTx(cancelTx, types.LatestSignerForChainID(chainID), privateKey)
 	if err != nil {
 		return cancelUnresolved, fmt.Errorf("sign cancellation for nonce %d: %w", tx.Nonce(), err)
@@ -1380,6 +1412,10 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 	if gasCeiling > 0 && gasLimit > gasCeiling {
 		gasLimit = gasCeiling
 	}
+	caps, err := loadEVMFeeCaps()
+	if err != nil {
+		return nil, 0, 0, err
+	}
 	publicKey, err := keys.PublicKey(privateKey)
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("failed to derive public key: %w", err)
@@ -1401,9 +1437,13 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 	var tx *types.Transaction
 	var signedTx *types.Transaction
 
-	// Capture the signed transaction
+	// Capture the signed transaction. Every signature this function produces,
+	// the first send and each replacement, passes the fee caps here first.
 	originalSigner := auth.Signer
 	auth.Signer = func(address common.Address, txToSign *types.Transaction) (*types.Transaction, error) {
+		if err := caps.check(txToSign); err != nil {
+			return nil, err
+		}
 		sTx, err := originalSigner(address, txToSign)
 		if err == nil {
 			signedTx = sTx
@@ -1430,6 +1470,15 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 			baseFee = big.NewInt(1000000000) // fallback 1 Gwei
 		}
 	}
+	// Priced before the nonce is taken, so a refusal leaves the nonce cache alone.
+	var firstTipCap, firstFeeCap *big.Int
+	if isEIP1559 {
+		firstTipCap, firstFeeCap, err = caps.dynamicFees(baseFee, suggestedTip)
+		if err != nil {
+			log.Printf("ERROR [SendEthTx][ATTENTION] %s not sent: %v", knob.subject(), err)
+			return nil, 0, 0, err
+		}
+	}
 
 	for nonceAttempt := 1; nonceAttempt <= maxNonceRetries; nonceAttempt++ {
 		h.mu.Lock()
@@ -1446,8 +1495,7 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 		currentNonce := state.nonce
 
 		if isEIP1559 {
-			gasTipCap := suggestedTip
-			gasFeeCap := new(big.Int).Add(new(big.Int).Mul(baseFee, big.NewInt(2)), gasTipCap)
+			gasTipCap, gasFeeCap := firstTipCap, firstFeeCap
 
 			// Enforce minimum floor if this nonce matches the last attempted nonce (e.g. replacing a stuck tx)
 			if currentNonce == state.lastNonce {
@@ -1466,6 +1514,8 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 					}
 				}
 			}
+			// The floor is 15% over the last attempt and may pass a cap.
+			gasTipCap, gasFeeCap = caps.clampDynamic(gasTipCap, gasFeeCap)
 
 			auth.GasTipCap = gasTipCap
 			auth.GasFeeCap = gasFeeCap
@@ -1478,6 +1528,12 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 				return nil, 0, 0, fmt.Errorf("failed to suggest gas price: %w", err)
 			}
 
+			// Clear the current base fee: the suggestion was read a moment ago and a
+			// rising base fee makes it stale, which the node rejects outright rather
+			// than queueing.
+			marketPrice := gasPriceWithBaseFeeHeadroom(stdCtx, endpoint, gasPrice)
+			gasPrice = marketPrice
+
 			// Enforce minimum floor if this nonce matches the last attempted nonce (e.g. replacing a stuck tx)
 			if currentNonce == state.lastNonce {
 				if state.lastGasPrice != nil {
@@ -1489,10 +1545,13 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 				}
 			}
 
-			// Clear the current base fee: the suggestion was read a moment ago and a
-			// rising base fee makes it stale, which the node rejects outright rather
-			// than queueing.
-			gasPrice = gasPriceWithBaseFeeHeadroom(stdCtx, endpoint, gasPrice)
+			gasPrice, err = caps.legacyPrice(marketPrice, gasPrice)
+			if err != nil {
+				// Nothing was signed, so the cached nonce is still the next one.
+				h.mu.Unlock()
+				log.Printf("ERROR [SendEthTx][ATTENTION] %s not sent: %v", knob.subject(), err)
+				return nil, 0, 0, err
+			}
 
 			auth.GasPrice = gasPrice
 			auth.GasTipCap = nil

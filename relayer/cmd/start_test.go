@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"relayer/transaction"
+
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
@@ -66,6 +68,7 @@ func TestStart(t *testing.T) {
 		const testKey = "a81f9eb900c02f35d28ec80d1da79dde52cc4cc37d6fbaef5768ab59f32cbfdd"
 		t.Setenv("ETH_PRIVATE_KEY", testKey)
 		t.Setenv("COSMOS_PRIVATE_KEY", testKey)
+		setSpendingCaps(t)
 		// #467 added a startup gate that refuses a Cosmos-relaying config with no
 		// chain id, and it runs between the stamp and the prover load. Without this
 		// the command stops there and the window this test observes never opens --
@@ -174,6 +177,7 @@ func TestStart(t *testing.T) {
 		const testKey = "a81f9eb900c02f35d28ec80d1da79dde52cc4cc37d6fbaef5768ab59f32cbfdd"
 		t.Setenv("ETH_PRIVATE_KEY", testKey)
 		t.Setenv("COSMOS_PRIVATE_KEY", testKey)
+		setSpendingCaps(t)
 		// Deliberately NOT set, so validateStartupConfig is the gate that stops this
 		// run. That is the failure whose label this test is about.
 		t.Setenv("COSMOS_CHAIN_ID", "")
@@ -233,6 +237,7 @@ func TestStart(t *testing.T) {
 		const testKey = "a81f9eb900c02f35d28ec80d1da79dde52cc4cc37d6fbaef5768ab59f32cbfdd"
 		t.Setenv("ETH_PRIVATE_KEY", testKey)
 		t.Setenv("COSMOS_PRIVATE_KEY", testKey)
+		setSpendingCaps(t)
 		t.Setenv("PROVER_BIN_DIR", filepath.Join(dir, "no-such-bin"))
 
 		command := Start(zap.NewNop())
@@ -270,6 +275,60 @@ func TestStart(t *testing.T) {
 		if !strings.Contains(body[start:start+end], "relaysEVMToCosmos: true") {
 			t.Fatal("start does not opt into the cosmos_wasm_client_id requirement; a missing id " +
 				"would then surface at the first eth->cosmos packet instead of at startup")
+		}
+	})
+}
+
+// setSpendingCaps gives a test that drives the real start command the spending
+// caps start refuses to boot without. 0 is the explicit "no cap".
+func setSpendingCaps(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{transaction.EnvEVMMaxFeePerGas, transaction.EnvEVMMaxPriorityFeePerGas} {
+		t.Setenv(name, "0")
+	}
+}
+
+// A relay loop signs for as long as it runs, at fees read from the RPC. start
+// must not begin one on a cap nobody set (#575 M3).
+func TestStartRequiresSpendingCaps(t *testing.T) {
+	const testKey = "a81f9eb900c02f35d28ec80d1da79dde52cc4cc37d6fbaef5768ab59f32cbfdd"
+	run := func(t *testing.T) error {
+		t.Helper()
+		t.Setenv("ETH_PRIVATE_KEY", testKey)
+		t.Setenv("COSMOS_PRIVATE_KEY", testKey)
+		command := Start(zap.NewNop())
+		// A config that does not exist: the gate under test runs before the config
+		// is read, so getting as far as "failed to load config" means it passed.
+		command.SetArgs([]string{"--config", filepath.Join(t.TempDir(), "absent.json")})
+		command.SetOut(io.Discard)
+		command.SetErr(io.Discard)
+		command.SilenceUsage = true
+		return command.Execute()
+	}
+
+	t.Run("unset is refused and named", func(t *testing.T) {
+		setSpendingCaps(t)
+		t.Setenv(transaction.EnvEVMMaxFeePerGas, "")
+		err := run(t)
+		if err == nil || !strings.Contains(err.Error(), transaction.EnvEVMMaxFeePerGas) {
+			t.Fatalf("err = %v, want start to refuse and name %s", err, transaction.EnvEVMMaxFeePerGas)
+		}
+	})
+
+	t.Run("an explicit 0 is accepted", func(t *testing.T) {
+		setSpendingCaps(t)
+		err := run(t)
+		if err == nil || !strings.Contains(err.Error(), "failed to load config") {
+			t.Fatalf("err = %v, want start to get past the cap gate to the config", err)
+		}
+	})
+
+	t.Run("a malformed cap is refused", func(t *testing.T) {
+		setSpendingCaps(t)
+		t.Setenv(transaction.EnvEVMMaxFeePerGas, "100gwei")
+		err := run(t)
+		if err == nil || !strings.Contains(err.Error(), "invalid "+transaction.EnvEVMMaxFeePerGas) {
+			t.Fatalf("err = %v, want the malformed value reported", err)
 		}
 	})
 }

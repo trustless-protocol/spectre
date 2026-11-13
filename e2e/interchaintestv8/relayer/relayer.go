@@ -55,6 +55,21 @@ func proverEnv() []string {
 	return []string{"PROVER_BIN_DIR=" + dir}
 }
 
+// spendingCapVars are the caps `relayer start` refuses to boot without.
+var spendingCapVars = []string{"ETH_MAX_FEE_PER_GAS", "ETH_MAX_PRIORITY_FEE_PER_GAS"}
+
+// spendingCapEnv sets every cap the environment does not already set to 0, the
+// explicit "no cap": these suites run against local chains and are not about fees.
+func spendingCapEnv() []string {
+	var env []string
+	for _, name := range spendingCapVars {
+		if os.Getenv(name) == "" {
+			env = append(env, name+"=0")
+		}
+	}
+	return env
+}
+
 // StartRelayer starts the relayer with the given config file.
 func StartRelayer(configPath string) (*os.Process, error) {
 	config, err := os.ReadFile(configPath)
@@ -66,7 +81,7 @@ func StartRelayer(configPath string) (*os.Process, error) {
 	cmd := exec.Command(binaryPath(), "start", "--config", configPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = append(os.Environ(), proverEnv()...)
+	cmd.Env = append(append(os.Environ(), proverEnv()...), spendingCapEnv()...)
 
 	// run this command in the background
 	err = cmd.Start()
