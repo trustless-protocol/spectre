@@ -51,6 +51,11 @@ type Status struct {
 	// the pending set from services, it is the "which half is stuck" split: this
 	// one is "not relayable yet", that one is "relayed, awaiting delivery".
 	Waiting []WaitingPacket `json:"waiting"`
+
+	// Dropped is the set of packets held after a permanent failure, oldest first.
+	// A dropped acknowledgement or timeout has no other exit, so each entry is
+	// funds that stay locked until a retry lands.
+	Dropped []DroppedPacket `json:"dropped,omitempty"`
 }
 
 // WaitingPacket is one parked packet with the age that separates "waiting for
@@ -72,6 +77,7 @@ func (m *Module) Status(ctx context.Context) Status {
 		Dest:     m.dst.Chain(),
 		Waiting:  m.waits.snapshot(),
 		Loops:    m.beats.snapshot(),
+		Dropped:  m.droppedSnapshot(),
 	}
 
 	// TryLock, not Lock. updateClientTo holds m.mu across the builder, which on

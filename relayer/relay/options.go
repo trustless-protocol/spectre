@@ -8,6 +8,8 @@ package relay
 import (
 	"context"
 	"time"
+
+	"relayer/services"
 )
 
 // ScanFunc runs one timeout-recovery sweep for this path: it detects packets that
@@ -162,6 +164,14 @@ func WithAckWatch(interval, threshold time.Duration, due AckDueFunc, settled Ack
 		m.ackWatchInterval = interval
 		m.ackOverdueAfter = threshold
 	}
+}
+
+// WithDropLedger makes a permanent failure last: a dropped packet is held out of
+// the relay path until its backoff expires, instead of being re-proven and
+// re-submitted on every flush pass (#575 M2). A nil ledger leaves the path as it
+// was.
+func WithDropLedger(ledger *services.DropLedger) Option {
+	return func(m *Module) { m.dropped = ledger }
 }
 
 // WithPacketFlush periodically asks the source to ENUMERATE its outstanding

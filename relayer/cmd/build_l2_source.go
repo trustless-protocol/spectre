@@ -231,6 +231,16 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 			return nil, services.L2TimeoutRecovery{}, nil, fmt.Errorf("load L2 recovery state: %w", err)
 		}
 	}
+	// Same place and for the same reason: a corrupt ledger is fatal while there
+	// is still nothing open to unwind. An empty stateDir keeps it in memory.
+	dropLedgerPath := ""
+	if stateDir != "" {
+		dropLedgerPath = filepath.Join(stateDir, services.DropLedgerFileName("l2-to-cosmos"))
+	}
+	drops, err := services.NewDropLedger(dropLedgerPath)
+	if err != nil {
+		return nil, services.L2TimeoutRecovery{}, nil, fmt.Errorf("l2->cosmos: %w", err)
+	}
 
 	l2, err := relayerclient.DialEthRPC(context.Background(), cfg.L2RpcUrl, relayerclient.DefaultRPCTimeout)
 	if err != nil {
@@ -347,6 +357,7 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 		// Cosmos still holds a commitment for. The L2 scan window is the
 		// shortest of the four paths (#308), so this is the leg that needs it most.
 		relay.WithPacketFlush(0),
+		relay.WithDropLedger(drops),
 	)
 	logger.Sugar().Infof("l2->cosmos source: %s (attestors=%d threshold=%d src_chain=%s wasm_client=%s head=%s)",
 		cfg.kind, len(cfg.AttestorEndpoints), cfg.Attestors.Threshold, cfg.AttestorSrcChain, cfg.L2WasmClientID, cfg.HeadKind)

@@ -102,6 +102,17 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 		log.Printf("WARN [eth->cosmos UpdateClient] seed client-update age: %v", err)
 	}
 
+	// One drop ledger per direction, in the engine's state directory: a packet
+	// dropped after a permanent failure stays held across a restart.
+	cosmosToEthDrops, err := svc.OpenDropLedger("cosmos-to-eth")
+	if err != nil {
+		return fmt.Errorf("cosmos->eth: %w", err)
+	}
+	ethToCosmosDrops, err := svc.OpenDropLedger("eth-to-cosmos")
+	if err != nil {
+		return fmt.Errorf("eth->cosmos: %w", err)
+	}
+
 	// A delivered receive makes its acknowledgement owed; a relayed ack closes the
 	// debt. Both take the marshaled packet, like the tracker hooks beside them.
 	//
@@ -128,6 +139,7 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 		}),
 		relay.WithPacketTracker(trackCosmosPending, untrackCosmosPending),
 		relay.WithPendingSettlementGuard(isCosmosPendingSettled, markCosmosPendingSettled),
+		relay.WithDropLedger(cosmosToEthDrops),
 		// Name the acknowledgements that never come back. The wait tracker only
 		// follows packets it OBSERVED, so an ack written while this process was
 		// down leaves the packet silently unfinished and its escrow locked.
@@ -164,6 +176,7 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 		// holds a commitment for, and acknowledgements it wrote for Cosmos sends
 		// that Cosmos still holds a commitment for.
 		relay.WithPacketFlush(0),
+		relay.WithDropLedger(ethToCosmosDrops),
 	)
 
 	// Both modules, one services instance: the queues are shared, so registering

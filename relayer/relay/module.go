@@ -104,6 +104,11 @@ type Module struct {
 	pendingSettled      PendingSettledFunc
 	markPendingSettled  MarkPendingSettledFunc
 	observeClientUpdate ClientUpdateObserver
+	// dropped holds packets out of the relay path after a permanent failure
+	// (nil: a drop lasts only until the next flush pass). See dropped.go.
+	dropped *services.DropLedger
+	// clock replaces time.Now for the drop ledger in tests.
+	clock func() time.Time
 
 	// Optional fixed-cadence forced update (nil when the destination client's
 	// freshness is fully captured by ClientExpiresAt, e.g. the beacon client).
@@ -328,6 +333,10 @@ func (m *Module) flushLoop(ctx context.Context, lister chain.PacketLister) {
 // next pass, so keeping a second pending buffer beside the subscriber's would
 // duplicate state and give a packet two independent retry clocks.
 func (m *Module) flushOnce(ctx context.Context, lister chain.PacketLister) {
+	// Before the enumeration and whatever it returns: a dropped packet that
+	// settled is no longer listed, so no later step would see it again.
+	m.reconcileDropped(ctx)
+
 	candidates, err := lister.UnrelayedPackets(ctx)
 	if err != nil {
 		log.Printf("WARN [%s Relay] packet flush: %v", m.name, err)
@@ -363,6 +372,14 @@ func (m *Module) flushOnce(ctx context.Context, lister chain.PacketLister) {
 	unsettled = m.dropSettled(ctx, unsettled)
 	if len(unsettled) == 0 {
 		m.beats.record(workerPacketFlush, strconv.Itoa(len(candidates))+" outstanding, settled while this pass ran")
+		return
+	}
+	// A packet dropped after a permanent failure is still outstanding, so the
+	// enumeration returns it on every pass. Leave it out until its backoff
+	// expires, or this pass re-proves and re-submits what already failed.
+	unsettled, held := m.dropHeld(unsettled)
+	if len(unsettled) == 0 {
+		m.beats.record(workerPacketFlush, strconv.Itoa(len(candidates))+" outstanding, "+strconv.Itoa(held)+" held after a permanent failure")
 		return
 	}
 	// Worth a line every time. A flush that finds work means the block scan
@@ -405,7 +422,9 @@ func (m *Module) dropSettled(ctx context.Context, candidates []chain.Event) []ch
 		}
 		if !settled {
 			unsettled = append(unsettled, e)
+			continue
 		}
+		m.clearDrop(e.Type, e.Raw)
 	}
 	return unsettled
 }
@@ -545,6 +564,7 @@ func (m *Module) periodicUpdateLoop(ctx context.Context) {
 func (m *Module) settleDelivered(packets []chain.RelayPacket) {
 	for _, p := range packets {
 		m.waits.clearPacket(p)
+		m.clearDrop(p.Type, p.Packet)
 		// A delivered receive is the moment the acknowledgement becomes owed, and
 		// a relayed acknowledgement is the moment the debt closes. Recording it
 		// here rather than where the event was observed is deliberate: an ack is

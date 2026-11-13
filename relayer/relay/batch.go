@@ -58,6 +58,8 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 	// destination, then check the tombstone again after Add. Only SendPacket opens
 	// a receive that can time out; Add is idempotent.
 	trackFailed := make([]bool, len(events))
+	// skippedSettled marks an event this pass neither relays nor re-queues: it
+	// is settled, or the drop ledger holds it after a permanent failure.
 	skippedSettled := make([]bool, len(events))
 	var requeue []int
 	for i, e := range events {
@@ -79,6 +81,7 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 					m.name, e.Type, e.Sequence)
 			}
 			log.Printf("[%s Relay] skipping settled packet %s seq=%d before proof", m.name, e.Type, e.Sequence)
+			m.clearDrop(e.Type, e.Raw)
 			skippedSettled[i] = true
 			continue
 		}
@@ -96,6 +99,15 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 				log.Printf("[%s Relay] skipping packet seq=%d: it settled while being tracked", m.name, e.Sequence)
 				skippedSettled[i] = true
 			}
+		}
+		// A packet dropped after a permanent failure is held until its backoff
+		// expires. Checked after tracking, so a held send still gets its timeout
+		// refund, and before the client update below, so a batch of held packets
+		// costs no update and no proof. It is not re-queued: the flush backstop
+		// offers it again, and a held packet left in a source's pending buffer
+		// would pin that source's recovery cursor.
+		if !skippedSettled[i] && m.heldAfterDrop(e.Type, e.Raw) {
+			skippedSettled[i] = true
 		}
 	}
 
@@ -257,7 +269,8 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 				// Dead for good — forget any recorded wait so the entry does not sit in
 				// the tracker until its TTL.
 				m.waits.clear(e)
-				log.Printf(dropToken(e.Type)+"[%s Relay] DROP packet (%s seq=%d height=%d): %v", m.name, e.Type, e.Sequence, e.Height, err)
+				log.Printf(dropToken(e.Type)+"[%s Relay] DROP packet (%s seq=%d height=%d): %v%s",
+					m.name, e.Type, e.Sequence, e.Height, err, m.recordDrop(e.Type, e.Sequence, e.Raw, err))
 				continue
 			}
 			// Every proof failure here re-queues, so logging one line per flush
@@ -528,8 +541,9 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 	// per-packet txs are acceptable to avoid losing valid packets.
 	if len(packets) == 1 {
 		m.waits.clearPacket(packets[0]) // dead for good — stop reporting a wait for it
-		log.Printf(dropToken(packets[0].Type)+"[%s Relay] DROP packet (%s seq=%d) at height %d (permanent): %v",
-			m.name, packets[0].Type, packets[0].Sequence, proofHeight, err)
+		log.Printf(dropToken(packets[0].Type)+"[%s Relay] DROP packet (%s seq=%d) at height %d (permanent): %v%s",
+			m.name, packets[0].Type, packets[0].Sequence, proofHeight, err,
+			m.recordDrop(packets[0].Type, packets[0].Sequence, packets[0].Packet, err))
 		return requeue
 	}
 	log.Printf("WARN [%s Relay] permanent batch failure at height %d (%v); isolating %d packet(s) individually", m.name, proofHeight, err, len(packets))
@@ -715,7 +729,8 @@ func (m *Module) relayIsolated(ctx context.Context, packets []chain.RelayPacket,
 					break
 				}
 				m.waits.clearPacket(p) // dead for good — stop reporting a wait for it
-				log.Printf(dropToken(p.Type)+"[%s Relay] DROP packet (%s seq=%d height=%d, permanent): %v", m.name, p.Type, p.Sequence, p.Height, err)
+				log.Printf(dropToken(p.Type)+"[%s Relay] DROP packet (%s seq=%d height=%d, permanent): %v%s",
+					m.name, p.Type, p.Sequence, p.Height, err, m.recordDrop(p.Type, p.Sequence, p.Packet, err))
 				continue
 			}
 			if m.holdIfClientInactive(ctx, err) {

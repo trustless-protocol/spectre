@@ -230,6 +230,11 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps servi
 		// the settlement from the other side find the entry.
 		options = append(options, relay.WithAckWatch(0, 0, ackDue, ackSettled, nil))
 	}
+	drops, err := svc.OpenDropLedger("cosmos-to-l2")
+	if err != nil {
+		return fmt.Errorf("cosmos->l2: %w", err)
+	}
+	options = append(options, relay.WithDropLedger(drops))
 	module := relay.NewModule(
 		"cosmos->l2",
 		deps.IDs.CosmosOnEVM,
