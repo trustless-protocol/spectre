@@ -135,8 +135,8 @@ generate the artifacts with `go run ./prover/cmd` directly. A chain with more si
 larger bucket: a signer count with no bucket makes `SignatureVerifier.verifyBatchProof` revert
 `UnknownBucket(N)`.
 
-**Step 2.** Build the relayer binary. The linker needs the library path described in
-[Garaga FFI](../../README.md#garaga-ffi).
+**Step 2.** Build the relayer binary. The default CPU build is pure Go and needs no
+native library; see [gnark forks](../../README.md#gnark-forks).
 
 ```bash
 (cd relayer && go build -o relayer ./cmd)

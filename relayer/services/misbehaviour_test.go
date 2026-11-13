@@ -130,7 +130,7 @@ func TestMisbehaviourBatchProof_BuildsPinnedMetadata(t *testing.T) {
 			{Index: 0, PublicKey: make([]byte, 32), Active: false},
 		},
 		Proof:         [8]*big.Int{big.NewInt(1), big.NewInt(2), big.NewInt(3), big.NewInt(4), big.NewInt(5), big.NewInt(6), big.NewInt(7), big.NewInt(8)},
-		Commitments:   [2]*big.Int{big.NewInt(9), big.NewInt(10)},
+		Commitments:   [4]*big.Int{big.NewInt(9), big.NewInt(10), big.NewInt(13), big.NewInt(14)},
 		CommitmentPok: [2]*big.Int{big.NewInt(11), big.NewInt(12)},
 	}
 

@@ -151,7 +151,7 @@ func init() {
 	// BatchProof sub-tuple, shared by all flows (matches ISpectreClientMsgs.BatchProof).
 	batchProofComponents := []abi.ArgumentMarshaling{
 		{Name: "proof", Type: "uint256[8]"},
-		{Name: "commitments", Type: "uint256[2]"},
+		{Name: "commitments", Type: "uint256[4]"},
 		{Name: "commitmentPok", Type: "uint256[2]"},
 		{Name: "bucket", Type: "uint16"},
 		{Name: "signerIndices", Type: "uint32[]"},

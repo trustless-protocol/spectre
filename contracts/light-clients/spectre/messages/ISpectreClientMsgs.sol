@@ -13,8 +13,8 @@ interface ISpectreClientMsgs {
     ///      manifest currently enables N=4 only. Larger buckets require matching prover artifacts,
     ///      verifier deployment, and `SignatureVerifier.setBucket` registration.
     /// @param proof The Groth16 proof (8 uint256s).
-    /// @param commitments The proof commitments (2 uint256s).
-    /// @param commitmentPok The proof of knowledge for commitments (2 uint256s).
+    /// @param commitments The two BSB22 commitments as G1 points, C0 then C1 (4 uint256s: x0, y0, x1, y1).
+    /// @param commitmentPok The single folded proof of knowledge for both commitments (2 uint256s).
     /// @param bucket The validator-count bucket this proof was generated against.
     /// @param signerIndices Validator indices in the header commit's commitSigs. Length == bucket.
     /// @param pinnedValidatorIndices Validator indices in the pinned validator set. Length == bucket.
@@ -22,7 +22,7 @@ interface ISpectreClientMsgs {
     /// @param active Per-slot real-signer flag (true = real validator, false = dummy padding). Length == bucket.
     struct BatchProof {
         uint256[8] proof;
-        uint256[2] commitments;
+        uint256[4] commitments;
         uint256[2] commitmentPok;
         uint16 bucket;
         uint32[] signerIndices;

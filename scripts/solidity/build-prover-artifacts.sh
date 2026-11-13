@@ -3,10 +3,6 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 staging="$repo_root/.artifacts/solidity/prover"
-native_lib="$repo_root/.artifacts/native"
-export CGO_LDFLAGS="-L$native_lib${CGO_LDFLAGS:+ $CGO_LDFLAGS}"
-export LD_LIBRARY_PATH="$native_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export DYLD_LIBRARY_PATH="$native_lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
 force=0
 case "${1:-}" in
   "") ;;
@@ -45,7 +41,7 @@ mkdir -p "$generated/bin" "$generated/verifiers"
 
 (
   cd "$repo_root/relayer"
-  go run ./prover/cmd "$generated/bin" "$generated/verifiers"
+  go run ./prover/cmd -onchain-fixture-dir "$generated/fixtures" "$generated/bin" "$generated/verifiers"
 )
 
 for bucket in $buckets; do
@@ -59,6 +55,10 @@ for bucket in $buckets; do
     echo "missing staged Groth16Verifier_N$bucket.sol" >&2
     exit 1
   }
+  [[ -s "$generated/fixtures/onchain_fixture_n$bucket.json" ]] || {
+    echo "missing staged onchain_fixture_n$bucket.json" >&2
+    exit 1
+  }
 done
 
 mkdir -p "$repo_root/contracts/verifiers"
@@ -69,6 +69,9 @@ for bucket in $buckets; do
   cp "$generated/bin/n$bucket/vk.bin" "$repo_root/relayer/bin/n$bucket/vk.bin"
   cp "$generated/verifiers/Groth16Verifier_N$bucket.sol" \
     "$repo_root/contracts/verifiers/Groth16Verifier_N$bucket.sol"
+  # The smoke proof for the Foundry on-chain check (test/light-clients/spectre/
+  # Groth16OnchainProofTest.t.sol); it is stamped with the hash of the verifier above.
+  cp "$generated/fixtures/onchain_fixture_n$bucket.json" "$staging/onchain_fixture_n$bucket.json"
 done
 
 python3 - "$repo_root" "$staging/provenance.json" $buckets <<'PY'

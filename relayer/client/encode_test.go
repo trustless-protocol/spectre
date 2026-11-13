@@ -32,6 +32,7 @@ func fullyPopulatedApplicationStateMsg() updateClientContract.ISpectreClientMsgs
 		zero8[i] = big.NewInt(0)
 	}
 	zero2 := [2]*big.Int{big.NewInt(0), big.NewInt(0)}
+	zero4 := [4]*big.Int{big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0)}
 
 	msg := updateClientContract.ISpectreClientMsgsMsgUpdateApplicationState{
 		TrustedConsensusState: updateClientContract.ISpectreTendermintMsgsConsensusState{
@@ -62,7 +63,7 @@ func fullyPopulatedApplicationStateMsg() updateClientContract.ISpectreClientMsgs
 		Time: big.NewInt(1700000002000000000),
 		Proof: updateClientContract.ISpectreClientMsgsBatchProof{
 			Proof:                  zero8,
-			Commitments:            zero2,
+			Commitments:            zero4,
 			CommitmentPok:          zero2,
 			Bucket:                 16,
 			SignerIndices:          []uint32{0, 1},

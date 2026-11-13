@@ -13,9 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       # The gnark forks are private Go modules; keep them off the public proxy and
-      # checksum DB. libgaraga_rs lives in .artifacts/native (see scripts/build-garaga-ffi.sh).
+      # checksum DB.
       GOPRIVATE: github.com/decentrio/*
-      CGO_LDFLAGS: -L${{ github.workspace }}/.artifacts/native
     steps:
       - uses: actions/checkout@v4
 
@@ -33,22 +32,12 @@ jobs:
           go-version-file: relayer/go.mod
           cache: true
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      # ecip-gnark's prover links a Rust FFI (libgaraga_rs). Build it from the module
-      # pinned in relayer/go.mod into .artifacts/native, which CGO_LDFLAGS points at.
-      - name: Build Garaga FFI (libgaraga_rs)
-        run: scripts/build-garaga-ffi.sh
-
       - name: Build
         working-directory: relayer
         run: go build ./...
 
       - name: Test
         working-directory: relayer
-        # libgaraga_rs.so is not on the default loader path; point the runtime at it.
-        env:
-          LD_LIBRARY_PATH: ${{ github.workspace }}/.artifacts/native
         run: go test ./...
 
       # The Optimism attestor sidecar is its own module with no native dependencies.

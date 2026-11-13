@@ -74,7 +74,7 @@ func TestProofToBigInts_WrongType(t *testing.T) {
 
 func TestProofToBigInts_ValidBN254Proof(t *testing.T) {
 	p := &groth16_bn254.Proof{}
-	p.Commitments = make([]curve_bn254.G1Affine, 1)
+	p.Commitments = make([]curve_bn254.G1Affine, commitmentCount)
 	proofInts, commitments, commitmentPok, err := ProofToBigInts(p)
 	if err != nil {
 		t.Fatalf("unexpected: %v", err)
@@ -92,6 +92,45 @@ func TestProofToBigInts_ValidBN254Proof(t *testing.T) {
 	for i, v := range commitmentPok {
 		if v == nil {
 			t.Errorf("commitmentPok[%d] nil", i)
+		}
+	}
+}
+
+// The order is the one gnark's MarshalSolidity writes and the contract reads: C0.x, C0.y,
+// C1.x, C1.y, so the two commitments cannot be swapped or collapsed into one.
+func TestProofToBigInts_CommitmentsKeepBothPointsInOrder(t *testing.T) {
+	p := &groth16_bn254.Proof{}
+	p.Commitments = make([]curve_bn254.G1Affine, commitmentCount)
+	for i := range p.Commitments {
+		p.Commitments[i].X.SetUint64(uint64(10*(i+1) + 1))
+		p.Commitments[i].Y.SetUint64(uint64(10*(i+1) + 2))
+	}
+	p.CommitmentPok.X.SetUint64(91)
+	p.CommitmentPok.Y.SetUint64(92)
+
+	_, commitments, commitmentPok, err := ProofToBigInts(p)
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	for i, want := range []int64{11, 12, 21, 22} {
+		if commitments[i].Int64() != want {
+			t.Errorf("commitments[%d] = %v, want %d", i, commitments[i], want)
+		}
+	}
+	if commitmentPok[0].Int64() != 91 || commitmentPok[1].Int64() != 92 {
+		t.Errorf("commitmentPok = %v, want [91 92]", commitmentPok)
+	}
+}
+
+// A circuit change that adds or drops a commitment must fail here, not ship a proof the
+// verifier contract reads with the wrong layout.
+func TestProofToBigInts_RejectsAWrongCommitmentCount(t *testing.T) {
+	for _, n := range []int{0, 1, commitmentCount + 1} {
+		p := &groth16_bn254.Proof{}
+		p.Commitments = make([]curve_bn254.G1Affine, n)
+		_, _, _, err := ProofToBigInts(p)
+		if err == nil || !strings.Contains(err.Error(), "commitments") {
+			t.Errorf("%d commitments: want a commitment-count error, got %v", n, err)
 		}
 	}
 }

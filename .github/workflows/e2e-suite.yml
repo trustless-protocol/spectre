@@ -2,7 +2,7 @@ name: E2E suite (reusable)
 
 # Reusable matrix runner for one interchaintest suite. Per-suite caller
 # workflows (e2e-<suite>.yml) invoke this via `workflow_call`, so the heavy
-# setup (private gnark modules, Garaga FFI, Kurtosis pin, prover artifacts) lives in one
+# setup (private gnark modules, Kurtosis pin, prover artifacts) lives in one
 # place instead of being copy-pasted per suite.
 #
 # Every method of the chosen suite (TestWith<Suite>/Test_*) rebuilds its own
@@ -86,9 +86,8 @@ jobs:
     name: ${{ matrix.test }}
     env:
       # The gnark forks are private Go modules; keep them off the public proxy and
-      # checksum DB. libgaraga_rs lives in .artifacts/native (see scripts/build-garaga-ffi.sh).
+      # checksum DB.
       GOPRIVATE: github.com/decentrio/*
-      CGO_LDFLAGS: -L${{ github.workspace }}/.artifacts/native
     steps:
       - uses: actions/checkout@v4
         with:
@@ -108,9 +107,6 @@ jobs:
           cache: true
 
       - uses: dtolnay/rust-toolchain@stable
-
-      - name: Build Garaga FFI (libgaraga_rs)
-        run: scripts/build-garaga-ffi.sh
 
       - uses: foundry-rs/foundry-toolchain@v1
         with:
@@ -161,11 +157,8 @@ jobs:
         # The just test-e2e recipe builds contracts, installs the relayer binary,
         # generates the prover artifacts, and runs interchaintest with
         # ETH_TESTNET_TYPE=pos. The recipe anchors the selector with ^...$, so a
-        # full TestWith<Suite>/Test_* path runs exactly that one method. The
-        # relayer/prover subprocesses dlopen libgaraga_rs.so, so it must be on
-        # the loader path.
+        # full TestWith<Suite>/Test_* path runs exactly that one method.
         env:
-          LD_LIBRARY_PATH: ${{ github.workspace }}/.artifacts/native
           ETH_TESTNET_TYPE: pos
           E2E_PROOF_TYPE: ${{ inputs.proof_type || 'groth16' }}
         run: just test-e2e '${{ matrix.test }}'

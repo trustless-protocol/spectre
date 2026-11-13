@@ -147,9 +147,10 @@ contract SignatureVerifierBypassTest is Test {
         }
     }
 
-    function _zeroCommitments() private pure returns (uint256[2] memory c) {
-        c[0] = 0;
-        c[1] = 0;
+    function _zeroCommitments() private pure returns (uint256[4] memory c) {
+        for (uint256 i = 0; i < 4; i++) {
+            c[i] = 0;
+        }
     }
 
     function _zeroCommitmentPok() private pure returns (uint256[2] memory p) {

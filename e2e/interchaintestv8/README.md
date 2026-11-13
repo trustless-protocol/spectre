@@ -19,8 +19,7 @@ On top of the toolchain in the [repo root README](../../README.md#requirements):
 
 - **Docker** daemon running
 - **[Kurtosis CLI](https://docs.kurtosis.com/install/)** installed
-- Access to the private gnark forks (`GOPRIVATE`) and `libgaraga_rs` built with
-  `scripts/build-garaga-ffi.sh`, per [gnark forks](../../README.md#gnark-forks)
+- Access to the private gnark forks (`GOPRIVATE`), per [gnark forks](../../README.md#gnark-forks)
 
 The suite only exercises bucket 4 (single-validator simd chain), which is what the
 prover's `-buckets` flag builds by default. The full bucket family takes far longer

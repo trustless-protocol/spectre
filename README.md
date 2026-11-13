@@ -57,14 +57,14 @@ The relayer and the prover depend on two private forks, pinned as ordinary Go
 modules in `relayer/go.mod`:
 
 ```
-require github.com/decentrio/ecip-gnark v0.1.0-rc.3
+require github.com/decentrio/ecip-gnark v0.1.0-rc.4
 
-replace github.com/consensys/gnark => github.com/decentrio/gnark v0.16.4-decentrio-fork.2
+replace github.com/consensys/gnark => github.com/decentrio/gnark v0.16.4-decentrio-fork.5
 ```
 
 | Fork | Content |
 |---|---|
-| [`decentrio/ecip-gnark`](https://github.com/decentrio/ecip-gnark) | Ed25519 operations inside the circuit, and the `garaga_rs` Rust FFI |
+| [`decentrio/ecip-gnark`](https://github.com/decentrio/ecip-gnark) | Ed25519 operations inside the circuit. Pure Go: the relayer and prover build with `CGO_ENABLED=0` |
 | [`decentrio/gnark`](https://github.com/decentrio/gnark) | Fork of consensys/gnark with changes to the generated verifier |
 
 Both repositories are private, so the Go proxy and the checksum database cannot
@@ -78,29 +78,6 @@ gh auth setup-git        # or any other git credential for github.com/decentrio
 To work on a fork, point a local `replace` at your checkout and never commit it:
 machine-local paths do not belong in `go.mod`.
 
-### Garaga FFI
-
-The prover of `ecip-gnark` links a Rust library, `libgaraga_rs`. Its cgo
-directive is `-L..`, which points into the read-only Go module cache, so the
-library is built into `.artifacts/native/` instead.
-
-1. Build the library. Repeat after every change of the `ecip-gnark` version.
-
-   ```bash
-   scripts/build-garaga-ffi.sh
-   ```
-
-2. Point the linker and the loader at it. The `just` recipes and the scripts
-   under `scripts/` already set `CGO_LDFLAGS`. Set the loader path yourself.
-
-   ```bash
-   export CGO_LDFLAGS="-L$PWD/.artifacts/native"
-   export LD_LIBRARY_PATH="$PWD/.artifacts/native"       # DYLD_LIBRARY_PATH on macOS
-   ```
-
-Without the library, `go build ./...` under `relayer/` fails at link time with
-`library 'garaga_rs' not found`.
-
 ### Build and test
 
 Run the build steps in this order on a fresh clone:
@@ -109,7 +86,8 @@ Run the build steps in this order on a fresh clone:
 2. `just build-go-relayer`: `go build ./...` in `relayer/`.
 3. `just build-prover-artifacts`: generates the **prover artifacts** of each
    bucket (`r1cs`, `pk`, `vk`) into `relayer/bin/n{N}/` and writes
-   `contracts/verifiers/Groth16Verifier_N4.sol`. Only N=4 is built by default,
+   `contracts/verifiers/Groth16Verifier_N4.sol` plus the smoke proof used by
+   `Groth16OnchainProofTest`. Only N=4 is built by default,
    and `relayer/bin/` is gitignored, so a fresh clone has none.
 4. `just build-contracts`: `forge build`. This step needs the verifier from
    step 3, which is not checked in. The deploy scripts
@@ -192,7 +170,7 @@ on-chain. Do not regenerate for a live deployment before that redeploy is agreed
 
 | Path | Behavior |
 |---|---|
-| `just build-prover-artifacts` (`scripts/solidity/build-prover-artifacts.sh`) | The supported path. Covers the configured buckets (N4 by default). Generates into ignored staging (`.artifacts/solidity/prover`), checks that the staged set is complete, publishes it and records provenance. Does nothing when every artifact exists, unless `--force` is passed. It does not pass `-tags=icicle`, so it cannot use the GPU backend |
+| `just build-prover-artifacts` (`scripts/solidity/build-prover-artifacts.sh`) | The supported path. Covers the configured buckets (N4 by default). Generates into ignored staging (`.artifacts/solidity/prover`), smoke-tests it, checks that the staged set is complete, publishes it (including the smoke proof used by `Groth16OnchainProofTest`) and records provenance. Does nothing when every artifact exists, unless `--force` is passed. It does not pass `-tags=icicle`, so it cannot use the GPU backend |
 | `go run ./prover/cmd …` (the example above) | Writes straight into `relayer/bin` and `contracts/verifiers` |
 
 ### ICICLE environment
