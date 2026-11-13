@@ -24,6 +24,16 @@ contract Groth16OnchainProofTest is Test {
     string internal constant VERIFIER_SOURCE = "contracts/verifiers/Groth16Verifier_N4.sol";
     uint16 internal constant BUCKET = 4;
 
+    /// @dev BN254 base field modulus. `(x, FIELD_MODULUS - y)` is the negation of the point `(x, y)`: still on
+    ///      the curve, but another point.
+    uint256 internal constant FIELD_MODULUS =
+        21_888_242_871_839_275_222_246_405_745_257_275_088_696_311_157_297_823_662_689_037_894_645_226_208_583;
+
+    /// @dev A call the verifier rejects at a pairing equation costs about as much as one it accepts, a few
+    ///      hundred thousand gas. A call rejected because a precompile refused a point burns all the gas it
+    ///      was given, about a billion in a test. Anything under this ceiling was rejected by a pairing.
+    uint256 internal constant PAIRING_REJECTION_GAS_CEILING = 2_000_000;
+
     SignatureVerifier internal signatureVerifier;
 
     uint256[8] internal proof;
@@ -86,6 +96,15 @@ contract Groth16OnchainProofTest is Test {
 
     function _verify() internal view returns (bool) {
         return signatureVerifier.verifyBatchProof(BUCKET, proof, commitments, commitmentPok, pubkeys, active, shared);
+    }
+
+    /// @dev Asserts the call is rejected, and by a pairing equation: see PAIRING_REJECTION_GAS_CEILING.
+    function _assertRejectedByPairing(string memory what) internal view {
+        uint256 gasBefore = gasleft();
+        bool accepted = _verify();
+        uint256 gasUsed = gasBefore - gasleft();
+        assertFalse(accepted, what);
+        assertLt(gasUsed, PAIRING_REJECTION_GAS_CEILING, "rejected by point validation, not by a pairing equation");
     }
 
     // ------------------------------------------------------------------
@@ -194,6 +213,43 @@ contract Groth16OnchainProofTest is Test {
     }
 
     // ------------------------------------------------------------------
+    // A valid curve point with the wrong value is rejected too. The tests above mostly stop at point validation.
+    // Negating y keeps a point on its curve, so the precompiles accept it and a pairing equation has to refuse it.
+    // Words: Ar = proof[0..1], Bs = proof[2..5] (a G2 point, y in the last two words), Krs = proof[6..7].
+    // ------------------------------------------------------------------
+
+    function test_rejectsNegatedFirstCommitment() public {
+        commitments[1] = FIELD_MODULUS - commitments[1];
+        _assertRejectedByPairing("-C0 accepted");
+    }
+
+    function test_rejectsNegatedSecondCommitment() public {
+        commitments[3] = FIELD_MODULUS - commitments[3];
+        _assertRejectedByPairing("-C1 accepted");
+    }
+
+    function test_rejectsNegatedCommitmentPok() public {
+        commitmentPok[1] = FIELD_MODULUS - commitmentPok[1];
+        _assertRejectedByPairing("-PoK accepted");
+    }
+
+    function test_rejectsNegatedAr() public {
+        proof[1] = FIELD_MODULUS - proof[1];
+        _assertRejectedByPairing("-Ar accepted");
+    }
+
+    function test_rejectsNegatedBs() public {
+        proof[4] = FIELD_MODULUS - proof[4];
+        proof[5] = FIELD_MODULUS - proof[5];
+        _assertRejectedByPairing("-Bs accepted");
+    }
+
+    function test_rejectsNegatedKrs() public {
+        proof[7] = FIELD_MODULUS - proof[7];
+        _assertRejectedByPairing("-Krs accepted");
+    }
+
+    // ------------------------------------------------------------------
     // The public input is bound
     // ------------------------------------------------------------------
 
@@ -210,6 +266,11 @@ contract Groth16OnchainProofTest is Test {
     function test_rejectsOtherHeight() public {
         shared.height += 1;
         assertFalse(_verify(), "height changed");
+    }
+
+    function test_rejectsOtherRound() public {
+        shared.round += 1;
+        assertFalse(_verify(), "round changed");
     }
 
     function test_rejectsOtherBlockHash() public {

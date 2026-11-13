@@ -57,9 +57,9 @@ The relayer and the prover depend on two private forks, pinned as ordinary Go
 modules in `relayer/go.mod`:
 
 ```
-require github.com/decentrio/ecip-gnark v0.1.0-rc.3.0.20261101160124-161566863181
+require github.com/decentrio/ecip-gnark v0.1.0-rc.4
 
-replace github.com/consensys/gnark => github.com/decentrio/gnark v0.16.4-decentrio-fork.4
+replace github.com/consensys/gnark => github.com/decentrio/gnark v0.16.4-decentrio-fork.5
 ```
 
 | Fork | Content |
