@@ -93,6 +93,9 @@ type Handler struct {
 	mu           sync.Mutex
 	cosmosMu     sync.Mutex
 	senderStates map[evmNonceKey]*ethTxSenderState
+	// minedBlocks is the highest block this process saw one of its own
+	// transactions mined in, per endpoint. Guarded by mu. See preflightEthCall.
+	minedBlocks map[*ethclient.Client]uint64
 
 	signerOnce sync.Once
 	signer     Signer
@@ -723,6 +726,20 @@ func (h *Handler) SendEthTx(stdCtx context.Context, endpoint services.EVMEndpoin
 		}
 	}
 
+	// A packet is simulated before it is broadcast; a client update is not (see
+	// preflightEthCall).
+	if input, label, isPacket, err := packetCallInput(msg); err != nil {
+		return err
+	} else if isPacket {
+		from, err := h.EthSignerAddress()
+		if err != nil {
+			return err
+		}
+		if err := h.preflightEthCall(stdCtx, endpoint, from, *endpoint.RouterContract(), input, gasLimit, label); err != nil {
+			return err
+		}
+	}
+
 	receipt, submitDur, waitDur, err := h.executeWithRetryAndResubmission(stdCtx, endpoint, privateKey, gasLimit, senderFn, knobEthGasLimit)
 	if err != nil {
 		return err
@@ -947,6 +964,21 @@ func (h *Handler) SendEthTxBatch(stdCtx context.Context, endpoint services.EVMEn
 	var benchStart time.Time
 	if benchEnabled {
 		benchStart = time.Now()
+	}
+
+	// Simulate the whole multicall before it is broadcast. One reverting inner
+	// call reverts all of it, so a revert here is reported exactly as the mined
+	// revert would be, and the module isolates the packets as it already does.
+	multicallInput, err := parsedABI.Pack("multicall", calldata)
+	if err != nil {
+		return fmt.Errorf("[SendEthTx] pack multicall (%s): %w", labelStr, err)
+	}
+	from, err := h.EthSignerAddress()
+	if err != nil {
+		return fmt.Errorf("[SendEthTx] %w", err)
+	}
+	if err := h.preflightEthCall(stdCtx, endpoint, from, *endpoint.RouterContract(), multicallInput, multicallGasLimit, "multicall "+labelStr); err != nil {
+		return fmt.Errorf("multicall labels=%s: %w", labelStr, err)
 	}
 
 	senderFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
@@ -1559,6 +1591,7 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 
 		if waitErr == nil {
 			waitDur := time.Since(waitStart)
+			h.noteMinedBlock(endpoint.EthClient(), receipt.BlockNumber)
 			if receipt.Status == 0 {
 				callMsg := ethereum.CallMsg{
 					From:     fromAddress,
