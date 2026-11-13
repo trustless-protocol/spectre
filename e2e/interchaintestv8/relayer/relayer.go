@@ -56,7 +56,10 @@ func proverEnv() []string {
 }
 
 // spendingCapVars are the caps `relayer start` refuses to boot without.
-var spendingCapVars = []string{"ETH_MAX_FEE_PER_GAS", "ETH_MAX_PRIORITY_FEE_PER_GAS"}
+var spendingCapVars = []string{
+	"ETH_MAX_FEE_PER_GAS", "ETH_MAX_PRIORITY_FEE_PER_GAS",
+	"COSMOS_MAX_GAS", "COSMOS_MAX_FEE",
+}
 
 // spendingCapEnv sets every cap the environment does not already set to 0, the
 // explicit "no cap": these suites run against local chains and are not about fees.

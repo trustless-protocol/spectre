@@ -283,7 +283,10 @@ func TestStart(t *testing.T) {
 // caps start refuses to boot without. 0 is the explicit "no cap".
 func setSpendingCaps(t *testing.T) {
 	t.Helper()
-	for _, name := range []string{transaction.EnvEVMMaxFeePerGas, transaction.EnvEVMMaxPriorityFeePerGas} {
+	for _, name := range []string{
+		transaction.EnvEVMMaxFeePerGas, transaction.EnvEVMMaxPriorityFeePerGas,
+		transaction.EnvCosmosMaxGas, transaction.EnvCosmosMaxFee,
+	} {
 		t.Setenv(name, "0")
 	}
 }
@@ -312,6 +315,23 @@ func TestStartRequiresSpendingCaps(t *testing.T) {
 		err := run(t)
 		if err == nil || !strings.Contains(err.Error(), transaction.EnvEVMMaxFeePerGas) {
 			t.Fatalf("err = %v, want start to refuse and name %s", err, transaction.EnvEVMMaxFeePerGas)
+		}
+	})
+
+	// One run must name every missing variable, on both chains.
+	t.Run("names the missing caps of both chains at once", func(t *testing.T) {
+		setSpendingCaps(t)
+		t.Setenv(transaction.EnvEVMMaxPriorityFeePerGas, "")
+		t.Setenv(transaction.EnvCosmosMaxGas, "")
+		t.Setenv(transaction.EnvCosmosMaxFee, "")
+		err := run(t)
+		if err == nil {
+			t.Fatal("start accepted missing caps")
+		}
+		for _, name := range []string{transaction.EnvEVMMaxPriorityFeePerGas, transaction.EnvCosmosMaxGas, transaction.EnvCosmosMaxFee} {
+			if !strings.Contains(err.Error(), name) {
+				t.Errorf("err = %v, want it to name %s", err, name)
+			}
 		}
 	})
 

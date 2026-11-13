@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -176,12 +177,15 @@ func validateStartupKeys() error {
 // validateSpendingCaps refuses to start a relay loop without the operator's
 // spending caps. The loop signs transactions for as long as it runs, at fees and
 // gas limits read from the RPC, so "no cap" has to be a decision the operator
-// wrote down (0), not the result of a variable nobody set (#575 M3).
+// wrote down (0), not the result of a variable nobody set (#575 M3, M4).
+//
+// Both chains are checked before either is reported, so one run names every
+// missing variable.
 //
 // One-shot commands do not call this: they honour a cap that is set and run
 // without one that is not.
 func validateSpendingCaps() error {
-	return transaction.RequireEVMFeeCaps()
+	return errors.Join(transaction.RequireEVMFeeCaps(), transaction.RequireCosmosSpendCaps())
 }
 
 // requireRelayPath is `start`'s half of the one-path rule: loadConfig has already
