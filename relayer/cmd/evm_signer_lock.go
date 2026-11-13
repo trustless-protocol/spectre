@@ -49,17 +49,39 @@ var evmSignerLockChainIDRetryDelays = []time.Duration{
 // so it cannot protect two hosts that share ETH_PRIVATE_KEY; it does make the
 // normal one-process-per-path deployment fail loudly before either process has
 // allocated a nonce.
-func acquireEVMSignerLocks(stdCtx context.Context, cfg *appConfig) (release func(), err error) {
+//
+// It also returns the chain ids it locked. Those are the only chains this
+// process may sign for: start hands them to the transaction handler, which then
+// refuses an endpoint that later reports any other id.
+func acquireEVMSignerLocks(stdCtx context.Context, cfg *appConfig) (release func(), chainIDs []string, err error) {
 	address, err := (&transaction.Handler{}).EthSignerAddress()
 	if err != nil {
-		return nil, fmt.Errorf("EVM signer lock: derive address from ETH_PRIVATE_KEY: %w", err)
+		return nil, nil, fmt.Errorf("EVM signer lock: derive address from ETH_PRIVATE_KEY: %w", err)
 	}
 
 	keys, err := evmSignerLockKeys(stdCtx, cfg, address)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return acquireEVMSignerLockKeys(keys)
+	release, err = acquireEVMSignerLockKeys(keys)
+	if err != nil {
+		return nil, nil, err
+	}
+	return release, lockedChainIDs(keys), nil
+}
+
+// lockedChainIDs lists the distinct chain ids of the given lock keys.
+func lockedChainIDs(keys []evmSignerLockKey) []string {
+	seen := make(map[string]struct{}, len(keys))
+	ids := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if _, dup := seen[key.chainID]; dup {
+			continue
+		}
+		seen[key.chainID] = struct{}{}
+		ids = append(ids, key.chainID)
+	}
+	return ids
 }
 
 // evmSignerLockKeys resolves the real chain id from every configured EVM

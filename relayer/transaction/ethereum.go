@@ -96,6 +96,11 @@ type Handler struct {
 	// minedBlocks is the highest block this process saw one of its own
 	// transactions mined in, per endpoint. Guarded by mu. See preflightEthCall.
 	minedBlocks map[*ethclient.Client]uint64
+	// pinnedChainIDs is the chain id each endpoint first reported, and
+	// allowedChainIDs the ids `start` locked a nonce domain for (nil: any).
+	// Guarded by mu. See chainid.go.
+	pinnedChainIDs  map[*ethclient.Client]string
+	allowedChainIDs map[string]struct{}
 
 	signerOnce sync.Once
 	signer     Signer
@@ -1424,6 +1429,12 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 	chainIdInt, err := endpoint.EthClient().ChainID(stdCtx)
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("invalid chain id: %v", err)
+	}
+	// The id decides which chain the signature is valid on, so it is not taken
+	// from the RPC unchecked on every send.
+	if err := h.checkEVMChainID(endpoint.EthClient(), chainIdInt); err != nil {
+		log.Printf("ERROR [SendEthTx][ATTENTION] %s not sent: %v", knob.subject(), err)
+		return nil, 0, 0, err
 	}
 
 	auth, err := bind.NewKeyedTransactorWithChainID(privateKey, chainIdInt)

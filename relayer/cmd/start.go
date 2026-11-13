@@ -183,7 +183,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 			// actual chain id and hold those cross-process locks before any builder
 			// can submit. A non-answer is fatal here: starting without a chain id
 			// would silently mean starting without this guard.
-			releaseEVMSignerLocks, err := acquireEVMSignerLocks(runCtx, cfg)
+			releaseEVMSignerLocks, lockedEVMChainIDs, err := acquireEVMSignerLocks(runCtx, cfg)
 			if err != nil {
 				return err
 			}
@@ -213,6 +213,10 @@ func Start(logger *zap.Logger) *cobra.Command {
 			// The Cosmos side re-queries the account sequence fresh under cosmosMu,
 			// so sharing is safe there too.
 			txHandler := &transaction.Handler{}
+			// The locks above cover exactly these chains. An endpoint that later
+			// reports another chain id would have this process sign for a chain it
+			// holds no lock on, with the same key.
+			txHandler.AllowEVMChainIDs(lockedEVMChainIDs)
 
 			// One independent relay loop per Cosmos→ETH source. Each has its own
 			// Tendermint RPC, SpectreClient and router client id; they share the
