@@ -47,7 +47,7 @@ type l2ToCosmosConfig struct {
 	HeadKind        string                     `json:"head_kind"`
 	// IncludeProvisional accepts attestor roots whose irreversible-finality check has
 	// not passed yet; what such a root can still lose depends on its source (see
-	// docs/L2_CLIENTS.md, "Provisional attestations"). It is deliberately its own
+	// docs/runbooks/L2_CLIENTS.md, "Provisional attestations"). It is deliberately its own
 	// field: it used to be inferred from head_kind, which conflated two independent
 	// axes — head_kind selects which L2 head is read, provisional is about whether
 	// the attestor's finality re-check has completed. Defaults to true for anything

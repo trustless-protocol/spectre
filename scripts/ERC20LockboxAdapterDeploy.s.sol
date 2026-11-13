@@ -4,7 +4,7 @@ pragma solidity ^0.8.28;
 // solhint-disable custom-errors,gas-custom-errors
 
 /// @notice Deploys and registers an `ERC20LockboxAdapter` for one IBC denom, following the order in
-/// docs/ERC20_LOCKBOX_ADAPTER.md#deployment. Every irreversible step (`setCustomERC20`, funding, activation) comes
+/// docs/runbooks/ERC20_LOCKBOX_ADAPTER.md#deployment. Every irreversible step (`setCustomERC20`, funding, activation) comes
 /// after every check, and funding comes last.
 ///
 /// Environment:

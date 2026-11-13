@@ -1,86 +1,59 @@
 # Spectre
 
-A ZK light client that lets Ethereum follow Tendermint consensus, and the Go
-relayer and prover that feed it. A purpose-built gnark Groth16 circuit
-batch-verifies the validator Ed25519 signatures behind one CometBFT commit — a
-2/3+ voting-power quorum, with each `CanonicalVote` reconstructed in-circuit —
-so a client update settles on-chain as a single proof carrying ~32 bytes of
-public input. Signers are padded up to the nearest fixed circuit size, one
-`Groth16Verifier_N{N}` per bucket, for validator sets up to 180 active members.
+**Spectre is an implementation of IBC v2, with the goal of bringing IBC beyond Cosmos.**
 
-The client plugs into an [IBC v2](https://github.com/cosmos/ibc/tree/main/spec/IBC_V2)
-Solidity stack for packet routing and ICS-20 transfers, and the same relayer
-carries the reverse direction against a CosmWasm Ethereum light client on the
-Cosmos side (`programs/cw-ics08-wasm-eth`), which follows the beacon sync
-committee rather than a Groth16 proof. CosmWasm ICS-08 clients extend the path
-to OP, Base and Arbitrum, backed by attestor sidecars.
+Since IBC was built specifically for Cosmos, it can only support Cosmos-to-Cosmos connections. The main problem is its verification component — the Tendermint light client is too heavy to execute on any other chain. To bring IBC to a non-Cosmos chain, we turn to **ZK**: instead of *executing* the Tendermint light client there, we **enforce its logic by verifying a ZK proof of the light-client circuit**. The circuit is carefully built so that it is relatively light-weight, keeping the proving process fast and cheap.
+
+Spectre is built to drop in cleanly: it **integrates into the IBC stack you already run**, so any chain that adopts it should expect the same IBC UX it has today.
+
+---
+
+## Table of contents
+
+- [Architecture](#architecture)
+- [Build](#build)
+- [Runbooks](#runbooks)
+- [GPU proving](#gpu-proving)
+- [Logging](#logging)
+- [Benchmark mode](#benchmark-mode)
+
+---
 
 ## Architecture
 
-```
-Cosmos                  Go relayer                  Ethereum
-──────                  ──────────                  ────────
+![Spectre architecture](docs/assets/architecture.svg)
 
-commit @ H         ──▶  extract top-N Ed25519  ──▶  ICS26Router.updateApplicationState
-(validator sigs)        sigs holding ≥ 2/3          └──▶ SpectreClient.updateApplicationState
-                        voting power                     └──▶ UpdateClient.sol   (delegatecall)
-                        gnark: one Groth16                    └──▶ SignatureVerifier
-                        proof, ~32 bytes                           └──▶ Groth16Verifier_N{N}
-                        of public input             ⇒ keccak(consensusState) stored per height
+| Highlight | Summary |
+|---|---|
+| **Hybrid design** | Only the validators' Ed25519 signature check is proven in ZK. Header checks and the finality threshold stay in Solidity, which keeps the circuit small |
+| **Static circuit with buckets** | One gnark Groth16 circuit per signer count N ∈ {4, 8, 16, 32, 64, 128}. Each N is a **bucket**; the prover picks the smallest bucket that fits the signers |
+| **Split `updateClient`** | `updateConsensusState` rotates the trusted validator set. `updateApplicationState` advances the block state for each packet and is the cheap, frequent call |
+| **Input binding** | The proof has a single public input, a hash of the inputs that the circuit and the contract share |
+| **Standard IBC elsewhere** | Ethereum → Cosmos uses the standard `08-wasm` client, with no ZK proof. Only the light client on the non-Cosmos chain is re-designed |
 
-send_packet        ──▶  packet + ICS23 proof   ──▶  ICS26Router.recvPacket
-                                                    ├──▶ SpectreClient.verifyMembership
-                                                    │    └──▶ Membership.sol      (staticcall)
-                                                    │         ICS23 against the commitment root
-                                                    └──▶ ICS20Transfer.onRecvPacket
-                                                         └──▶ Escrow / IBCERC20
-```
+Details are in the [Spectre documentation](https://docs.trustless.link/docs/spectre):
+[overview](https://docs.trustless.link/docs/spectre/foundations/overview-of-spectre) ·
+[design choices](https://docs.trustless.link/docs/spectre/implementation/design-choices) ·
+[light client](https://docs.trustless.link/docs/spectre/implementation/light-client) ·
+[optimizations](https://docs.trustless.link/docs/spectre/implementation/optimizations) ·
+[relayer](https://docs.trustless.link/docs/spectre/implementation/relayer) ·
+[benchmark](https://docs.trustless.link/docs/spectre/performance/benchmark).
 
-The two flows are independent, and that is the point of the design: a Groth16
-proof is paid once per client update, and every packet relayed against that
-update costs only an ICS23 membership check. Nothing on the packet path touches
-the verifier contracts.
-
-The Tendermint commit is verified by batch-proving N Ed25519 signatures whose
-voting power sums to ≥ 2/3 of the validator set. To keep Groth16 circuits
-fixed-size, production retains the bucket topology N ∈ {4, 8, 16, 32, 64,
-128}. Each bucket has one inseparable `(r1cs, pk, vk)` set and matching
-`Groth16Verifier_N{N}.sol`. The prover engine discovers which buckets are
-servable by scanning `bin/` for complete artifact triples at startup
-(`relayer/prover/gnark/engine.go`) — no code change is needed once a bucket's
-artifacts exist. No artifact triples are checked in (`relayer/bin/` is
-gitignored), so a fresh clone must generate or provision them before the prover
-can serve any bucket. By default the generator (`relayer/prover/cmd`,
-`-buckets` flag) builds N=4; serving a larger quorum requires generating that
-bucket's artifacts, then publishing, deploying, and registering its
-`Groth16Verifier_N{N}.sol`.
-
-The store keeps one 32-byte `keccak256(abi.encode(consensusState))` per height,
-not the root itself. A packet carries the consensus state and its commitment
-root, and `SpectreClient._validateMembershipInput` rehashes what it was given,
-compares that against the stored hash, checks the root matches the state, and
-checks the trusting period — all before the ICS23 proof is looked at.
-
-The update above is drawn router-managed, which is the access-controlled path
-(`ICS02ClientUpgradeable.updateApplicationState` is `restricted` and forwards to
-the client). A deployment that is not router-managed has the relayer call
-`SpectreClient` directly instead — `relayer/transaction/ethereum.go:670-694`
-picks between the two. The packet path always goes through the router.
-
-## Building
+## Build
 
 ### Requirements
 
-- [Go](https://golang.org/) >= 1.26 (`relayer/go.mod` pins 1.26.0, toolchain 1.26.9)
-- [Foundry](https://getfoundry.sh/)
-- [Bun](https://bun.sh/)
-- [Just](https://github.com/casey/just)
-- Optional for GPU proving: ICICLE runtime/libs installed on the host, plus an
-  `icicle` build of the relayer/prover tool
+| Tool | Version | Needed for |
+|---|---|---|
+| [Go](https://golang.org/) | The version in `relayer/go.mod` | Relayer and prover |
+| [Foundry](https://getfoundry.sh/) | | Contracts |
+| [Bun](https://bun.sh/) | | Solidity dependencies (never npm or yarn) |
+| [Just](https://github.com/casey/just) | | Build recipes |
+| ICICLE runtime libraries | | GPU proving only; see [GPU proving](#gpu-proving) |
 
 ### gnark forks
 
-The relayer/prover depend on two private forks of gnark, pinned as ordinary Go
+The relayer and the prover depend on two private forks, pinned as ordinary Go
 modules in `relayer/go.mod`:
 
 ```
@@ -89,124 +62,87 @@ require github.com/decentrio/ecip-gnark v0.1.0-rc.3.0.20261101160124-16156686318
 replace github.com/consensys/gnark => github.com/decentrio/gnark v0.16.4-decentrio-fork.4
 ```
 
-- [`decentrio/ecip-gnark`](https://github.com/decentrio/ecip-gnark) — Ed25519 in-circuit ops. Pure Go: the relayer and prover build with `CGO_ENABLED=0`.
-- [`decentrio/gnark`](https://github.com/decentrio/gnark) — fork of consensys/gnark with hash-aggregate verifier tweaks.
+| Fork | Content |
+|---|---|
+| [`decentrio/ecip-gnark`](https://github.com/decentrio/ecip-gnark) | Ed25519 operations inside the circuit. Pure Go: the relayer and prover build with `CGO_ENABLED=0` |
+| [`decentrio/gnark`](https://github.com/decentrio/gnark) | Fork of consensys/gnark with changes to the generated verifier |
 
-Both repositories are private, so the Go proxy and checksum DB cannot serve
-them. One-time setup:
+Both repositories are private, so the Go proxy and the checksum database cannot
+serve them. Set this up once:
 
 ```bash
 go env -w GOPRIVATE='github.com/decentrio/*'
 gh auth setup-git        # or any other git credential for github.com/decentrio
 ```
 
-To hack on a fork, point a local `replace` at your checkout while you work and
-never commit it (machine-local paths do not belong in `go.mod`).
+To work on a fork, point a local `replace` at your checkout and never commit it:
+machine-local paths do not belong in `go.mod`.
 
 ### Build and test
 
-```bash
-bun install                  # Solidity dependencies (never npm/yarn)
-just build-go-relayer        # go build ./... in relayer/
-just build-prover-artifacts  # compile circuits into relayer/bin/n{N}/, emit contracts/verifiers/ and the smoke proof for Groth16OnchainProofTest
-just build-contracts         # forge build — needs the generated verifier (see below)
+Run the build steps in this order on a fresh clone:
 
+1. `bun install`: Solidity dependencies.
+2. `just build-go-relayer`: `go build ./...` in `relayer/`.
+3. `just build-prover-artifacts`: generates the **prover artifacts** of each
+   bucket (`r1cs`, `pk`, `vk`) into `relayer/bin/n{N}/` and writes
+   `contracts/verifiers/Groth16Verifier_N4.sol` plus the smoke proof used by
+   `Groth16OnchainProofTest`. Only N=4 is built by default,
+   and `relayer/bin/` is gitignored, so a fresh clone has none.
+4. `just build-contracts`: `forge build`. This step needs the verifier from
+   step 3, which is not checked in. The deploy scripts
+   (`scripts/E2ETestDeploy.s.sol`, `scripts/E2ETestDeployL2.s.sol`) and two
+   integration tests import it. Without it the build stops with
+   `Source "contracts/verifiers/Groth16Verifier_N4.sol" not found`.
+
+Tests and linters:
+
+```bash
 just test-foundry            # all Solidity tests
 just test-go-relayer         # all Go relayer tests
 just lint                    # solidity + go + buf (`just lint-rust` is separate)
 ```
 
-The order matters on a fresh clone. `contracts/verifiers/Groth16Verifier_N4.sol`
-is produced by `just build-prover-artifacts` and is not checked in, while the
-deploy scripts (`scripts/E2ETestDeploy.s.sol`, `scripts/E2ETestDeployL2.s.sol`)
-and two integration tests import it. Until it exists, `just build-contracts`
-stops with `Source "contracts/verifiers/Groth16Verifier_N4.sol" not found`.
+`just --list` shows every recipe, including the per-L2 wasm builds, the attestor
+services and Slither.
 
-`just --list` shows every recipe, including the per-L2 wasm builds, the
-attestor sidecars, and Slither.
+## Runbooks
 
-## Running it end to end
+| Document | Covers |
+|---|---|
+| [docs/runbooks/E2E_LOCAL.md](docs/runbooks/E2E_LOCAL.md) | Bringing up Cosmos↔Ethereum, Cosmos↔OP, Cosmos↔Arbitrum and Cosmos↔Base; sending test packets in both directions; the signing-key rules when several relayer processes run side by side; the failures each step can produce |
+| [docs/runbooks/E2E_TESTNET.md](docs/runbooks/E2E_TESTNET.md) | Relaying against a public L2 testnet (OP Sepolia, Arbitrum Sepolia, Base Sepolia): values to fill in by hand, provider limits |
+| [docs/runbooks/L2_CLIENTS.md](docs/runbooks/L2_CLIENTS.md) | The CosmWasm clients for OP, Base and Arbitrum: client state and profile, attestor rotation, the signed update contract, provisional attestations, validation |
+| [docs/runbooks/PRODUCTION_DEPLOYMENT.md](docs/runbooks/PRODUCTION_DEPLOYMENT.md) | The production AccessManager deployment scripts: governance timelock, escrow launch gate, scheduled light-client provisioning. Read it before using those scripts |
+| [docs/runbooks/ATTESTOR.md](docs/runbooks/ATTESTOR.md) | Operating and recovering the attestor services |
+| [docs/runbooks/MISBEHAVIOUR.md](docs/runbooks/MISBEHAVIOUR.md) | Responding to misbehaviour (equivocation) on the Cosmos chain |
+| [docs/runbooks/ERC20_LOCKBOX_ADAPTER.md](docs/runbooks/ERC20_LOCKBOX_ADAPTER.md) | Deploying and operating an ERC20 lockbox adapter |
 
-Bring-up runbooks live in **[docs/E2E.md](docs/E2E.md)** — Cosmos↔Ethereum,
-Cosmos↔OP, Cosmos↔Arbitrum, Cosmos↔Base, running against an L2 you did not
-deploy, sending test packets in both directions, and the failure modes each
-step produces.
+## GPU proving
 
-## L2 ICS-08 clients
+The prover runs on the CPU by default. GPU proving needs a build with
+`-tags=icicle` and is then switched on per run.
 
-The repository also contains independent CosmWasm clients for OP Sepolia, Base
-Sepolia, and Arbitrum Sepolia. Their deployment evidence requirements,
-host-query wiring, and verification commands are documented in
-[docs/L2_CLIENTS.md](docs/L2_CLIENTS.md).
+| Requirement | Detail |
+|---|---|
+| GPU | NVIDIA, with a working CUDA driver and toolkit |
+| ICICLE runtime libraries | `libicicle_device`, `libicicle_field_bn254`, `libicicle_curve_bn254`, visible to the linker and the loader |
+| Build tag | The relayer and the artifact generator are built or run with `-tags=icicle` |
 
-## Production deployment
-
-See [docs/PRODUCTION_DEPLOYMENT.md](docs/PRODUCTION_DEPLOYMENT.md) before using
-the production AccessManager deployment scripts. It documents the governance
-timelock requirement, the escrow launch gate, and the scheduled light-client
-provisioning flow.
-
-## One relay path per process
-
-`start` serves exactly one source→destination path and refuses a config declaring
-more than one, so any real deployment runs several processes side by side.
-
-**Give each `start` process its own `COSMOS_PRIVATE_KEY`.** Every path writes to
-Cosmos — even a Cosmos→L2 path that appears to write only to the L2, because its
-timeout scanner refunds expired Cosmos-origin packets on Cosmos. Two processes
-sharing a key share an account sequence with nothing coordinating them, and the
-loser of that race can have a single-packet transaction dropped, stranding the
-transfer in escrow until it times out.
-
-`ETH_PRIVATE_KEY` is a weaker rule: nonces are tracked per `{chain id, address}`,
-so a Cosmos↔Ethereum process (L1) and a Cosmos↔L2 process (L2) can share one key.
-Only processes writing the **same** EVM chain need separate ones.
-
-Set them per process rather than editing `relayer/.env` — `godotenv` does not
-override an already-set variable:
-
-```bash
-COSMOS_PRIVATE_KEY=$KEY_ETH_PATH ./relayer start --config config.json &
-COSMOS_PRIVATE_KEY=$KEY_OP_PATH  ./relayer start --config config.op.json &
-```
-
-Full reasoning, including the one other command that shares the Cosmos key:
-[docs/E2E.md](docs/E2E.md#signing-keys-when-several-processes-share-a-chain).
-
-## Optional GPU proving
-
-CPU proving remains the default. GPU proving is opt-in: build with
-`-tags=icicle`, then enable the ICICLE backend via env or flag when needed.
-
-Build requirements for the GPU path:
-
-- NVIDIA GPU with a working CUDA driver/toolkit
-- ICICLE runtime libraries must be installed and visible to the linker/runtime
-- the relayer and prover tool must be built or run with `-tags=icicle`
-
-The linker/runtime must be able to find libraries such as:
-
-- `libicicle_device`
-- `libicicle_field_bn254`
-- `libicicle_curve_bn254`
-
-If they are not in a default loader path, export `LD_LIBRARY_PATH` before
-building or running:
+If the libraries are not in a default loader path, export `LD_LIBRARY_PATH`
+before building or running:
 
 ```bash
 export LD_LIBRARY_PATH=/usr/local/lib:${LD_LIBRARY_PATH}
 ```
 
-Backend selection:
-
-- default: native CPU backend
-- env: `GPU_PROVE=1`
-- flag: `--gpu-prove`
-
-Examples:
+| Backend | Selected by |
+|---|---|
+| CPU | Default |
+| GPU | `GPU_PROVE=1` or `--gpu-prove` |
 
 ```bash
-# Regenerate prover artifacts with GPU proving enabled
+# Generate prover artifacts with the GPU backend
 cd relayer
 go run -tags=icicle ./prover/cmd -gpu-prove ./bin ../contracts/verifiers
 
@@ -216,125 +152,92 @@ go build -tags=icicle -o relayer ./cmd
 # Run the relayer on GPU
 ./relayer start --config config.json --gpu-prove
 
-# Equivalent env-based run
+# The same, with the environment variable
 GPU_PROVE=1 ./relayer start --config config.json
 ```
 
-**Regenerating prover artifacts changes the verifying key.** The `go run` example
-above writes straight into `relayer/bin` and `contracts/verifiers`. The supported
-path is `just build-prover-artifacts` (`scripts/solidity/build-prover-artifacts.sh`),
-which covers the configured buckets (N4 by default): it generates into ignored
-staging (`.artifacts/solidity/prover`), checks that the staged set is complete,
-publishes it, records provenance, and does nothing when every artifact already
-exists unless you pass `--force`. It does not pass `-tags=icicle`, so it cannot use
-the GPU backend. However you regenerate, every deployed `Groth16Verifier_N{N}` must
-be redeployed and re-registered with `SignatureVerifier.setBucket(...)`, or every
-proof fails on-chain. Do not regenerate for a live deployment without agreeing that
-redeploy first.
+If the ICICLE runtime is missing, the `icicle` build fails at link time or at
+startup with an error such as `library 'icicle_device' not found`. Install the
+ICICLE shared libraries and make sure `LD_LIBRARY_PATH` covers the directory
+that holds the `libicicle_*` files.
 
-### ICICLE Environment
+### Regenerating prover artifacts
 
-Optional ICICLE tuning env vars read by `relayer/prover/gnark/backend_icicle.go`:
+**Regenerating prover artifacts changes the verifying key.** After any
+regeneration, every deployed `Groth16Verifier_N{N}` must be redeployed and
+registered again with `SignatureVerifier.setBucket(...)`, or every proof fails
+on-chain. Do not regenerate for a live deployment before that redeploy is agreed.
 
-```bash
-export GNARK_ICICLE_DEVICE_ID=0
-export GNARK_ICICLE_BACKEND_LIBS=/usr/local/lib
-export GNARK_ICICLE_PIN_KEYS=true
-```
+| Path | Behavior |
+|---|---|
+| `just build-prover-artifacts` (`scripts/solidity/build-prover-artifacts.sh`) | The supported path. Covers the configured buckets (N4 by default). Generates into ignored staging (`.artifacts/solidity/prover`), smoke-tests it, checks that the staged set is complete, publishes it (including the smoke proof used by `Groth16OnchainProofTest`) and records provenance. Does nothing when every artifact exists, unless `--force` is passed. It does not pass `-tags=icicle`, so it cannot use the GPU backend |
+| `go run ./prover/cmd …` (the example above) | Writes straight into `relayer/bin` and `contracts/verifiers` |
 
-- `GNARK_ICICLE_DEVICE_ID`: GPU device index.
-- `GNARK_ICICLE_BACKEND_LIBS`: backend library location passed into ICICLE.
-- `GNARK_ICICLE_PIN_KEYS`: whether proving keys should be pinned to GPU memory.
+### ICICLE environment
 
-If the ICICLE runtime is missing, the `icicle` build typically fails at link or
-startup with errors such as `library 'icicle_device' not found`. In that case,
-ensure ICICLE shared libraries are installed and `LD_LIBRARY_PATH` covers the
-directory containing the `libicicle_*` files.
+Optional tuning variables, read by `relayer/prover/gnark/backend_icicle.go`:
+
+| Variable | Meaning | Example |
+|---|---|---|
+| `GNARK_ICICLE_DEVICE_ID` | GPU device index | `0` |
+| `GNARK_ICICLE_BACKEND_LIBS` | Backend library location passed to ICICLE | `/usr/local/lib` |
+| `GNARK_ICICLE_PIN_KEYS` | Whether proving keys are pinned to GPU memory | `true` |
 
 ## Logging
 
-Every log line the relayer emits carries a level, so a log viewer can filter and alert
-on it. Both settings are global flags, accepted by every subcommand, with an
-environment variable each; the flag wins:
+Every log line of the relayer carries a level, so a log viewer can filter and
+alert on it. The two settings are global flags, accepted by every subcommand.
+Each has an environment variable; the flag takes precedence.
 
 ```bash
 ./relayer start --config config.json --log-level warn --log-format json
 
-# Env (equivalent)
+# The same, with environment variables
 RELAYER_LOG_LEVEL=debug RELAYER_LOG_FORMAT=console ./relayer start --config config.json
 ```
 
-| Flag / env | Values | Default |
+| Flag / variable | Values | Default |
 |---|---|---|
 | `--log-level` / `RELAYER_LOG_LEVEL` | `debug`, `info`, `warn`, `error` | `info` |
 | `--log-format` / `RELAYER_LOG_FORMAT` | `json`, `console`, `auto` | `auto`: `console` on a terminal, `json` otherwise |
 
-The variables are read from the process environment, not from `relayer/.env`: that
-file is loaded inside each command, after the logger exists. An invalid value never
-stops the relayer; it is ignored, reported in the log, and the default is used.
-
-`json` is what a log viewer reads. Each line has `level`, `ts` (epoch seconds),
-`caller`, `msg` and, under `start`, `relay_path`. If the relayer runs with a terminal
-attached (`docker run -t`), pass `--log-format json` explicitly, or `auto` will pick
-`console`.
-
-When a command fails, cobra also prints its own `Error: ...` line and the usage text
-as plain lines. The same error is then logged once at `fatal`; alert on that line, not
-on the plain text.
-
-gnark logs through a logger of its own, which would otherwise print three console lines
-on stdout for every proof. It goes through the same stream: its lines read
-`[gnark] <message>`, carry `"component":"gnark"` and no `caller`, and keep gnark's own
-fields (`took` is in milliseconds) under a `gnark` key so they cannot shadow `level` or
-`msg`. The per-proof lines are `debug`; a warning or error from gnark keeps its level.
-
-A line's level says what it asks of the operator, not how chatty it is:
-
-| Level | Meaning |
-|---|---|
-| `error` | a person has to act or look: a packet dropped that nothing else refunds (an ack or a timeout), state that could not be made durable and that no later pass re-derives from the chain (an owed acknowledgement, a settlement tombstone, retry state), an operation abandoned, a recovered panic |
-| `warn` | something went wrong or is degraded and the relayer is handling it: a retry, a fallback, a skipped check, a resubscribe, a dropped send the timeout scanner refunds, a failed write that the next pass or a restart scan repeats (a recovery cursor, a packet tracked before it is relayed) |
-| `info` | lifecycle, progress, and every state change a packet goes through |
-| `debug` | output that repeats with nothing new to say, such as the batch builder's `re-queued ... (waiting)` echo and gnark's three lines per proof |
-
-For contributors: the engine logs with `log.Printf`. Start the message with `WARN`,
-`ERROR` or `DEBUG` and one space to give it a level, ahead of the `[Label]`; with no
-token it is `info`. The token is stripped, so the logged text is unchanged.
-`relayer/logbridge` documents the convention, and its test rejects a misspelt token
-and an `[ATTENTION]` line that has none.
+The notes for operators (where the variables are read from, the JSON fields,
+failed commands, gnark lines) are in
+[docs/runbooks/E2E_LOCAL.md](docs/runbooks/E2E_LOCAL.md#relayer-logs).
 
 ## Benchmark mode
 
-Detailed per-step gas + timing logs are off by default (production noise) and
-opt-in via flag or env:
+Benchmark mode adds gas and timing lines for every transaction, so one
+end-to-end run can be compared with another without a rebuild. It is off by
+default. Either the flag or the environment variable turns it on:
 
 ```bash
-# CLI flag
 ./relayer start --config config.json --benchmark
 
-# Env (equivalent)
 RELAYER_BENCHMARK=1 ./relayer start --config config.json
 ```
 
-Either source turns it on; flag is the override. The relayer logs
-`[bench] enabled: detailed gas/timing logs are active` at startup so it's
-obvious which mode you're in.
+At startup the relayer logs
+`[bench] enabled: detailed gas/timing logs are active`.
 
-When enabled, the relayer emits the following lines so a single E2E run can be
-diffed for performance regressions without rebuilding:
-
-| Prefix | Where | Fields |
+| Prefix | Emitted | Fields |
 |---|---|---|
-| `[prover]` | per proof job in the async prover (`relayer/prover/prover.go`), always on | `proof_id`, `bucket`, `witness` (queued) / `done in <duration>` |
-| `[bench] eth` | per `SendEthTx` / `SendEthTxBatch` (`relayer/transaction/ethereum.go`) | label or `multicall labels=...`, `gasUsed`, `submit`, `wait`, `total`, `tx` |
-| `[bench] eth inner[i]` | per multicall inner | `label`, `gas` from `debug_traceTransaction` callTracer |
-| `[bench] cosmos` | per `SendCosmosTx` / `SendCosmosTxBatch` (`relayer/transaction/cosmos.go`) | msg type or `batch msgs=N`, `gasWanted`, `gasUsed`, `broadcast`, `total`, `height`, `hash` |
+| `[bench] eth` | Per `SendEthTx` / `SendEthTxBatch` (`relayer/transaction/ethereum.go`) | Label or `multicall labels=...`, `gasUsed`, `submit`, `wait`, `total`, `tx` |
+| `[bench] eth inner[i]` | Per inner call of a multicall | `label`, `gas` from the `callTracer` of `debug_traceTransaction` |
+| `[bench] cosmos batch` | Per confirmed Cosmos transaction (`relayer/transaction/cosmos.go`) | `msgs`, `gasWanted`, `gasUsed`, `broadcast`, `height`, `hash` |
+| `[bench] cosmos batch` | Per `SendCosmosTxBatch` call, which can split into several transactions | `msgs`, `total` |
 
-`SendEthTxBatch` packs N inner calls but the receipt only reports the total.
-For each multicall, after the tx confirms the relayer calls
-`debug_traceTransaction` with the `callTracer`, descends past the UUPS
-proxy → impl wrapper frame, and logs one `inner[i]` line per direct child of
-the multicall body. The lines look like this (values elided):
+The `[prover]` lines do not depend on benchmark mode. The prover
+(`relayer/prover/prover.go`) logs `proof_id`, `bucket` and `witness` when a
+proof job is queued, and `done in <duration>` when it finishes.
+
+### Gas per inner call
+
+`SendEthTxBatch` packs N inner calls into one transaction, and the receipt
+reports only the total gas. After the transaction confirms, the relayer calls
+`debug_traceTransaction` with the `callTracer`, descends past the UUPS proxy and
+implementation frames, and logs one `inner[i]` line per direct child of the
+multicall body:
 
 ```
 [bench] eth multicall labels=updateApplicationState,recvPacket:1 gasUsed=<total> ...
@@ -342,20 +245,19 @@ the multicall body. The lines look like this (values elided):
 [bench] eth inner[1] recvPacket:1 gas=<n> (from trace)
 ```
 
-`gas=... (from trace)` is the **real on-chain gasUsed** of that inner CALL,
-not an estimate.
+`gas=... (from trace)` is the gas that inner call used on-chain, as reported by
+the trace.
 
-The inner-gas trace requires the RPC endpoint to expose the `debug_` namespace
-(`--http.api=...,debug` on geth). Verify with:
+The trace needs an RPC endpoint that exposes the `debug_` namespace
+(`--http.api=...,debug` on geth). To check:
 
 ```bash
 curl -X POST <rpc> -d '{"jsonrpc":"2.0","method":"rpc_modules","params":[],"id":1}'
 # look for "debug": "1.0" in the response
 ```
 
-Kurtosis ethereum-package presets typically include it; production endpoints
-typically do not. If unavailable, the relayer logs one error line and
-continues — the rest of the benchmark output is unaffected.
+If the namespace is not available, the relayer logs one `warn` line and
+continues. The rest of the benchmark output is not affected.
 
-`utils.SetBenchEnabled(true|false)` lets tests force the flag without touching
-env. Definitions live in `relayer/utils/bench.go`.
+Tests can force the mode with `utils.SetBenchEnabled(true|false)`, without
+touching the environment. The definitions are in `relayer/utils/bench.go`.

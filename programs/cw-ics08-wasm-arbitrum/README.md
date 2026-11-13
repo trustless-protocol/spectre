@@ -11,3 +11,6 @@ missing-attestor state without writes; create a fresh authenticated client for l
 
 This validates the Wasm artifact only. Deployment also requires a compatible signed message
 producer plus custody, compromise-response, availability, and governance review.
+
+The wire contract, attestor rotation and finality tiers are in
+[docs/runbooks/L2_CLIENTS.md](../../docs/runbooks/L2_CLIENTS.md).
