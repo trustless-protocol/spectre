@@ -234,10 +234,10 @@ github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/dchest/siphash v1.2.3 h1:QXwFc8cFOR2dSa/gE6o/HokBMWtLUaNDVd+22aKHeEA=
 github.com/dchest/siphash v1.2.3/go.mod h1:0NvQU092bT0ipiFN++/rXm69QG9tVxLAlQHIXMPAkHc=
-github.com/decentrio/ecip-gnark v0.1.0-rc.3.0.20261101160124-161566863181 h1:PiXMs5r2tHcM/zbC04MKtefG/5pDctBc+asZubIjN/o=
-github.com/decentrio/ecip-gnark v0.1.0-rc.3.0.20261101160124-161566863181/go.mod h1:2QYo2FNU0L1C9ANOx2BdCm5mitQV9xoDbR40co5LNns=
-github.com/decentrio/gnark v0.16.4-decentrio-fork.4 h1:sVdaFgl8y2GoBDq9QCtI60Q0JRsb3YyDrjm59Kx3pHU=
-github.com/decentrio/gnark v0.16.4-decentrio-fork.4/go.mod h1:yYeERwGH1N5izgk6EH/hNIvCxGri29oohtjOqpK20pU=
+github.com/decentrio/ecip-gnark v0.1.0-rc.4 h1:GP2gXVVdYUDPSiXQ9QWqToVMhwW7B2aNMs4opxB5lRU=
+github.com/decentrio/ecip-gnark v0.1.0-rc.4/go.mod h1:SXbscrtljtxcza6AHDnY3RONdcGQ56wu185GUaFq67A=
+github.com/decentrio/gnark v0.16.4-decentrio-fork.5 h1:hIgzRGHmILRozxEKgYh4JvACfrkT+eypoMcweTPyMQg=
+github.com/decentrio/gnark v0.16.4-decentrio-fork.5/go.mod h1:yYeERwGH1N5izgk6EH/hNIvCxGri29oohtjOqpK20pU=
 github.com/deckarep/golang-set/v2 v2.6.0 h1:XfcQbWM1LlMB8BsJ8N9vW5ehnnPVIw0je80NsVHagjM=
 github.com/deckarep/golang-set/v2 v2.6.0/go.mod h1:VAky9rY/yGXJOLEDv3OMci+7wtDpOF4IN+y82NBOac4=
 github.com/decred/dcrd/crypto/blake256 v1.1.0 h1:zPMNGQCm0g4QTY27fOCorQW7EryeQ/U0x++OzVrdms8=
