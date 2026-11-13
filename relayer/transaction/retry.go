@@ -100,7 +100,10 @@ func classifyEthRevert(
 	case revertDataPresent(probeErr):
 		return revertLogical
 	case isExecutionOutOfGas(probeErr):
-		return revertOutOfGas
+		// The probe had gasProbeMultiplier times the gas (or the whole block),
+		// more than any ladder rung, and still ran out. Climbing would only mine
+		// more reverts, so this is not a gas problem the ladder can fix.
+		return revertLogical
 	case isGasAllowanceRejection(probeErr), isProbeTransportError(probeErr):
 		if outOfGasByUtilization(gasUsed, gasLimit) {
 			return revertOutOfGas
