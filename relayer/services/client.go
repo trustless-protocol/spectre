@@ -928,25 +928,28 @@ func (w *Worker) BuildEthClientUpdateHeaders(stdCtx context.Context, cosmos Cosm
 		headerSource = relayerclient.EthRawHeaderSource{Client: evm.EthClient()}
 	}
 
-	headers, err := w.buildEthClientUpdateHeadersWithPeriodCrossing(stdCtx, beaconAPIURL, headerSource, ethClientState, trustedSlot, trustedPeriod, targetPeriod, finalityUpdate, finalizedSlot)
+	build, err := w.buildEthClientUpdateHeadersWithPeriodCrossing(stdCtx, beaconAPIURL, headerSource, ethClientState, trustedSlot, trustedPeriod, targetPeriod, finalityUpdate, finalizedSlot)
 	if err != nil {
 		return nil, err
 	}
 
-	proofState, proofTimestamp, err := ethProofStateFromFinalityUpdate(stdCtx, headerSource, ethClientState, finalityUpdate, finalizedSlot)
+	// The proof state is the LAST header's: the state the client holds once the
+	// update lands. That is a crossing update, not the finality update, when the
+	// beacon's light_client/updates is ahead of its finality_update; proofs built
+	// at the finality update's block were refused (#575). The catch-up slot is the
+	// highest signature slot, as on the folded path (highestBeaconSignatureSlot).
+	if build.lastFinalizedSlot == 0 {
+		return nil, fmt.Errorf("no update header was built for finalized slot %d", finalizedSlot)
+	}
+	proofState, proofTimestamp, err := ethProofStateFromHeader(stdCtx, headerSource, ethClientState, build.lastFinalized, build.lastFinalizedSlot)
 	if err != nil {
 		return nil, err
-	}
-
-	sigSlot, err := parseSlot(finalityUpdate.SignatureSlot)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse signature slot: %w", err)
 	}
 	return &EthClientUpdateResult{
-		Headers:        headers,
+		Headers:        build.headers,
 		EthClientState: proofState,
 		ProofTimestamp: proofTimestamp,
-		SigSlot:        sigSlot,
+		SigSlot:        build.highestSignatureSlot,
 	}, nil
 }
 

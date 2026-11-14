@@ -11,6 +11,13 @@ import (
 	"testing"
 
 	relayerclient "relayer/client"
+	"relayer/rpcmock"
+
+	abci "github.com/cometbft/cometbft/abci/types"
+	coretypes "github.com/cometbft/cometbft/rpc/core/types"
+	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
+	ibcwasmtypes "github.com/cosmos/ibc-go/modules/light-clients/08-wasm/v10/types"
+	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
 )
 
 // Geometry for these tests: 8 slots per epoch, 4 epochs per period, so a
@@ -98,7 +105,7 @@ func decodeHeaders(t *testing.T, headers [][]byte) []relayerclient.EthereumHeade
 	return out
 }
 
-func buildCrossing(t *testing.T, beaconURL string, state *relayerclient.EthereumClientState, finalizedSlot uint64, finality string) ([][]byte, error) {
+func buildCrossing(t *testing.T, beaconURL string, state *relayerclient.EthereumClientState, finalizedSlot uint64, finality string) (ethUpdateBuild, error) {
 	t.Helper()
 	var update relayerclient.LightClientFinalityUpdate
 	var envelope struct {
@@ -126,11 +133,11 @@ func TestBuildEthClientUpdateHeaders_SortsUpdatesAndStepsOnePeriod(t *testing.T)
 			return "[" + updateJSON(70, 72, 800, false) + "," + updateJSON(40, 42, 700, true) + "," + updateJSON(16, 18, 456, true) + "]", http.StatusOK
 		},
 	}
-	built, err := buildCrossing(t, beacon.start(t), crossingTestState(16), 80, finality)
+	build, err := buildCrossing(t, beacon.start(t), crossingTestState(16), 80, finality)
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	headers := decodeHeaders(t, built)
+	headers := decodeHeaders(t, build.headers)
 	var got []string
 	for _, h := range headers {
 		got = append(got, fmt.Sprintf("%d->%s", h.TrustedSlot, h.ConsensusUpdate.FinalizedHeader.Beacon.Slot))
@@ -208,5 +215,109 @@ func TestSyncCommitteeForPeriod_KeepsTheLookupError(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("err = %v, want it to say %q", err, want)
 		}
+	}
+}
+
+// ethClientStateNode serves one 08-wasm Ethereum client state.
+func ethClientStateNode(t *testing.T, state *relayerclient.EthereumClientState) *rpcmock.CosmosNode {
+	t.Helper()
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wasmState, err := codectypes.NewAnyWithValue(&ibcwasmtypes.ClientState{Data: data})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := (&clienttypes.QueryClientStateResponse{ClientState: wasmState}).Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := rpcmock.NewCosmosNode(t)
+	node.Handle("abci_query", func(json.RawMessage) (any, error) {
+		return &coretypes.ResultABCIQuery{Response: abci.ResponseQuery{Value: response}}, nil
+	})
+	return node
+}
+
+// #575: when light_client/updates is ahead of finality_update, the crossing
+// header is the last one installed, but the proof state and the catch-up slot
+// were taken from the older finality update, so proofs were built against a
+// state the client was never given.
+func TestBuildEthClientUpdateHeaders_ProofStateIsTheLastInstalledHeader(t *testing.T) {
+	beacon := &crossingBeacon{
+		// Finalized at 40 (block 500), signed at 42.
+		finality: finalityJSON(41, 40, 42, 500),
+		updates: func(string, string) (string, int) {
+			// The period 1 update is newer: finalized at 50 (block 600), signed at 52.
+			return "[" + updateJSON(16, 18, 456, true) + "," + updateJSON(50, 52, 600, true) + "]", http.StatusOK
+		},
+	}
+	url := beacon.start(t)
+	node := ethClientStateNode(t, crossingTestState(16))
+
+	result, err := (&Worker{}).BuildEthClientUpdateHeaders(context.Background(),
+		CosmosEndpoint{Client: node.Client(t)}, EVMEndpoint{BeaconAPIURL: url}, "08-wasm-7")
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if len(result.Headers) != 1 {
+		t.Fatalf("headers = %d, want the crossing header alone (the finality update is older)", len(result.Headers))
+	}
+	if got := result.EthClientState; got.LatestSlot != 50 || got.LatestExecutionBlockNumber != 600 {
+		t.Fatalf("proof state = slot %d block %d, want slot 50 block 600: the header installed last", got.LatestSlot, got.LatestExecutionBlockNumber)
+	}
+	if result.SigSlot != 52 {
+		t.Fatalf("catch-up slot = %d, want 52, the installed header's signature slot", result.SigSlot)
+	}
+	if result.ProofTimestamp != 50 {
+		t.Fatalf("proof timestamp = %d, want 50", result.ProofTimestamp)
+	}
+}
+
+// The catch-up wait must cover every header in the update, not only the last:
+// here the crossing header is signed after the finality update.
+func TestBuildEthClientUpdateHeaders_CatchUpSlotIsTheHighestSignatureSlot(t *testing.T) {
+	beacon := &crossingBeacon{
+		finality: finalityJSON(46, 45, 47, 500),
+		updates: func(string, string) (string, int) {
+			return "[" + updateJSON(16, 18, 456, true) + "," + updateJSON(40, 62, 480, true) + "]", http.StatusOK
+		},
+	}
+	url := beacon.start(t)
+	node := ethClientStateNode(t, crossingTestState(16))
+
+	result, err := (&Worker{}).BuildEthClientUpdateHeaders(context.Background(),
+		CosmosEndpoint{Client: node.Client(t)}, EVMEndpoint{BeaconAPIURL: url}, "08-wasm-7")
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if len(result.Headers) != 2 || result.EthClientState.LatestSlot != 45 {
+		t.Fatalf("result = %d headers at slot %d, want 2 at slot 45", len(result.Headers), result.EthClientState.LatestSlot)
+	}
+	if result.SigSlot != 62 {
+		t.Fatalf("catch-up slot = %d, want 62: the crossing header is signed last", result.SigSlot)
+	}
+}
+
+// The common case is unchanged: the finality update is the last header.
+func TestBuildEthClientUpdateHeaders_ProofStateIsTheFinalityUpdateWhenItIsNewest(t *testing.T) {
+	beacon := &crossingBeacon{
+		finality: finalityJSON(41, 40, 42, 500),
+		updates: func(string, string) (string, int) {
+			return "[" + updateJSON(16, 18, 456, true) + "," + updateJSON(32, 34, 480, true) + "]", http.StatusOK
+		},
+	}
+	url := beacon.start(t)
+	node := ethClientStateNode(t, crossingTestState(16))
+
+	result, err := (&Worker{}).BuildEthClientUpdateHeaders(context.Background(),
+		CosmosEndpoint{Client: node.Client(t)}, EVMEndpoint{BeaconAPIURL: url}, "08-wasm-7")
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if len(result.Headers) != 2 || result.EthClientState.LatestSlot != 40 || result.EthClientState.LatestExecutionBlockNumber != 500 || result.SigSlot != 42 {
+		t.Fatalf("result = %d headers, slot %d, block %d, sig %d; want 2, 40, 500, 42",
+			len(result.Headers), result.EthClientState.LatestSlot, result.EthClientState.LatestExecutionBlockNumber, result.SigSlot)
 	}
 }

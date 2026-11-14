@@ -252,7 +252,7 @@ func TestCloneEthereumClientState(t *testing.T) {
 	// value type. Add one slice, map or pointer -- a list of forks, say -- and the
 	// "clone" starts sharing it, so a mutation through the copy reaches the original.
 	//
-	// The callers rely on independence: ethProofStateFromFinalityUpdate clones the
+	// The callers rely on independence: ethProofStateFromHeader clones the
 	// on-chain client state and then rewrites slots on the copy to build a proof
 	// state, while the original stays the trusted one.
 	//

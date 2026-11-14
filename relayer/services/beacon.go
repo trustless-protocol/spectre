@@ -59,20 +59,30 @@ func lightClientUpdateCount(trustedPeriod, targetPeriod uint64) (uint64, error) 
 	return targetPeriod - trustedPeriod + 1, nil
 }
 
-func (w *Worker) buildEthClientUpdateHeadersWithPeriodCrossing(stdCtx context.Context, beaconAPIURL string, source relayerclient.RawHeaderSource, ethClientState *relayerclient.EthereumClientState, trustedSlot, trustedPeriod, targetPeriod uint64, finalityUpdate *relayerclient.LightClientFinalityUpdate, finalizedSlot uint64) ([][]byte, error) {
+// ethUpdateBuild is one client update: the headers; the finalized header of the
+// LAST one, the state the client holds once they land; and the highest signature
+// slot, which the destination's clock must reach before every header verifies.
+type ethUpdateBuild struct {
+	headers              [][]byte
+	lastFinalized        relayerclient.LightClientHeader
+	lastFinalizedSlot    uint64
+	highestSignatureSlot uint64
+}
+
+func (w *Worker) buildEthClientUpdateHeadersWithPeriodCrossing(stdCtx context.Context, beaconAPIURL string, source relayerclient.RawHeaderSource, ethClientState *relayerclient.EthereumClientState, trustedSlot, trustedPeriod, targetPeriod uint64, finalityUpdate *relayerclient.LightClientFinalityUpdate, finalizedSlot uint64) (ethUpdateBuild, error) {
 	count, err := lightClientUpdateCount(trustedPeriod, targetPeriod)
 	if err != nil {
-		return nil, err
+		return ethUpdateBuild{}, err
 	}
 	bctx, bcancel := context.WithTimeout(stdCtx, 15*time.Second)
 	lightClientUpdates, err := relayerclient.GetLightClientUpdates(bctx, beaconAPIURL, trustedPeriod, count)
 	bcancel()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get light client updates: %w", err)
+		return ethUpdateBuild{}, fmt.Errorf("failed to get light client updates: %w", err)
 	}
 
 	if len(lightClientUpdates) == 0 {
-		return nil, fmt.Errorf("no light client updates available for period range %d to %d", trustedPeriod, targetPeriod)
+		return ethUpdateBuild{}, fmt.Errorf("no light client updates available for period range %d to %d", trustedPeriod, targetPeriod)
 	}
 
 	// Index the fetched updates by the period they belong to. Crossing into period P
@@ -90,7 +100,7 @@ func (w *Worker) buildEthClientUpdateHeadersWithPeriodCrossing(stdCtx context.Co
 	for _, u := range lightClientUpdates {
 		slot, err := parseSlot(u.FinalizedHeader.Beacon.Slot)
 		if err != nil {
-			return nil, fmt.Errorf("failed to parse update finalized slot: %w", err)
+			return ethUpdateBuild{}, fmt.Errorf("failed to parse update finalized slot: %w", err)
 		}
 		updatesByPeriod[ethClientState.ComputeSyncCommitteePeriodAtSlot(slot)] = u
 		sorted = append(sorted, slottedUpdate{update: u, finalized: slot})
@@ -99,7 +109,7 @@ func (w *Worker) buildEthClientUpdateHeadersWithPeriodCrossing(stdCtx context.Co
 	// against the state the one before it leaves (#575).
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].finalized < sorted[j].finalized })
 
-	headers := make([][]byte, 0, count)
+	build := ethUpdateBuild{headers: make([][]byte, 0, count)}
 	latestTrustedSlot := trustedSlot
 	latestPeriod := trustedPeriod
 
@@ -118,26 +128,26 @@ func (w *Worker) buildEthClientUpdateHeadersWithPeriodCrossing(stdCtx context.Co
 		// in the next period and be signed in it, by the committee the client stores
 		// as next. It rejects anything else; name the cause here instead.
 		if updatePeriod != latestPeriod+1 {
-			return nil, fmt.Errorf("beacon light-client updates skip from period %d to %d (finalized slot %d); the client crosses one period at a time",
+			return ethUpdateBuild{}, fmt.Errorf("beacon light-client updates skip from period %d to %d (finalized slot %d); the client crosses one period at a time",
 				latestPeriod, updatePeriod, updateFinalizedSlot)
 		}
 		signatureSlot, err := parseSlot(update.SignatureSlot)
 		if err != nil {
-			return nil, fmt.Errorf("update finalized at slot %d: signature slot: %w", updateFinalizedSlot, err)
+			return ethUpdateBuild{}, fmt.Errorf("update finalized at slot %d: signature slot: %w", updateFinalizedSlot, err)
 		}
 		if signaturePeriod := ethClientState.ComputeSyncCommitteePeriodAtSlot(signatureSlot); signaturePeriod != updatePeriod {
-			return nil, fmt.Errorf("update finalized at slot %d (period %d) is signed at slot %d (period %d); the client can verify only a signature in period %d",
+			return ethUpdateBuild{}, fmt.Errorf("update finalized at slot %d (period %d) is signed at slot %d (period %d); the client can verify only a signature in period %d",
 				updateFinalizedSlot, updatePeriod, signatureSlot, signaturePeriod, updatePeriod)
 		}
 
 		syncCommittee, err := syncCommitteeForPeriod(stdCtx, beaconAPIURL, updatesByPeriod, updatePeriod, signatureSlot)
 		if err != nil {
-			return nil, err
+			return ethUpdateBuild{}, err
 		}
 
 		executionRLP, err := executionHeaderRLPHex(stdCtx, source, update.FinalizedHeader)
 		if err != nil {
-			return nil, fmt.Errorf("execution header for finalized slot %d: %w", updateFinalizedSlot, err)
+			return ethUpdateBuild{}, fmt.Errorf("execution header for finalized slot %d: %w", updateFinalizedSlot, err)
 		}
 		header := relayerclient.EthereumHeader{
 			ActiveSyncCommittee: relayerclient.ActiveSyncCommittee{
@@ -150,12 +160,14 @@ func (w *Worker) buildEthClientUpdateHeadersWithPeriodCrossing(stdCtx context.Co
 
 		headerBytes, err := json.Marshal(header)
 		if err != nil {
-			return nil, fmt.Errorf("failed to marshal update header: %w", err)
+			return ethUpdateBuild{}, fmt.Errorf("failed to marshal update header: %w", err)
 		}
 
-		headers = append(headers, headerBytes)
+		build.headers = append(build.headers, headerBytes)
 		latestPeriod = updatePeriod
 		latestTrustedSlot = updateFinalizedSlot
+		build.lastFinalized, build.lastFinalizedSlot = update.FinalizedHeader, updateFinalizedSlot
+		build.highestSignatureSlot = max(build.highestSignatureSlot, signatureSlot)
 	}
 
 	// If the latest header is earlier than the finality update, add a header for the finality update.
@@ -177,7 +189,7 @@ func (w *Worker) buildEthClientUpdateHeadersWithPeriodCrossing(stdCtx context.Co
 		// slot is a period boundary once every 8192.
 		signatureSlotNum, err := parseSlot(finalityUpdate.SignatureSlot)
 		if err != nil {
-			return nil, fmt.Errorf("failed to parse signature slot: %w", err)
+			return ethUpdateBuild{}, fmt.Errorf("failed to parse signature slot: %w", err)
 		}
 		signaturePeriod := ethClientState.ComputeSyncCommitteePeriodAtSlot(signatureSlotNum)
 		// The bootstrap fallback reads the committee of the block it is asked for, so
@@ -186,11 +198,11 @@ func (w *Worker) buildEthClientUpdateHeadersWithPeriodCrossing(stdCtx context.Co
 		syncCommittee, err := syncCommitteeForPeriod(
 			stdCtx, beaconAPIURL, updatesByPeriod, signaturePeriod, signatureSlotNum)
 		if err != nil {
-			return nil, err
+			return ethUpdateBuild{}, err
 		}
 		activeSyncCommittee, err := activeCommitteeFor(signaturePeriod, latestPeriod, &syncCommittee)
 		if err != nil {
-			return nil, err
+			return ethUpdateBuild{}, err
 		}
 
 		consensusUpdate := relayerclient.LightClientUpdate{
@@ -205,7 +217,7 @@ func (w *Worker) buildEthClientUpdateHeadersWithPeriodCrossing(stdCtx context.Co
 
 		executionRLP, err := executionHeaderRLPHex(stdCtx, source, finalityUpdate.FinalizedHeader)
 		if err != nil {
-			return nil, fmt.Errorf("execution header for finalized slot %d: %w", finalizedSlot, err)
+			return ethUpdateBuild{}, fmt.Errorf("execution header for finalized slot %d: %w", finalizedSlot, err)
 		}
 		header := relayerclient.EthereumHeader{
 			ActiveSyncCommittee: activeSyncCommittee,
@@ -216,13 +228,15 @@ func (w *Worker) buildEthClientUpdateHeadersWithPeriodCrossing(stdCtx context.Co
 
 		headerBytes, err := json.Marshal(header)
 		if err != nil {
-			return nil, fmt.Errorf("failed to marshal update header: %w", err)
+			return ethUpdateBuild{}, fmt.Errorf("failed to marshal update header: %w", err)
 		}
 
-		headers = append(headers, headerBytes)
+		build.headers = append(build.headers, headerBytes)
+		build.lastFinalized, build.lastFinalizedSlot = finalityUpdate.FinalizedHeader, finalizedSlot
+		build.highestSignatureSlot = max(build.highestSignatureSlot, signatureSlotNum)
 	}
 
-	return headers, nil
+	return build, nil
 }
 
 // activeCommitteeFor labels the committee the way the light client will look it
@@ -269,7 +283,9 @@ func cloneEthereumClientState(state *relayerclient.EthereumClientState) *relayer
 	return &cloned
 }
 
-func ethProofStateFromFinalityUpdate(ctx context.Context, source relayerclient.RawHeaderSource, base *relayerclient.EthereumClientState, finalityUpdate *relayerclient.LightClientFinalityUpdate, finalizedSlot uint64) (*relayerclient.EthereumClientState, uint64, error) {
+// ethProofStateFromHeader is the client state once the header finalized at
+// finalizedSlot lands: the state packet proofs are built against.
+func ethProofStateFromHeader(ctx context.Context, source relayerclient.RawHeaderSource, base *relayerclient.EthereumClientState, finalized relayerclient.LightClientHeader, finalizedSlot uint64) (*relayerclient.EthereumClientState, uint64, error) {
 	proofState := cloneEthereumClientState(base)
 	if proofState == nil {
 		return nil, 0, fmt.Errorf("ethereum client state is nil")
@@ -277,7 +293,7 @@ func ethProofStateFromFinalityUpdate(ctx context.Context, source relayerclient.R
 
 	// The same values the wasm client stores when it applies this update, so proofs are built
 	// against the execution block the client will trust.
-	execution, _, err := relayerclient.ResolveExecution(ctx, source, finalityUpdate.FinalizedHeader)
+	execution, _, err := relayerclient.ResolveExecution(ctx, source, finalized)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to resolve finalized execution header: %w", err)
 	}
