@@ -100,10 +100,31 @@ func (s *Services) TrackL2Pending(packet channeltypesv2.Packet, blockNumber uint
 	return s.BatchBuilder.L2PendingTracker.Add(packet, blockNumber)
 }
 
-// UntrackL2Pending removes an L2-origin packet once the L2->Cosmos receive relay
-// succeeds; after a Cosmos receipt exists, a timeout refund must not be attempted.
-// If persistence fails, the packet remains tracked and the failure is logged for
-// operator attention.
+// SettleDeliveredL2Pending closes an L2-origin packet this process delivered to
+// Cosmos, with a tombstone (#575). Cosmos is final, so a delivered receive cannot
+// be undone, and the tombstone stops the L2 flush backstop from tracking the send
+// again when it expires before its acknowledgement returns -- a resurrected
+// record cost the timeout scanner a paid client update before it found the
+// receipt.
+func (s *Services) SettleDeliveredL2Pending(packet channeltypesv2.Packet) {
+	if err := s.BatchBuilder.L2PendingTracker.MarkSettled(packet); err != nil {
+		log.Printf("ERROR [PendingTracker][ATTENTION] failed to persist delivery of L2 packet seq=%d: %v", packet.Sequence, err)
+	}
+}
+
+// SettleDeliveredEthPending is SettleDeliveredL2Pending for an ETH-origin packet
+// this process delivered to Cosmos.
+func (s *Services) SettleDeliveredEthPending(packet channeltypesv2.Packet) {
+	if err := s.BatchBuilder.EthPendingTracker.MarkSettled(packet); err != nil {
+		log.Printf("ERROR [PendingTracker][ATTENTION] failed to persist delivery of ETH packet seq=%d: %v", packet.Sequence, err)
+	}
+}
+
+// UntrackL2Pending removes an L2-origin packet on a terminal L2 event (its
+// acknowledgement or timeout landed on the L2). It writes no tombstone: the L2
+// event is read at the configured head kind, which may not be final, and a
+// tombstone would outlive a reorg that removed it (see #575 L1). If persistence
+// fails, the packet remains tracked and the failure is logged.
 func (s *Services) UntrackL2Pending(packet channeltypesv2.Packet) {
 	if err := s.BatchBuilder.L2PendingTracker.RemovePacketIfCurrent(packet); err != nil {
 		log.Printf("ERROR [PendingTracker][ATTENTION] failed to persist removal of settled L2 packet seq=%d: %v", packet.Sequence, err)

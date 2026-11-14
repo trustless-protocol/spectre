@@ -178,6 +178,18 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 		// that Cosmos still holds a commitment for.
 		relay.WithPacketFlush(0),
 		relay.WithDropLedger(ethToCosmosDrops),
+		// No track hook: the ETH subscriber tracks the sends. The untrack hook
+		// closes a send this module delivered to Cosmos, which is final, with a
+		// tombstone, so the flush backstop does not track it again while its
+		// acknowledgement is on the way (#575). The mirror of l2->cosmos.
+		relay.WithPacketTracker(nil, func(raw []byte) {
+			var pkt channeltypesv2.Packet
+			if err := pkt.Unmarshal(raw); err != nil {
+				log.Printf("ERROR [eth->cosmos Relay] settle delivered: decode packet: %v", err)
+				return
+			}
+			svc.SettleDeliveredEthPending(pkt)
+		}),
 	)
 
 	// Both modules, one services instance: the queues are shared, so registering

@@ -304,7 +304,7 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 		}
 		return nil, services.L2TimeoutRecovery{}, nil, err
 	}
-	trackL2Pending, untrackL2Pending := l2PendingTrackerHooks(timeoutReturn.svc)
+	trackL2Pending, untrackL2Pending, deliveredL2Pending := l2PendingTrackerHooks(timeoutReturn.svc)
 	source := l2rollup.NewSource(cfg.kind, l2, headKind, cfg.L2ICS26ClientID, cfg.L2WasmClientID, cfg.AttestorSrcChain, router, frontier, includeProvisional).
 		WithLogScanChunk(cfg.LogScanChunk).
 		WithRouterDeployBlock(cfg.RouterDeployBlock).
@@ -344,7 +344,9 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 		relay.WithTimeoutScanner(0, func(c context.Context) {
 			timeoutReturn.svc.ScanL2Timeouts(c, timeoutReturn.deps.Cosmos, timeoutReturn.deps.EVM, timeoutReturn.deps.IDs.CosmosOnEVM)
 		}),
-		relay.WithPacketTracker(trackL2Pending, untrackL2Pending),
+		// A receive delivered on Cosmos is final, so it closes the record with a
+		// tombstone; a terminal L2 event (WithSettleHook above) only removes it.
+		relay.WithPacketTracker(trackL2Pending, deliveredL2Pending),
 		// The mirror of the cosmos->l2 hooks, over the SAME Services: that leg
 		// records what a delivered receive owes, this one settles it when the
 		// acknowledgement returns. The overdue reporter lives here rather than on
@@ -449,7 +451,10 @@ func settleL2OwedAck(svc *services.Services) func(raw []byte) {
 	}
 }
 
-func l2PendingTrackerHooks(svc *services.Services) (relay.TrackFunc, relay.UntrackFunc) {
+// l2PendingTrackerHooks returns the L2 tracker's three operations: track a send,
+// untrack it on a terminal L2 event (no tombstone: the L2 read may not be
+// final), and close one this process delivered to Cosmos (tombstone: final).
+func l2PendingTrackerHooks(svc *services.Services) (track relay.TrackFunc, untrack, delivered relay.UntrackFunc) {
 	trackL2Pending := func(raw []byte, height uint64) bool {
 		var pkt channeltypesv2.Packet
 		if err := pkt.Unmarshal(raw); err != nil {
@@ -466,7 +471,15 @@ func l2PendingTrackerHooks(svc *services.Services) (relay.TrackFunc, relay.Untra
 		}
 		svc.UntrackL2Pending(pkt)
 	}
-	return trackL2Pending, untrackL2Pending
+	deliveredL2Pending := func(raw []byte) {
+		var pkt channeltypesv2.Packet
+		if err := pkt.Unmarshal(raw); err != nil {
+			log.Printf("ERROR [l2->cosmos Relay] settle delivered: decode packet: %v", err)
+			return
+		}
+		svc.SettleDeliveredL2Pending(pkt)
+	}
+	return trackL2Pending, untrackL2Pending, deliveredL2Pending
 }
 
 // runL2Engine drives one L2->Cosmos module until ctx is cancelled. A cancelled
