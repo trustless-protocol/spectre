@@ -259,3 +259,83 @@ func TestHandler_ControlRouteKeepsItsOwnMethod(t *testing.T) {
 		}
 	})
 }
+
+// #575: the status listener had no connection cap. The limiter holds a new
+// connection back until an open one closes.
+func TestLimitListener_CapsOpenConnections(t *testing.T) {
+	inner, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	limited := limitListener(inner, 1)
+	t.Cleanup(func() { limited.Close() })
+
+	dial := func() net.Conn {
+		conn, err := net.Dial("tcp", inner.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { conn.Close() })
+		return conn
+	}
+	dial()
+	dial()
+
+	first, err := limited.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := make(chan net.Conn, 1)
+	go func() {
+		conn, err := limited.Accept()
+		if err == nil {
+			second <- conn
+		}
+	}()
+	select {
+	case <-second:
+		t.Fatal("a second connection was accepted while the only slot was held")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	first.Close()
+	select {
+	case conn := <-second:
+		conn.Close()
+	case <-time.After(2 * time.Second):
+		t.Fatal("closing the held connection did not free its slot")
+	}
+}
+
+func TestLimitListener_CloseUnblocksAWaitingAccept(t *testing.T) {
+	inner, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	limited := limitListener(inner, 1)
+	conn, err := net.Dial("tcp", inner.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	held, err := limited.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := limited.Accept()
+		done <- err
+	}()
+	limited.Close()
+	select {
+	case err := <-done:
+		if !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("Accept after Close = %v, want net.ErrClosed", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Accept kept waiting for a slot after the listener closed")
+	}
+}
