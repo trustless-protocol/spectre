@@ -870,9 +870,10 @@ A shared ETH key also degrades more gracefully than a shared Cosmos one: an
 unrecognised broadcast error invalidates the cached nonce and returns a transient
 error, so the packet is re-queued rather than dropped.
 
-**`start` enforces both rules**, with one advisory lock per contended resource, all
-under `/tmp/spectre-relayer-<uid>/`. That directory must be yours, a real directory, not
-writable by group or other; `start` refuses otherwise and names the fix.
+**`start` and the signing one-shot commands enforce both rules**, with one advisory lock
+per contended resource, all under `/tmp/spectre-relayer-<uid>/`. That directory must be
+yours, a real directory, not writable by group or other; they refuse otherwise and name
+the fix.
 
 The EVM half takes one lock per nonce domain it can write: a file per
 `{chain id, address}`, named `evm-signer-<chain id>-<address>.lock`
@@ -916,12 +917,16 @@ cast send $AM "grantRole(uint64,address,uint32)" 1 <second-relayer-address> 0 \
 Then fund the address for gas. Repeat per extra EVM signer, and per chain: a key
 authorized on the L1 router has no standing on an L2 router.
 
-**`create-clients-cosmos` and `update-eth-client` sign with the same key.** They are
-the commands besides `start` that write to Cosmos, so running either against a chain a
-`start` process is already relaying will collide. Give it its own key, or run it while
-`start` is stopped. The other commands do not touch the Cosmos signer: `update-client`
-and `create-clients-eth` submit to Ethereum, `submit-misbehaviour` submits to Ethereum
-under its own `MISBEHAVIOUR_PRIVATE_KEY`, and `genesis` broadcasts nothing.
+**One-shot commands take `start`'s locks** (`cmd/oneshot_signer_lock.go`):
+
+| Command | Lock |
+|---|---|
+| `create-clients-cosmos`, `update-eth-client` | Cosmos signer |
+| `create-clients-eth`, `update-client` | `ETH_PRIVATE_KEY` on the module's `eth_rpc_url` chain |
+| `submit-misbehaviour` | `MISBEHAVIOUR_PRIVATE_KEY` on that chain; none with `--dry-run` |
+
+Beside a `start` on the same key the command refuses and names the lock file: stop
+`start`, or give the command its own key. `genesis` broadcasts nothing.
 
 Keys can be set per process without touching `relayer/.env`: `godotenv` does not
 override a variable that is already set, so the export wins. Each runbook below
@@ -1052,7 +1057,8 @@ profile). See the `ProofVerificationFailed()` row in the L2 [Failure modes](#fai
 | `eth_getProof failed: historical state ... is not available` | The Ethereum light client on Cosmos is behind, so the execution node has pruned the state it trusts. Stop the relayer that uses this Cosmos signer, run `./relayer update-eth-client --config config.json`, then restart it. The command prints the resulting `latest_slot` and `latest_execution_block_number`; if it says the client is already current, the stale proof has another cause. |
 | Ack fails: `unknown field account_proof, expected one of key, value, proof` | The L2 membership proof was built in the Ethereum L1 shape. The L2 client wants a bare `EvmStorageProof`. See [docs/runbooks/L2_CLIENTS.md](L2_CLIENTS.md). |
 | `packet at height N not yet covered by the destination client (trusts M)` | **L2 → Cosmos:** the attestor frontier has not reached the packet's block yet, so `RelayableHeight` is still below it. It normally clears on the next attestation; if it persists, check the attestor's log. **Ethereum → Cosmos:** the Ethereum beacon light client on Cosmos may be lagging. If it stays behind, stop the relayer that uses this Cosmos signer, run `./relayer update-eth-client --config config.json`, check the reported `latest_slot` and `latest_execution_block_number`, then restart the relayer. If the client is already current, check whether the packet's block is finalized yet. |
-| ETH client stops advancing: `404 NOT_FOUND: Sync committee for period N not found` | The beacon does not serve a `light_client/bootstrap` for that period. The relayer takes the committee from the preceding period's update instead, so this should only appear if that update is also unavailable: check the endpoint serves `/eth/v1/beacon/light_client/updates`. |
+| ETH client stops advancing: `404 NOT_FOUND: Sync committee for period N not found` | The beacon does not serve a `light_client/bootstrap` for that period. The relayer takes the committee from the preceding period's update instead, so this should only appear if that update is also unavailable (the error's parenthesis says why): check the endpoint serves `/eth/v1/beacon/light_client/updates`. |
+| `beacon light-client updates skip from period N to M` / `is signed at slot S (period P)` | The beacon's `light_client/updates` answer misses a period or is inconsistent (e.g. a load balancer over several nodes). Nothing is submitted. Point `eth_beacon_api_url` at one node that serves every period since the client's. |
 | `the attestor does not recognise L2 block N ... as canonical` | The relayer's L2 RPC and the attestor's replica disagree at that height: a reorg past the frontier, or the two pointed at different chains. Not retried away: confirm both use the same L2. |
 | A direction goes silent: no error, no retry, other directions healthy | A hung RPC. `kill -QUIT <relayer-pid>` dumps every goroutine; look for one blocked in `net/http.(*persistConn).roundTrip`. Note the dump kills the process. |
 | Gov proposal ends `REJECTED` without votes | `wasm.sh` resolves the proposal id after a fixed `sleep`; if indexing is slower the id is empty and the vote step is skipped. Vote manually before the (short devnet) voting period ends. |
@@ -1065,6 +1071,7 @@ profile). See the `ProofVerificationFailed()` row in the L2 [Failure modes](#fai
 | Arbitrum attestor stops attesting: last log line is a normal attestation, container still up | The runtime back-fill is bounded (`runtime_backfill_max_blocks`, default 2048) and parallel (`runtime_backfill_concurrency`, default 8); an omitted or zero value uses the default. If the concurrency is too low for the endpoint's latency the attestor falls behind the chain, and skipped heights are logged as `backfill capped`. Size both as described in `attestor/arbitrum/GUIDE.md` before filing an issue. |
 | `start` refuses to boot: `l2_chain_id is N but l2_rpc_url ... serves chain M` | The profile and the RPC name different chains. Transactions take their chain id from `eth_chainId` on the RPC and nothing else reads `l2_chain_id`, so without this check the relayer would relay against **M** while the config, the client's committed profile and the docs all said **N**. Fix whichever is wrong; the error prints both. |
 | `start` refuses to boot: `head_kind is "unsafe" but attestor N at ... gates "opstack" on attestation_head "finalized"` | `head_kind` and the attestor's `ATTESTATION_HEAD` disagree. The builder sends `head_kind` as the `run_mode` and the attestor refuses any `run_mode` but its own, so every header would be rejected at the first packet. Make them equal; the error names both. The sibling `serves [...], not attestor_src_chain` means the endpoint is an attestor for a different L2. An attestor that does not answer `Info` is skipped with a log line, not refused. |
+| `start` refuses to boot: `l2_to_cosmos.attestors: set hash ... differs from the set L2 wasm client ... trusts` | The client's attestor set was rotated (`replace_attestors`) or the config lists another set. Every header would be refused. Copy the client's current `public_keys` and `threshold` into `attestors`; the error prints both hashes. A client that cannot be read only logs a WARN. |
 | Arbitrum attestor attests the wrong chain (`src_chain=arbdev`, `l2_chain_id=412346`) despite `CHAIN_PROFILE=arbitrum-sepolia` | A leftover `.arbitrum-devnet-run/attestor.env` was sourced; its exports are real env vars and beat the profile. A non-`devnet` `CHAIN_PROFILE` makes the script ignore the handoff and log that it did; if you do not see that log line, delete the directory and check you are on a current checkout. |
 | `eth_getLogs` rejected: `you can make eth_getLogs requests with up to a 10 block range` | The provider caps the log span. Set `log_scan_chunk` in the return module to that cap (Alchemy free tier 10, drpc 10 000). |
 | `[... Flush] provider has pruned history below block N` | The node dropped older logs; lookups start at N. Older packets need an archive provider. See [`router_deploy_block`](#router_deploy_block-where-packet-flush-log-lookups-start). |

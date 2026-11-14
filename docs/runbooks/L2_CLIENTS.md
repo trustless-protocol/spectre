@@ -114,7 +114,8 @@ these strict JSON payloads:
 only the client-state envelope. Height, frozen status, profile, checksum bytes visible to the
 contract, and every consensus state remain unchanged. IBC-go commits the new checksum after the
 entry point succeeds. Invalid replacements fail before any write, and the old set stops being
-accepted immediately after a successful replacement.
+accepted immediately after a successful replacement. Update the relayer's `attestors` to match:
+`start` refuses a set that differs from the client's.
 
 Rotation applies only to an already-valid authenticated client. It cannot add attestors to legacy
 unsigned state; both `keep_attestors` and `replace_attestors` fail without writes for that input.
