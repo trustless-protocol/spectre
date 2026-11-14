@@ -206,3 +206,80 @@ func TestAttestedUpTo_APanickingEndpointIsAFailedEndpoint(t *testing.T) {
 		t.Fatalf("err = %v, want the endpoint's panic reported as its failure", err)
 	}
 }
+
+// #575 L2: the frontier was the minimum of the FIRST threshold answers, so one
+// fast endpoint reporting a low height pinned RelayableHeight.
+func TestAttestedUpTo_AFastLowEndpointDoesNotPinTheFrontier(t *testing.T) {
+	restore := frontierQuorumGrace
+	frontierQuorumGrace = 2 * time.Second
+	t.Cleanup(func() { frontierQuorumGrace = restore })
+
+	release := make(chan struct{})
+	root := func(height uint64) *attestorpb.AttestedRoot { return &attestorpb.AttestedRoot{L2BlockNumber: height} }
+	frontier, err := NewQuorumAttestationFrontier([]SigningAttestor{
+		{Index: 0, Client: &fakeAttestor{root: root(10), found: true}}, // answers at once, far behind
+		{Index: 1, Client: &fakeAttestor{root: root(120), found: true, frontierBlock: release}},
+		{Index: 2, Client: &fakeAttestor{root: root(110), found: true, frontierBlock: release}},
+	}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(50 * time.Millisecond) // the low answer is in before the other two
+		close(release)
+	}()
+
+	start := time.Now()
+	got, found, err := frontier.AttestedUpTo(context.Background(), "op-sepolia", false)
+	if err != nil || !found {
+		t.Fatalf("found=%v err=%v", found, err)
+	}
+	// Two endpoints attest through 110: that is the quorum frontier.
+	if got.GetL2BlockNumber() != 110 {
+		t.Fatalf("frontier = %d, want 110, the 2nd-highest answer", got.GetL2BlockNumber())
+	}
+	// Every endpoint answered, so the grace was not waited out.
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("took %s: it waited for the grace although every endpoint had answered", elapsed)
+	}
+}
+
+// A hung endpoint costs at most the grace, not the caller's whole deadline.
+func TestAttestedUpTo_AHungEndpointCostsAtMostTheGrace(t *testing.T) {
+	restore := frontierQuorumGrace
+	frontierQuorumGrace = 50 * time.Millisecond
+	t.Cleanup(func() { frontierQuorumGrace = restore })
+
+	root := func(height uint64) *attestorpb.AttestedRoot { return &attestorpb.AttestedRoot{L2BlockNumber: height} }
+	frontier, err := NewQuorumAttestationFrontier([]SigningAttestor{
+		{Index: 0, Client: &fakeAttestor{frontierBlock: make(chan struct{})}}, // never answers
+		{Index: 1, Client: &fakeAttestor{root: root(100), found: true}},
+		{Index: 2, Client: &fakeAttestor{root: root(90), found: true}},
+	}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	got, found, err := frontier.AttestedUpTo(ctx, "op-sepolia", false)
+	if err != nil || !found || got.GetL2BlockNumber() != 90 {
+		t.Fatalf("frontier=%v found=%v err=%v, want 90 from the two that answered", got, found, err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("took %s: one hung endpoint held the call to the caller's deadline", elapsed)
+	}
+}
+
+func TestQuorumFrontier(t *testing.T) {
+	roots := []*attestorpb.AttestedRoot{{L2BlockNumber: 90}, {L2BlockNumber: 130}, {L2BlockNumber: 100}, {L2BlockNumber: 120}}
+	for threshold, want := range map[int]uint64{1: 130, 2: 120, 3: 100, 4: 90} {
+		if got := quorumFrontier(roots, threshold).GetL2BlockNumber(); got != want {
+			t.Errorf("threshold %d: frontier %d, want %d", threshold, got, want)
+		}
+	}
+	if roots[0].GetL2BlockNumber() != 90 {
+		t.Error("quorumFrontier reordered its input")
+	}
+}
