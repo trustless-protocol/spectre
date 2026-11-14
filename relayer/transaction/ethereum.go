@@ -292,6 +292,20 @@ func ValidateMisbehaviourPrivateKey() error {
 	return err
 }
 
+// MisbehaviourSignerAddress is the address MISBEHAVIOUR_PRIVATE_KEY signs as:
+// the nonce domain submit-misbehaviour locks.
+func MisbehaviourSignerAddress() (common.Address, error) {
+	privateKey, err := misbehaviourPrivateKey()
+	if err != nil {
+		return common.Address{}, err
+	}
+	publicKey, err := keys.PublicKey(privateKey)
+	if err != nil {
+		return common.Address{}, fmt.Errorf("failed to derive misbehaviour key address: %w", err)
+	}
+	return crypto.PubkeyToAddress(*publicKey), nil
+}
+
 const ethDeployGasHeadroomPercent uint64 = 20
 
 // Cosmos RPC deadlines (issue #119): bound every Cosmos broadcast/query so a

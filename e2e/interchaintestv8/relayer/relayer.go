@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/cosmos/gogoproto/proto"
@@ -111,6 +112,26 @@ func StartRelayer(configPath string) (*os.Process, error) {
 	}
 
 	return cmd.Process, nil
+}
+
+// StopRelayer kills a process StartRelayer started and returns once it has
+// exited. Its signer locks go with it: a one-shot command on the same key is
+// refused while they are held (#575).
+func StopRelayer(process *os.Process) error {
+	if process == nil {
+		return nil
+	}
+	if err := process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return fmt.Errorf("kill relayer pid %d: %w", process.Pid, err)
+	}
+	// StartRelayer's goroutine reaps the process. Signal reports ErrProcessDone
+	// once it has, and by then the kernel has closed the lock descriptors.
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		if err := process.Signal(syscall.Signal(0)); errors.Is(err, os.ErrProcessDone) {
+			return nil
+		}
+	}
+	return fmt.Errorf("relayer pid %d still running 30s after SIGKILL", process.Pid)
 }
 
 // RunCreateClients brings up both light clients, one relayer command per chain (the umbrella

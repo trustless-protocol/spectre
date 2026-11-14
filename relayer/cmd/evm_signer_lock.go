@@ -107,7 +107,17 @@ func evmSignerLockKeysWithChainID(
 	address common.Address,
 	chainIDFor func(context.Context, string) (string, error),
 ) ([]evmSignerLockKey, error) {
-	endpoints := evmSignerLockEndpoints(cfg)
+	return evmSignerLockKeysForEndpoints(stdCtx, evmSignerLockEndpoints(cfg), address, chainIDFor)
+}
+
+// evmSignerLockKeysForEndpoints is the same for an explicit endpoint list: the
+// one endpoint a one-shot command submits to.
+func evmSignerLockKeysForEndpoints(
+	stdCtx context.Context,
+	endpoints []evmSignerLockEndpoint,
+	address common.Address,
+	chainIDFor func(context.Context, string) (string, error),
+) ([]evmSignerLockKey, error) {
 	if len(endpoints) == 0 {
 		return nil, fmt.Errorf("EVM signer lock: no configured EVM endpoint to identify ETH_PRIVATE_KEY's nonce domain")
 	}
