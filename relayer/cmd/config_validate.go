@@ -246,6 +246,7 @@ func validateStartupConfig(stdCtx context.Context, cfg *appConfig, stateDir stri
 	findings = append(findings, validateCosmosChainID(stdCtx, cfg)...)
 	findings = append(findings, validateEVMDeployments(stdCtx, cfg)...)
 	findings = append(findings, validateAttestorHeads(stdCtx, cfg)...)
+	findings = append(findings, validateL2AttestorSet(stdCtx, cfg)...)
 
 	if len(findings) == 0 {
 		log.Printf("[start] config validated")

@@ -569,6 +569,34 @@ func GetWasmClientLatestHeight(ctx context.Context, cosmosClient *rpchttp.HTTP, 
 	return wasmClientState.LatestHeight, nil
 }
 
+// GetWasmClientStateData returns the client-specific Data of an 08-wasm client
+// state on Cosmos: the JSON the wasm contract stores for itself.
+func GetWasmClientStateData(ctx context.Context, cosmosClient *rpchttp.HTTP, clientID string) ([]byte, error) {
+	reqBytes, err := proto.Marshal(&clienttypes.QueryClientStateRequest{ClientId: clientID})
+	if err != nil {
+		return nil, fmt.Errorf("marshal client-state query: %w", err)
+	}
+	result, err := cosmosClient.ABCIQuery(ctx, "/ibc.core.client.v1.Query/ClientState", reqBytes)
+	if err != nil {
+		return nil, fmt.Errorf("query client state %s: %w", clientID, err)
+	}
+	if result.Response.Code != 0 {
+		return nil, fmt.Errorf("client-state query %s failed with code %d: %s", clientID, result.Response.Code, result.Response.Log)
+	}
+	var queryResp clienttypes.QueryClientStateResponse
+	if err := proto.Unmarshal(result.Response.Value, &queryResp); err != nil {
+		return nil, fmt.Errorf("unmarshal client-state response: %w", err)
+	}
+	if queryResp.ClientState == nil {
+		return nil, fmt.Errorf("client-state query for %s returned no client state", clientID)
+	}
+	var wasmClientState ibcwasmtypes.ClientState
+	if err := proto.Unmarshal(queryResp.ClientState.Value, &wasmClientState); err != nil {
+		return nil, fmt.Errorf("unmarshal wasm client state: %w", err)
+	}
+	return wasmClientState.Data, nil
+}
+
 // GetClientStatus asks ibc-go for a client's status ("Active", "Frozen",
 // "Expired", ...). It is the chain's own answer, so it covers every client type
 // -- the ETH beacon and the L2 wasm clients alike -- without decoding the
