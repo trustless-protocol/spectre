@@ -2,8 +2,11 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"time"
+
+	"attestor/types/redact"
 
 	"relayer/chain"
 )
@@ -95,14 +98,32 @@ func (m *Module) Status(ctx context.Context) Status {
 		s.UpdateInFlight = true
 	}
 
-	probeCtx, cancel := context.WithTimeout(ctx, statusProbeTimeout)
+	// Detached from the caller: the caller is an HTTP request, and a requester
+	// that hangs up would cancel the probe and get back an error quoting the RPC
+	// URL on demand (#575 L7). The timeout still bounds it.
+	probeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), statusProbeTimeout)
 	defer cancel()
 	if height, err := m.src.RelayableHeight(probeCtx); err != nil {
-		s.RelayableHeightErr = err.Error()
+		s.RelayableHeightErr = describeProbeError(err)
 	} else {
 		s.RelayableHeight = height
 	}
 	return s
+}
+
+// describeProbeError is the status text for a failed RelayableHeight probe: its
+// class, then the error with every URL reduced to scheme and host. The raw text
+// of an RPC error quotes the endpoint, and an endpoint URL carries the
+// provider's API key.
+func describeProbeError(err error) string {
+	class := "transient"
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		class = "timed out"
+	case chain.IsPermanent(err):
+		class = "permanent"
+	}
+	return class + ": " + redact.Error(err).Error()
 }
 
 // snapshot lists what is parked, oldest first -- the order an operator reads in,
