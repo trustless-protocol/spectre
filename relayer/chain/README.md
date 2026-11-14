@@ -155,10 +155,12 @@ It is an operational requirement that operators must meet themselves.
 
 The generic module provides these reliability properties:
 
-- **Requeue transient / drop permanent**: see the error table above. The relay
-  path has no retry budget and no dead-letter set: a packet whose own transaction
-  deterministically reverts is dropped (logged as `DROP packet … (permanent)`), and
-  the timeout scanner refunds it if it expires. Because a multicall is atomic, a
+- **Requeue transient / drop permanent**: see the error table above. A packet whose
+  own transaction deterministically reverts (pre-flight `eth_call` or mined) is
+  dropped (logged as `DROP packet … (permanent)`) and held by the drop ledger
+  (`services/dropledger.go`): skipped before any client update, retried after 10 min,
+  doubling, cap 6 h; cleared on delivery or settlement; listed by `relayer status`.
+  The timeout scanner refunds a dropped send if it expires. Because a multicall is atomic, a
   permanent BATCH failure retries each packet individually (`relayIsolated`), so a
   poison packet drops alone while its valid siblings still relay. Two cases are
   never dropped: a destination client that is not active holds the direction and
@@ -175,7 +177,9 @@ The generic module provides these reliability properties:
 - **Timeout recovery**: `WithPacketTracker` records every send and untracks it once
   the relay succeeds (a delivered packet can no longer time out); `WithTimeoutScanner`
   runs the existing `ScanCosmosTimeouts` / `ScanEthTimeouts` on a ticker, refunding
-  packets that expired undelivered.
+  packets that expired undelivered. Terminal tombstones come only from final facts: a
+  terminal Cosmos event, or a receive this process delivered to Cosmos. A destination
+  read (EVM/L2, at `latest`) only skips the pass.
 - **Periodic forced update** (`WithPeriodicUpdate`, Cosmos→ETH only): force-
   rotates the SpectreClient pinned validator set with exponential backoff on
   failure, so a quiet period cannot let the set decay below quorum. It is scheduled

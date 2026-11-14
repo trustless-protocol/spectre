@@ -25,6 +25,8 @@ the toolchain is in place and add Docker + Kurtosis on top.
 - [Automated timeout recovery test](#automated-timeout-recovery-test)
 - [`router_deploy_block`: where packet-flush log lookups start](#router_deploy_block-where-packet-flush-log-lookups-start)
 - [Signing keys when several processes share a chain](#signing-keys-when-several-processes-share-a-chain)
+- [Spending caps](#spending-caps)
+- [Relayer state and status](#relayer-state-and-status)
 - [Relayer logs](#relayer-logs)
 - [Prover key and verifier must be a pair](#prover-key-and-verifier-must-be-a-pair)
 - [Failure modes](#failure-modes)
@@ -869,7 +871,8 @@ unrecognised broadcast error invalidates the cached nonce and returns a transien
 error, so the packet is re-queued rather than dropped.
 
 **`start` enforces both rules**, with one advisory lock per contended resource, all
-under `/tmp/spectre-relayer-<uid>/`.
+under `/tmp/spectre-relayer-<uid>/`. That directory must be yours, a real directory, not
+writable by group or other; `start` refuses otherwise and names the fix.
 
 The EVM half takes one lock per nonce domain it can write: a file per
 `{chain id, address}`, named `evm-signer-<chain id>-<address>.lock`
@@ -932,6 +935,40 @@ COSMOS_PRIVATE_KEY=$KEY_OP_PATH  ./relayer start --config config.op.json &
 
 Each key is a distinct account and needs its own gas balance on the Cosmos chain.
 
+## Spending caps
+
+`start` refuses to boot unless all four are set. `0` = no cap. `relayer/.env` ships
+devnet values; set your own for a public chain.
+
+| Variable | Caps | Unit |
+|---|---|---|
+| `ETH_MAX_FEE_PER_GAS` | `maxFeePerGas` / `gasPrice`: first send, bump, cancel | wei per gas |
+| `ETH_MAX_PRIORITY_FEE_PER_GAS` | `maxPriorityFeePerGas` | wei per gas |
+| `COSMOS_MAX_GAS` | gas limit of one tx | gas |
+| `COSMOS_MAX_FEE` | fee of one tx | `COSMOS_FEE_DENOM` base units |
+
+- Held at the cap: an EVM fee or tip above its cap; Cosmos gas headroom above
+  `COSMOS_MAX_GAS`.
+- Not signed (`operator spending cap exceeded`): EVM base fee + tip above the fee cap;
+  simulated Cosmos gas above `COSMOS_MAX_GAS`; Cosmos fee above `COSMOS_MAX_FEE`.
+  Packets stay queued; a splittable Cosmos batch is halved first.
+- One-shot commands honour a cap that is set and run without one.
+
+## Relayer state and status
+
+- Per path, under `<config dir>/.spectre-state/<kind>-<digest>/`: `cursors.json`,
+  pending trackers (`cosmos.json`, `eth.json`, `l2.json`), `awaiting-acks.json`,
+  `dropped-<direction>.json`.
+- **Dropped packet.** A permanent failure (the pre-flight `eth_call` or the mined tx
+  reverts) holds the packet: retry after 10 min, doubling, cap 6 h. Cleared on
+  delivery or settlement. `relayer status` lists held packets under `ATTENTION`.
+- **Pre-flight.** Every EVM packet tx (`recvPacket`, `ackPacket`, `timeoutPacket`,
+  multicall) runs as an `eth_call` first; a revert there spends no gas.
+- **Chain id.** An EVM endpoint is held to the chain id it first reported, and under
+  `start` to a chain the process locked. Another answer: nothing signed.
+- **L2 frontier.** `RelayableHeight` is the threshold-th highest attestor answer,
+  read within 500 ms of the threshold-th reply.
+
 ## Relayer logs
 
 Every log line of the relayer carries a level. `--log-level` /
@@ -939,6 +976,8 @@ Every log line of the relayer carries a level. `--log-level` /
 `--log-format` / `RELAYER_LOG_FORMAT` (`json`, `console`, `auto`; default `auto`)
 are accepted by every subcommand. The flag takes precedence over the variable.
 
+- **URLs.** Logged as `scheme://host`; path, query and userinfo (API keys) are
+  dropped.
 - **Source of the variables.** They are read from the process environment.
   `relayer/.env` is loaded inside each command, after the logger exists, so
   values there have no effect.
@@ -996,6 +1035,10 @@ profile). See the `ProofVerificationFailed()` row in the L2 [Failure modes](#fai
 
 | Symptom | Cause |
 |---|---|
+| `not signed: operator spending cap exceeded` | Fee or gas above a [spending cap](#spending-caps). Raise it, or wait for fees to fall; packets stay queued. |
+| `would revert ... not broadcast, no gas spent` | The pre-flight `eth_call` reverts. The packet is held after the drop; `relayer status` lists it. |
+| `endpoint reported chain id X but this process signs for Y` | The EVM RPC now answers another chain. Fix the RPC; nothing is signed meanwhile. |
+| `signer lock: ... is owned by uid N` / `has mode` / `is a symlink` | Someone else created or opened `/tmp/spectre-relayer-<uid>`. Remove it (as its owner or root). |
 | `beacon api unavailable at ...:59717` | The `eth-to-cosmos` module still has the example's beacon URL. Point `eth_beacon_api_url` at this run's `ETH_BEACON_API` (from `attestor.env`). |
 | `MsgStoreCode` fails: `reference-types not enabled` | The wasm was built with a plain `cargo build`. Build through `cosmwasm/optimizer` (`just build-cw-ics08-wasm-*`); a raw release build embeds features the CosmWasm VM rejects. |
 | Optimizer fails: `rustc 1.86.0 is not supported ... requires rustc 1.90` | A dependency raised its MSRV above the optimizer image's Rust. Pin the dependency down (e.g. `cargo update -p ruint --precise 1.17.0`) or bump the optimizer image. |
