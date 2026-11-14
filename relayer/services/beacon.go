@@ -34,8 +34,35 @@ func executionHeaderRLPHex(ctx context.Context, source relayerclient.RawHeaderSo
 	return hexutil.Encode(raw), nil
 }
 
+// maxLightClientUpdatesPerRequest is the most sync-committee periods one client
+// update may cross. It is the beacon API's own limit on one
+// light_client/updates request (MAX_REQUEST_LIGHT_CLIENT_UPDATES).
+const maxLightClientUpdatesPerRequest = 128
+
+// lightClientUpdateCount is how many light-client updates take the client from
+// trustedPeriod to targetPeriod, one per period touched.
+//
+// Both periods derive from slots the RPCs supplied, and the count sizes a slice.
+// Unchecked, a finalized slot far in the future asked makeslice for more memory
+// than exists and panicked (#575 L8); a target behind the client wrapped around
+// to the same thing.
+func lightClientUpdateCount(trustedPeriod, targetPeriod uint64) (uint64, error) {
+	if targetPeriod < trustedPeriod {
+		return 0, fmt.Errorf("finalized sync-committee period %d is behind the client's period %d", targetPeriod, trustedPeriod)
+	}
+	if gap := targetPeriod - trustedPeriod; gap >= maxLightClientUpdatesPerRequest {
+		return 0, fmt.Errorf(
+			"finalized sync-committee period %d is %d periods past the client's period %d; one update crosses at most %d",
+			targetPeriod, gap, trustedPeriod, maxLightClientUpdatesPerRequest-1)
+	}
+	return targetPeriod - trustedPeriod + 1, nil
+}
+
 func (w *Worker) buildEthClientUpdateHeadersWithPeriodCrossing(stdCtx context.Context, beaconAPIURL string, source relayerclient.RawHeaderSource, ethClientState *relayerclient.EthereumClientState, trustedSlot, trustedPeriod, targetPeriod uint64, finalityUpdate *relayerclient.LightClientFinalityUpdate, finalizedSlot uint64) ([][]byte, error) {
-	count := targetPeriod - trustedPeriod + 1
+	count, err := lightClientUpdateCount(trustedPeriod, targetPeriod)
+	if err != nil {
+		return nil, err
+	}
 	bctx, bcancel := context.WithTimeout(stdCtx, 15*time.Second)
 	lightClientUpdates, err := relayerclient.GetLightClientUpdates(bctx, beaconAPIURL, trustedPeriod, count)
 	bcancel()

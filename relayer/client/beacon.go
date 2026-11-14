@@ -62,6 +62,23 @@ type Fork struct {
 	Version string `json:"version"`
 }
 
+// Validate rejects a client state whose timing parameters cannot be divided by.
+// The state is read back from an RPC, and the three methods below divide by
+// these fields: a zero would panic with an integer divide by zero.
+func (cs *EthereumClientState) Validate() error {
+	switch {
+	case cs == nil:
+		return fmt.Errorf("ethereum client state is nil")
+	case cs.SlotsPerEpoch == 0:
+		return fmt.Errorf("ethereum client state has slots_per_epoch = 0")
+	case cs.EpochsPerSyncCommitteePeriod == 0:
+		return fmt.Errorf("ethereum client state has epochs_per_sync_committee_period = 0")
+	case cs.SecondsPerSlot == 0:
+		return fmt.Errorf("ethereum client state has seconds_per_slot = 0")
+	}
+	return nil
+}
+
 func (cs *EthereumClientState) ComputeSyncCommitteePeriodAtSlot(slot uint64) uint64 {
 	epoch := slot / cs.SlotsPerEpoch
 	return epoch / cs.EpochsPerSyncCommitteePeriod

@@ -593,7 +593,7 @@ func (h *Handler) CreateCosmosClientContract(stdCtx context.Context, endpoint se
 	if err != nil {
 		return common.Address{}, fmt.Errorf("failed waiting for deploy receipt: %w", err)
 	}
-	log.Printf("[CreateCosmosClient] SpectreClient deployed at %s (block %d, gasUsed=%d)", address.String(), receipt.BlockNumber.Uint64(), receipt.GasUsed)
+	log.Printf("[CreateCosmosClient] SpectreClient deployed at %s (block %s, gasUsed=%d)", address.String(), receiptBlock(receipt), receipt.GasUsed)
 
 	ics26Router, err := routerContract.NewContractICS26Router(*endpoint.RouterContract(), endpoint.EthClient())
 	if err != nil {
@@ -625,7 +625,7 @@ func (h *Handler) CreateCosmosClientContract(stdCtx context.Context, endpoint se
 		return common.Address{}, err
 	}
 
-	log.Printf("[CreateCosmosClient] AddClient confirmed (block %d, gasUsed=%d)", addClientReceipt.BlockNumber.Uint64(), addClientReceipt.GasUsed)
+	log.Printf("[CreateCosmosClient] AddClient confirmed (block %s, gasUsed=%d)", receiptBlock(addClientReceipt), addClientReceipt.GasUsed)
 	return address, nil
 }
 
@@ -750,7 +750,7 @@ func (h *Handler) SendEthTx(stdCtx context.Context, endpoint services.EVMEndpoin
 		return err
 	}
 
-	log.Printf("[SendEthTx] Tx %s confirmed in block %d (gasUsed=%d)", receipt.TxHash.Hex(), receipt.BlockNumber.Uint64(), receipt.GasUsed)
+	log.Printf("[SendEthTx] Tx %s confirmed in block %s (gasUsed=%d)", receipt.TxHash.Hex(), receiptBlock(receipt), receipt.GasUsed)
 	if benchEnabled {
 		log.Printf("[bench] eth %s gasUsed=%d submit=%s wait=%s total=%s tx=%s",
 			txLabel, receipt.GasUsed, submitDur, waitDur, time.Since(benchStart), receipt.TxHash.Hex())
@@ -850,7 +850,7 @@ func (h *Handler) SubmitMisbehaviour(
 	if err != nil {
 		return fmt.Errorf("submit misbehaviour: %w", err)
 	}
-	log.Printf("[Misbehaviour] report signed by %s confirmed in block %d", fromAddress.Hex(), receipt.BlockNumber.Uint64())
+	log.Printf("[Misbehaviour] report signed by %s confirmed in block %s", fromAddress.Hex(), receiptBlock(receipt))
 	return nil
 }
 
@@ -996,8 +996,8 @@ func (h *Handler) SendEthTxBatch(stdCtx context.Context, endpoint services.EVMEn
 		return fmt.Errorf("multicall labels=%s: %w", labelStr, err)
 	}
 
-	log.Printf("[SendEthTx] Tx %s confirmed in block %d (gasUsed=%d, inner=%d)",
-		receipt.TxHash.Hex(), receipt.BlockNumber.Uint64(), receipt.GasUsed, len(calldata))
+	log.Printf("[SendEthTx] Tx %s confirmed in block %s (gasUsed=%d, inner=%d)",
+		receipt.TxHash.Hex(), receiptBlock(receipt), receipt.GasUsed, len(calldata))
 	if benchEnabled {
 		log.Printf("[bench] eth multicall labels=%s gasUsed=%d submit=%s wait=%s total=%s tx=%s",
 			labelStr, receipt.GasUsed, submitDur, waitDur, time.Since(benchStart), receipt.TxHash.Hex())
@@ -1007,6 +1007,18 @@ func (h *Handler) SendEthTxBatch(stdCtx context.Context, endpoint services.EVMEn
 	}
 
 	return nil
+}
+
+// receiptBlock formats the block a receipt was mined in.
+//
+// blockNumber is optional in a receipt as go-ethereum decodes it, so a node may
+// leave it out. Formatting it with BlockNumber.Uint64() then dereferenced nil and
+// panicked AFTER the transaction had already succeeded (#575 L12).
+func receiptBlock(receipt *types.Receipt) string {
+	if receipt == nil || receipt.BlockNumber == nil {
+		return "unknown"
+	}
+	return receipt.BlockNumber.String()
 }
 
 func isNonceTooLowError(err error) bool {

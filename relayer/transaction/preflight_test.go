@@ -2,6 +2,7 @@ package transaction
 
 import (
 	"errors"
+	"math/big"
 	"strings"
 	"testing"
 
@@ -9,6 +10,7 @@ import (
 	services "relayer/services"
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/core/types"
 )
 
 // revertDataHex is revert data for a custom error with no arguments.
@@ -212,5 +214,45 @@ func TestPreflightProbeGas(t *testing.T) {
 		if got := preflightProbeGas(tc.gas, tc.blockLimit); got != tc.want {
 			t.Errorf("%s: preflightProbeGas(%d, %d) = %d, want %d", tc.name, tc.gas, tc.blockLimit, got, tc.want)
 		}
+	}
+}
+
+// L12: blockNumber is optional in a receipt. The line that logged a confirmed
+// transaction dereferenced it, so a node omitting it crashed the relayer after
+// the transaction had already succeeded.
+func TestSendEthTx_ReceiptWithoutABlockNumber(t *testing.T) {
+	t.Run("single message", func(t *testing.T) {
+		node := rpcmock.NewEVMNode(t)
+		node.MineEverything(rpcmock.RawReceipt{Status: 1, GasUsed: 21_000, OmitBlockNumber: true})
+		h, _ := testHandler(t)
+
+		if err := h.SendEthTx(testCtx(t), testEndpoint(t, node), "client-0", recvPacketMsg()); err != nil {
+			t.Fatalf("send: %v", err)
+		}
+		if sent := node.SentRawTxs(); len(sent) != 1 {
+			t.Fatalf("broadcast %d transaction(s), want 1", len(sent))
+		}
+	})
+
+	t.Run("multicall", func(t *testing.T) {
+		node := rpcmock.NewEVMNode(t)
+		node.MineEverything(rpcmock.RawReceipt{Status: 1, GasUsed: 50_000, OmitBlockNumber: true})
+		h, _ := testHandler(t)
+
+		if err := h.SendEthTxBatch(testCtx(t), testEndpoint(t, node), "client-0", []any{recvPacketMsg(), recvPacketMsg()}); err != nil {
+			t.Fatalf("send: %v", err)
+		}
+	})
+}
+
+func TestReceiptBlock(t *testing.T) {
+	if got := receiptBlock(nil); got != "unknown" {
+		t.Errorf("receiptBlock(nil) = %q", got)
+	}
+	if got := receiptBlock(&types.Receipt{}); got != "unknown" {
+		t.Errorf("receipt without a block number = %q, want unknown", got)
+	}
+	if got := receiptBlock(&types.Receipt{BlockNumber: big.NewInt(1234)}); got != "1234" {
+		t.Errorf("receiptBlock = %q, want 1234", got)
 	}
 }

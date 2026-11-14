@@ -786,6 +786,11 @@ func (w *Worker) CreateEthClient(stdCtx context.Context, cosmos CosmosEndpoint, 
 		SlotsPerEpoch:                slotsPerEpoch,
 		SyncCommitteeSize:            syncCommitteeSize,
 	}
+	// Built from the beacon node's spec: refuse a state that cannot be computed
+	// with before paying to create a client from it.
+	if err := clientState.Validate(); err != nil {
+		return "", fmt.Errorf("beacon spec yields an unusable client state: %w", err)
+	}
 	log.Printf("[CreateEthClient] clientState prepared: latestSlot=%d latestExecutionBlock=%d minSyncCommitteeParticipants=%d",
 		clientState.LatestSlot, clientState.LatestExecutionBlockNumber, clientState.MinSyncCommitteeParticipants)
 	clientStateBz, err := json.Marshal(clientState)
