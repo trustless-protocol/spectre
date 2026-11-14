@@ -248,7 +248,7 @@ func TestPendingPacketTracker(t *testing.T) {
 		pt.RemovePacketIfCurrent(old)
 		pt.DeferTimeoutRetryIfCurrent(stale, time.Now())
 		pt.RecordTimeoutFailureIfCurrent(stale, time.Now())
-		pt.ClearDeferralsIfCurrent(stale)
+		pt.ClearSharedDeferralsIfCurrent(stale)
 		pt.RemoveIfCurrent(stale)
 
 		got := pt.GetAll()
@@ -442,13 +442,13 @@ func TestPendingPacketTracker(t *testing.T) {
 		tracker, pkt := trackerWith(t, 23)
 		now := time.Now()
 		for i := 0; i < deferralAlertThreshold; i++ {
-			tracker.deferTimeoutRetryForTest(pkt.SourceClient, pkt.Sequence, now)
+			tracker.deferSharedTimeoutRetryForTest(pkt.SourceClient, pkt.Sequence, now)
 		}
 		if count, worst := tracker.StuckTimeouts(); count != 1 || worst != deferralAlertThreshold {
 			t.Fatalf("StuckTimeouts() = (%d, %d), want (1, %d)", count, worst, deferralAlertThreshold)
 		}
 
-		tracker.clearDeferralsForTest(pkt.SourceClient, pkt.Sequence)
+		tracker.clearSharedDeferralsForTest(pkt.SourceClient, pkt.Sequence)
 
 		if count, worst := tracker.StuckTimeouts(); count != 0 || worst != 0 {
 			t.Fatalf("StuckTimeouts() = (%d, %d) after recovery, want (0, 0)", count, worst)
@@ -820,9 +820,20 @@ func (t *PendingPacketTracker) deferTimeoutRetryForTest(sourceClient string, seq
 	return 0
 }
 
-func (t *PendingPacketTracker) clearDeferralsForTest(sourceClient string, sequence uint64) {
+func (t *PendingPacketTracker) deferSharedTimeoutRetryForTest(sourceClient string, sequence uint64, now time.Time) int {
 	if info, ok := t.currentPacketForTest(sourceClient, sequence); ok {
-		t.ClearDeferralsIfCurrent(info)
+		counts, err := t.DeferSharedTimeoutRetriesIfCurrent([]pendingPacketInfo{info}, now)
+		if err != nil || len(counts) == 0 {
+			return 0
+		}
+		return counts[0]
+	}
+	return 0
+}
+
+func (t *PendingPacketTracker) clearSharedDeferralsForTest(sourceClient string, sequence uint64) {
+	if info, ok := t.currentPacketForTest(sourceClient, sequence); ok {
+		t.ClearSharedDeferralsIfCurrent(info)
 	}
 }
 
@@ -1014,4 +1025,42 @@ func TestRecordTimeoutFailureIfCurrent(t *testing.T) {
 			t.Fatal("unknown packet must not be added to any set")
 		}
 	})
+}
+
+// makeDueForTest ends every backoff, as if its time had passed.
+func (t *PendingPacketTracker) makeDueForTest() {
+	t.mtx.Lock()
+	defer t.mtx.Unlock()
+	for key, info := range t.packets {
+		info.NotBefore = time.Time{}
+		t.packets[key] = info
+	}
+}
+
+// A recovered shared prerequisite clears what the outage caused and nothing
+// else (#575 L3).
+func TestClearSharedDeferrals_KeepsThePacketsOwnDeferrals(t *testing.T) {
+	tracker, pkt := trackerWith(t, 31)
+	now := time.Now()
+	for i := 0; i < 3; i++ {
+		tracker.deferSharedTimeoutRetryForTest(pkt.SourceClient, pkt.Sequence, now)
+	}
+	for i := 0; i < 2; i++ {
+		tracker.deferTimeoutRetryForTest(pkt.SourceClient, pkt.Sequence, now)
+	}
+	got := tracker.GetAll()[0]
+	if got.Deferrals != 5 || got.SharedDeferrals != 3 {
+		t.Fatalf("before recovery: deferrals=%d shared=%d, want 5 and 3", got.Deferrals, got.SharedDeferrals)
+	}
+
+	tracker.clearSharedDeferralsForTest(pkt.SourceClient, pkt.Sequence)
+	got = tracker.GetAll()[0]
+	if got.Deferrals != 2 || got.SharedDeferrals != 0 {
+		t.Fatalf("after recovery: deferrals=%d shared=%d, want the packet's own 2 and 0", got.Deferrals, got.SharedDeferrals)
+	}
+
+	// The next deferral continues from what is left.
+	if count := tracker.deferTimeoutRetryForTest(pkt.SourceClient, pkt.Sequence, now); count != 3 {
+		t.Fatalf("next deferral count = %d, want 3", count)
+	}
 }

@@ -47,6 +47,14 @@ type pendingPacketInfo struct {
 	// DeferTimeoutRetry.
 	Deferrals int
 
+	// SharedDeferrals is the part of Deferrals caused by a shared prerequisite
+	// (the client update or header every timeout in a scan depends on). It is
+	// the only part a recovered prerequisite clears. A deferral for this
+	// packet's own step -- its receipt check, its proof, its submission -- is
+	// not, so a packet that keeps failing after each paid client update backs
+	// off instead of retrying at the first rung forever (#575 L3).
+	SharedDeferrals int
+
 	// DeadLetteredAt is when the packet stopped being retried. Zero until then.
 	// The age matters as much as the count: a count says a timeout gave up, the
 	// age says how long nobody has looked (RLY-02).
@@ -499,32 +507,43 @@ func (t *PendingPacketTracker) removeDeadLettered(key packetKey) {
 	t.deadLettered = retained
 }
 
-// ClearDeferralsIfCurrent resets a packet's deferral count after a cycle that got far
-// enough to prove the shared prerequisites are healthy again.
+// ClearSharedDeferralsIfCurrent removes the deferrals a shared-prerequisite
+// outage caused, after a cycle that got far enough to prove the shared
+// prerequisites are healthy again.
 //
 // Without it the count only ever grows, so one outage early in a packet's life
 // leaves it permanently near the backoff cap and permanently inside the stuck
 // gauge — a stale alarm, and a slower retry than the packet deserves.
+//
+// It clears ONLY the shared part. Clearing the whole count after every
+// successful client update reset a packet whose own timeout kept failing to the
+// first backoff rung each cycle: one paid client update a minute, forever, and
+// never a STUCK line (#575 L3).
+//
 // It ignores a recovered prerequisite result from a scan whose packet was
 // replaced while the scan was in flight.
-func (t *PendingPacketTracker) ClearDeferralsIfCurrent(scanned pendingPacketInfo) error {
-	return t.ClearDeferralsIfCurrentBatch([]pendingPacketInfo{scanned})
+func (t *PendingPacketTracker) ClearSharedDeferralsIfCurrent(scanned pendingPacketInfo) error {
+	return t.ClearSharedDeferralsIfCurrentBatch([]pendingPacketInfo{scanned})
 }
 
-// ClearDeferralsIfCurrentBatch resets matching scan snapshots in one durable
-// mutation, avoiding one complete snapshot/fsync per packet after a shared
-// prerequisite recovers.
-func (t *PendingPacketTracker) ClearDeferralsIfCurrentBatch(scanned []pendingPacketInfo) error {
+// ClearSharedDeferralsIfCurrentBatch clears matching scan snapshots in one
+// durable mutation, avoiding one complete snapshot/fsync per packet after a
+// shared prerequisite recovers.
+func (t *PendingPacketTracker) ClearSharedDeferralsIfCurrentBatch(scanned []pendingPacketInfo) error {
 	t.mtx.Lock()
 	defer t.mtx.Unlock()
 	updates := make(map[packetKey]pendingPacketInfo)
 	for _, snapshot := range scanned {
 		key := packetKey{sourceClient: snapshot.Packet.SourceClient, sequence: snapshot.Packet.Sequence}
 		info, ok := t.packets[key]
-		if !ok || info.identity != identityOf(snapshot) || info.Deferrals == 0 {
+		if !ok || info.identity != identityOf(snapshot) || info.SharedDeferrals == 0 {
 			continue
 		}
-		info.Deferrals = 0
+		info.Deferrals -= info.SharedDeferrals
+		if info.Deferrals < 0 {
+			info.Deferrals = 0
+		}
+		info.SharedDeferrals = 0
 		updates[key] = info
 	}
 	if len(updates) == 0 {
@@ -746,11 +765,24 @@ func (t *PendingPacketTracker) DeferTimeoutRetryIfCurrent(scanned pendingPacketI
 }
 
 // DeferTimeoutRetriesIfCurrent backs off all still-current scan snapshots with
-// one lock and one persisted snapshot. The returned counts align with scanned;
+// one lock and one persisted snapshot, for a failure of each packet's own step.
+// A recovered shared prerequisite does not clear these (see
+// ClearSharedDeferralsIfCurrentBatch). The returned counts align with scanned;
 // zero with a nil error means the packet was replaced or removed. A non-nil
 // error means the whole mutation was rolled back and timeout retries are
 // circuit-broken until persistence recovers.
 func (t *PendingPacketTracker) DeferTimeoutRetriesIfCurrent(scanned []pendingPacketInfo, now time.Time) ([]int, error) {
+	return t.deferTimeoutRetriesIfCurrent(scanned, now, false)
+}
+
+// DeferSharedTimeoutRetriesIfCurrent is DeferTimeoutRetriesIfCurrent for a
+// failure of a shared prerequisite: the next cycle that gets past it clears
+// these deferrals again.
+func (t *PendingPacketTracker) DeferSharedTimeoutRetriesIfCurrent(scanned []pendingPacketInfo, now time.Time) ([]int, error) {
+	return t.deferTimeoutRetriesIfCurrent(scanned, now, true)
+}
+
+func (t *PendingPacketTracker) deferTimeoutRetriesIfCurrent(scanned []pendingPacketInfo, now time.Time, shared bool) ([]int, error) {
 	t.mtx.Lock()
 	defer t.mtx.Unlock()
 	counts := make([]int, len(scanned))
@@ -762,6 +794,9 @@ func (t *PendingPacketTracker) DeferTimeoutRetriesIfCurrent(scanned []pendingPac
 			continue
 		}
 		info.Deferrals++
+		if shared {
+			info.SharedDeferrals++
+		}
 		info.NotBefore = now.Add(nextTimeoutBackoff(info.Deferrals))
 		updates[key] = info
 		counts[i] = info.Deferrals

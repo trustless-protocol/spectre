@@ -45,7 +45,7 @@ func (s *Services) scanForCosmosL2Timeouts(stdCtx context.Context, cosmos Cosmos
 	}
 	if recovery.ClientID == "" || recovery.BuildUpdate == nil || recovery.BuildNonMembershipProof == nil {
 		log.Printf("WARN [CosmosTimeoutScan] L2 timeout recovery is incomplete; deferring %d timeout(s) without charging", len(pending))
-		deferTimeoutRetries(tracker, pending, time.Now(), "CosmosL2Timeout")
+		deferSharedTimeoutRetries(tracker, pending, time.Now(), "CosmosL2Timeout")
 		return
 	}
 
@@ -57,7 +57,7 @@ func (s *Services) scanForCosmosL2Timeouts(stdCtx context.Context, cosmos Cosmos
 	cancelHeader()
 	if err != nil {
 		log.Printf("WARN [CosmosTimeoutScan] Failed to get L2 block header: %v", err)
-		deferTimeoutRetries(tracker, pending, time.Now(), "CosmosL2Timeout")
+		deferSharedTimeoutRetries(tracker, pending, time.Now(), "CosmosL2Timeout")
 		return
 	}
 	expired := pendingPacketsTimedOutAtTimestamp(pending, l2Head.Time)
@@ -93,18 +93,18 @@ func (s *Services) scanForCosmosL2Timeouts(stdCtx context.Context, cosmos Cosmos
 	update, err := recovery.BuildUpdate(stdCtx)
 	if err != nil {
 		log.Printf("WARN [CosmosTimeoutScan] Failed to build attested L2 client update: %v; deferring %d timeout(s) without charging", err, len(expired))
-		deferTimeoutRetries(tracker, expired, time.Now(), "CosmosL2Timeout")
+		deferSharedTimeoutRetries(tracker, expired, time.Now(), "CosmosL2Timeout")
 		return
 	}
 	if len(update.Payload) == 0 || update.Height == 0 || update.Timestamp == 0 {
 		log.Printf("WARN [CosmosTimeoutScan] Invalid attested L2 client update (payload=%d height=%d timestamp=%d); deferring %d timeout(s) without charging", len(update.Payload), update.Height, update.Timestamp, len(expired))
-		deferTimeoutRetries(tracker, expired, time.Now(), "CosmosL2Timeout")
+		deferSharedTimeoutRetries(tracker, expired, time.Now(), "CosmosL2Timeout")
 		return
 	}
 
 	expired = pendingPacketsTimedOutAtTimestamp(expired, update.Timestamp)
 	if len(expired) == 0 {
-		if err := tracker.ClearDeferralsIfCurrentBatch(pending); err != nil {
+		if err := tracker.ClearSharedDeferralsIfCurrentBatch(pending); err != nil {
 			log.Printf("ERROR [CosmosTimeoutScan][ATTENTION] failed to persist L2 not-due state: %v", err)
 		}
 		return
@@ -136,7 +136,7 @@ func (s *Services) scanForCosmosL2Timeouts(stdCtx context.Context, cosmos Cosmos
 	if len(timeoutMsgs) == 0 {
 		return
 	}
-	if err := tracker.ClearDeferralsIfCurrentBatch(processed); err != nil {
+	if err := tracker.ClearSharedDeferralsIfCurrentBatch(processed); err != nil {
 		log.Printf("ERROR [CosmosTimeoutScan][ATTENTION] failed to persist recovered L2 prerequisite state: %v", err)
 		return
 	}
@@ -144,7 +144,7 @@ func (s *Services) scanForCosmosL2Timeouts(stdCtx context.Context, cosmos Cosmos
 	updateMsg, err := wasmclient.BuildUpdateClient("", recovery.ClientID, update.Payload)
 	if err != nil {
 		log.Printf("WARN [CosmosTimeoutScan] Failed to wrap attested L2 update: %v", err)
-		deferTimeoutRetries(tracker, processed, time.Now(), "CosmosL2Timeout")
+		deferSharedTimeoutRetries(tracker, processed, time.Now(), "CosmosL2Timeout")
 		return
 	}
 	updateMsgs := []any{updateMsg}
