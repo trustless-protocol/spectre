@@ -168,6 +168,10 @@ type cosmosLiveHealth struct {
 	// this file exists to remove. A boundary cannot be wrong about that, because
 	// it describes the heights themselves rather than who is asking.
 	armFromHeight uint64
+	// observedHead is the highest chain head this subscription has read. A live
+	// event above it makes the live path read the head again before the event may
+	// move the recovery cursor (#575 L4).
+	observedHead uint64
 	// staleSince is when the CURRENT outage was first judged stale; zero when the
 	// live path is healthy. It survives a reconnect on purpose: the question the
 	// ladder answers is "how long has this been broken", not "how long since the
@@ -210,6 +214,13 @@ func (h *cosmosLiveHealth) establishArmFrom(latestHeight uint64) {
 // this subscription was running to deliver.
 func (h *cosmosLiveHealth) armsFromHeight(chunkEnd uint64) bool {
 	return h.armFromHeight != 0 && chunkEnd > h.armFromHeight
+}
+
+// observeHead records a chain head read. The value only grows.
+func (h *cosmosLiveHealth) observeHead(height uint64) {
+	if height > h.observedHead {
+		h.observedHead = height
+	}
 }
 
 func (h *cosmosLiveHealth) recordEvent() {
@@ -402,8 +413,15 @@ func (s *Subscriber) processLiveCosmosEvent(
 ) {
 	height := txHeightFromEvent(e.Data, e.Events)
 	if height > 0 && *nextRecoveryStartHeight > 0 && height > *nextRecoveryStartHeight {
-		stats, err := recoverCosmosEvents(stdCtx, ctx, batchBuilder, *nextRecoveryStartHeight, height-1, seenEvents)
-		if err != nil {
+		if head, ok := liveHeightAtOrBelowHead(stdCtx, ctx, liveHealth, height); !ok {
+			// The event's height comes from the RPC. Moving the cursor to a height
+			// the chain has not reached turned gap recovery and the stale watchdog
+			// off for as long as the head stayed below it (#575 L4). The cursor
+			// stays; the periodic pass still covers the gap, and the packets in the
+			// event are still processed below.
+			ctx.Logger.Printf("WARN [SubscribeCosmos] live event at height %d is above the chain head %d; "+
+				"the recovery cursor stays at %d", height, head, *nextRecoveryStartHeight)
+		} else if stats, err := recoverCosmosEvents(stdCtx, ctx, batchBuilder, *nextRecoveryStartHeight, height-1, seenEvents); err != nil {
 			ctx.Logger.Printf("WARN [SubscribeCosmos] gap recovery before live height %d failed: %v", height, err)
 		} else {
 			ctx.Logger.Printf("[SubscribeCosmos] gap recovery complete before live height %d: recovered=%d skipped=%d",
@@ -426,6 +444,25 @@ func (s *Subscriber) processLiveCosmosEvent(
 	if height > 0 {
 		pruneCosmosSeenEvents(seenEvents, height)
 	}
+}
+
+// liveHeightAtOrBelowHead reports whether a live event's height is one the chain
+// has reached, reading the head again only when the event is above the highest
+// head already observed. It returns the head it judged against.
+//
+// A failed read is a "no": the cursor must not move on an unconfirmed height,
+// and the periodic recovery pass covers the gap either way.
+func liveHeightAtOrBelowHead(stdCtx context.Context, ctx cosmosDeps, liveHealth *cosmosLiveHealth, height uint64) (uint64, bool) {
+	if height <= liveHealth.observedHead {
+		return liveHealth.observedHead, true
+	}
+	head, err := latestCosmosHeight(stdCtx, ctx)
+	if err != nil {
+		ctx.Logger.Printf("WARN [SubscribeCosmos] head read for live height %d failed: %v", height, err)
+		return liveHealth.observedHead, false
+	}
+	liveHealth.observeHead(head)
+	return liveHealth.observedHead, height <= liveHealth.observedHead
 }
 
 type cosmosEventKey struct {
@@ -521,6 +558,7 @@ func (s *Subscriber) recoverCosmosGapToLatest(
 	}
 	// The head this pass already read is the block-rate sample; see blockRate.
 	rate.observe(latestHeight, time.Now())
+	liveHealth.observeHead(latestHeight)
 
 	// The first head this subscription manages to read is its boundary: heights
 	// above it are the ones the live path was running to deliver. Establishing it

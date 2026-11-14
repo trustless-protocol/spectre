@@ -1290,6 +1290,50 @@ func TestProcessLiveCosmosEvent(t *testing.T) {
 		}
 	})
 
+	// #575 L4: one live event reporting a height the chain has not reached moved
+	// the recovery cursor there, and gap recovery and the stale watchdog stayed
+	// off until the head caught up or the process restarted.
+	t.Run("a live height above the chain head does not move the cursor", func(t *testing.T) {
+		deps, queries := emptyTxSearchCosmosDeps(t, "08-wasm-0", "eth-router-0")
+		s := NewSubscriber()
+		cursor := uint64(100)
+		health := &cosmosLiveHealth{}
+
+		s.processLiveCosmosEvent(context.Background(), deps, services.NewBatchBuilder(), &cursor,
+			map[cosmosEventKey]struct{}{}, health, liveEventAtHeight(1_000_000_000_000))
+
+		if cursor != 100 {
+			t.Fatalf("cursor moved to %d on a height %d blocks above the chain head", cursor, 1_000_000_000_000-emptyTxSearchHead)
+		}
+		if asked := queries.all(); len(asked) != 0 {
+			t.Fatalf("scanned %v up to an implausible height", asked)
+		}
+		if health.events != 1 {
+			t.Fatalf("live health recorded %d events, want the event still counted", health.events)
+		}
+
+		// The same subscription still moves the cursor for an event the chain has
+		// reached.
+		s.processLiveCosmosEvent(context.Background(), deps, services.NewBatchBuilder(), &cursor,
+			map[cosmosEventKey]struct{}{}, health, liveEventAtHeight(150))
+		if cursor != 150 {
+			t.Fatalf("cursor = %d after an event at 150 under the head %d, want 150", cursor, emptyTxSearchHead)
+		}
+	})
+
+	// A head that cannot be read cannot confirm the height, so the cursor stays.
+	t.Run("an unreadable head does not move the cursor", func(t *testing.T) {
+		deps := failingCosmosDeps(t, "08-wasm-0", "eth-router-0")
+		s := NewSubscriber()
+		cursor := uint64(100)
+
+		s.processLiveCosmosEvent(context.Background(), deps, services.NewBatchBuilder(), &cursor,
+			map[cosmosEventKey]struct{}{}, &cosmosLiveHealth{}, liveEventAtHeight(150))
+		if cursor != 100 {
+			t.Fatalf("cursor moved to %d without a head read to confirm the height", cursor)
+		}
+	})
+
 	// An event with no height still has to be processed: the packets in it are real.
 	// What must not happen is a prune keyed on height zero, which would compute a
 	// retention floor from nothing.
@@ -1336,6 +1380,9 @@ func (r *recordedQueries) all() []string {
 // emptyTxSearchCosmosDeps answers tx_search with a valid, empty result -- what a
 // node returns for a range containing no IBC transactions, which is the ordinary
 // case for most heights. It records every query it was asked.
+// emptyTxSearchHead is the chain head the empty-tx_search stub reports.
+const emptyTxSearchHead = uint64(1000)
+
 func emptyTxSearchCosmosDeps(t *testing.T, ethOnCosmos, cosmosOnEVM string) (cosmosDeps, *recordedQueries) {
 	t.Helper()
 	seen := &recordedQueries{}
@@ -1349,6 +1396,12 @@ func emptyTxSearchCosmosDeps(t *testing.T, ethOnCosmos, cosmosOnEVM string) (cos
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		w.Header().Set("Content-Type", "application/json")
+		if req.Method == "status" {
+			// The live path reads the head before a live event moves the cursor.
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(req.ID) +
+				`,"result":{"sync_info":{"latest_block_height":"` + strconv.FormatUint(emptyTxSearchHead, 10) + `"}}}`))
+			return
+		}
 		if req.Method != "tx_search" {
 			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(req.ID) +
 				`,"error":{"code":-32601,"message":"unexpected method ` + req.Method + `"}}`))
