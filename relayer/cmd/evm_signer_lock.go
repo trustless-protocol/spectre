@@ -240,8 +240,8 @@ func acquireEVMSignerLockKeys(keys []evmSignerLockKey) (release func(), err erro
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("EVM signer lock: create %q: %w", dir, err)
+	if err := ensureSignerLockDir(dir); err != nil {
+		return nil, fmt.Errorf("EVM %w", err)
 	}
 
 	files := make([]*os.File, 0, len(keys))
@@ -254,7 +254,7 @@ func acquireEVMSignerLockKeys(keys []evmSignerLockKey) (release func(), err erro
 
 	for _, key := range keys {
 		path := evmSignerLockPathForDir(dir, key)
-		file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+		file, err := openSignerLockFile(path)
 		if err != nil {
 			release()
 			return nil, fmt.Errorf("EVM signer lock: open %q: %w", path, err)
