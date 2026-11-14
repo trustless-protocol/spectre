@@ -113,6 +113,11 @@ func WithPeriodicUpdate(interval, initialDelay time.Duration, periodicUpdate Per
 		if initialDelay < 0 {
 			initialDelay = 0
 		}
+		// The first update is never later than one interval, whatever the caller
+		// derived it from (#575).
+		if initialDelay > interval {
+			initialDelay = interval
+		}
 		m.periodicUpdate = periodicUpdate
 		m.periodicUpdateInterval = interval
 		m.periodicUpdateInitialDelay = initialDelay

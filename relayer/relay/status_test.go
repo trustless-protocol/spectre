@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"relayer/chain"
 )
@@ -61,4 +62,23 @@ func TestStatus_ProbeErrorIsClassifiedAndRedacted(t *testing.T) {
 			t.Fatalf("the probe ran on a cancelled context (%v); a requester could force an error on demand", src.ctxErrOnCall)
 		}
 	})
+}
+
+// #575: the first periodic update is never later than one interval, whatever
+// the caller derived its delay from.
+func TestWithPeriodicUpdate_ClampsTheFirstDelay(t *testing.T) {
+	noop := func(context.Context) error { return nil }
+	for _, tc := range []struct {
+		delay, want time.Duration
+	}{
+		{delay: 48 * time.Hour, want: time.Hour},
+		{delay: -time.Minute, want: 0},
+		{delay: 10 * time.Minute, want: 10 * time.Minute},
+	} {
+		m := NewModule("cosmos->eth", "client-0", &mockSource{}, &mockDest{}, &mockBuilder{},
+			WithPeriodicUpdate(time.Hour, tc.delay, noop))
+		if m.periodicUpdateInitialDelay != tc.want {
+			t.Errorf("initial delay %s -> %s, want %s", tc.delay, m.periodicUpdateInitialDelay, tc.want)
+		}
+	}
 }

@@ -159,6 +159,11 @@ func TestRotationDueIn(t *testing.T) {
 	if got := rotationDueIn(anchor, time.Hour, now); got != 0 {
 		t.Fatalf("overdue = %v, want 0 (rotate now)", got)
 	}
+	// #575: an anchor in the future must not push the first rotation past one
+	// interval.
+	if got := rotationDueIn(now.Add(30*24*time.Hour), 15*time.Hour, now); got != 15*time.Hour {
+		t.Fatalf("future anchor = %v, want the interval 15h", got)
+	}
 }
 
 // The #541 client by the chain's clock: Active up to the last second of the

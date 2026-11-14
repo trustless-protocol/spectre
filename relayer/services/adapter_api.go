@@ -227,10 +227,18 @@ func (s *Services) PinnedSetRotationDueIn(stdCtx context.Context, cosmos CosmosE
 
 // rotationDueIn is the time left until anchor+interval, clamped to zero so an
 // overdue rotation fires immediately.
+//
+// The result is clamped to [0, interval] (#575). The anchor comes from the chain
+// and the RPC: an anchor in the future (clock skew, a wrong timestamp) used to push
+// the first rotation past one interval, which is the cadence that keeps the pinned
+// set from decaying.
 func rotationDueIn(anchor time.Time, interval time.Duration, now time.Time) time.Duration {
 	due := anchor.Add(interval).Sub(now)
-	if due < 0 {
+	switch {
+	case due < 0:
 		return 0
+	case due > interval:
+		return interval
 	}
 	return due
 }
