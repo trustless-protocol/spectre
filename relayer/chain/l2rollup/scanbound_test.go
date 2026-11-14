@@ -12,6 +12,7 @@ import (
 
 	"relayer/chain"
 
+	attestorpb "attestor/types/attestor"
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
 )
@@ -164,5 +165,44 @@ func TestSourceHead_RejectsANumberThatIsNotAUint64(t *testing.T) {
 	head, err := (&Source{eth: client, headKind: Unsafe}).head(context.Background())
 	if err == nil {
 		t.Fatalf("head = %d, want the oversized block number refused", head)
+	}
+}
+
+// panicClient is an attestor client that panics on an answer it cannot decode.
+type panicClient struct{ *fakeAttestor }
+
+func (panicClient) AttestedUpTo(context.Context, string, bool) (*attestorpb.AttestedRoot, bool, error) {
+	var m map[string]int
+	m["x"]++
+	return nil, false, nil
+}
+
+// A panic in one endpoint's client must count as that endpoint failing. The
+// quorum tolerates failed endpoints; a crashed process does not.
+func TestAttestedUpTo_APanickingEndpointIsAFailedEndpoint(t *testing.T) {
+	good := func(index uint16, height uint64) SigningAttestor {
+		return SigningAttestor{Index: index, Client: &fakeAttestor{root: &attestorpb.AttestedRoot{L2BlockNumber: height}, found: true}}
+	}
+	frontier, err := NewQuorumAttestationFrontier([]SigningAttestor{
+		good(0, 120), good(1, 110), {Index: 2, Client: panicClient{&fakeAttestor{}}},
+	}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, found, err := frontier.AttestedUpTo(context.Background(), "op-sepolia", false)
+	if err != nil || !found || root.GetL2BlockNumber() == 0 {
+		t.Fatalf("root=%v found=%v err=%v, want the two healthy endpoints to make the quorum", root, found, err)
+	}
+
+	// With only the panicking endpoint left to reach the threshold, it is a
+	// reported failure, not a crash.
+	frontier, err = NewQuorumAttestationFrontier([]SigningAttestor{
+		good(0, 120), {Index: 2, Client: panicClient{&fakeAttestor{}}},
+	}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := frontier.AttestedUpTo(context.Background(), "op-sepolia", false); err == nil || !strings.Contains(err.Error(), "panicked") {
+		t.Fatalf("err = %v, want the endpoint's panic reported as its failure", err)
 	}
 }

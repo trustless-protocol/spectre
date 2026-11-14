@@ -241,6 +241,9 @@ func TestLogLabelsStayOnTheAgreedList(t *testing.T) {
 		// lie -- the same reason start and create-clients sit here.
 		"status":         true,
 		"create-clients": true,
+		// A recovered panic, from whichever goroutine had it (#575). The line
+		// names the worker; the label names the mechanism, like [prover].
+		"workers": true,
 
 		// Deleted by #417 along with the unbound-header fallback it belongs to;
 		// touching it here would only conflict with that PR.

@@ -22,6 +22,7 @@ import (
 	"relayer/status"
 	"relayer/transaction"
 	utils "relayer/utils"
+	"relayer/workers"
 )
 
 // Start starts the relay service loop.
@@ -295,7 +296,10 @@ func Start(logger *zap.Logger) *cobra.Command {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					if err := status.Serve(relayCtx, cfg.StatusAddress, statusReg.Snapshot, controls); err != nil {
+					err := workers.Recover("status endpoint", func() error {
+						return status.Serve(relayCtx, cfg.StatusAddress, statusReg.Snapshot, controls)
+					})
+					if err != nil {
 						statusErrCh <- err
 					}
 				}()
@@ -350,7 +354,9 @@ func Start(logger *zap.Logger) *cobra.Command {
 				go func(svc *services.Services, deps services.RelayDeps, cleanup func()) {
 					defer wg.Done()
 					// Chain-adapter RelayModule engine — the sole relay engine.
-					err := runAdapterEngine(relayCtx, svc, deps, statusReg)
+					err := workers.Recover("cosmos<->eth engine", func() error {
+						return runAdapterEngine(relayCtx, svc, deps, statusReg)
+					})
 					releaseOrHold(logger, cleanup, &workersStuck, err, "cosmos_to_eth", deps.IDs.CosmosOnEVM)
 					if err != nil {
 						recordEngineErr(fmt.Errorf("cosmos_to_eth source %q: %w", deps.IDs.CosmosOnEVM, err))
@@ -458,7 +464,9 @@ func Start(logger *zap.Logger) *cobra.Command {
 				wg.Add(1)
 				go func(d builtL2Dest) {
 					defer wg.Done()
-					err := runCosmosToL2Engine(relayCtx, d.svc, d.deps, statusReg, d.timeoutRecovery, d.hasReturnLeg)
+					err := workers.Recover("cosmos->l2 engine", func() error {
+						return runCosmosToL2Engine(relayCtx, d.svc, d.deps, statusReg, d.timeoutRecovery, d.hasReturnLeg)
+					})
 					releaseOrHold(logger, d.cleanup, &workersStuck, err, "cosmos_to_l2", d.deps.IDs.CosmosOnEVM)
 					if err != nil {
 						recordEngineErr(fmt.Errorf("cosmos_to_l2 dest %q: %w", d.deps.IDs.CosmosOnEVM, err))
@@ -470,7 +478,9 @@ func Start(logger *zap.Logger) *cobra.Command {
 				wg.Add(1)
 				go func(module *relay.Module, cleanup func()) {
 					defer wg.Done()
-					err := runL2Engine(relayCtx, module, statusReg)
+					err := workers.Recover("l2->cosmos engine", func() error {
+						return runL2Engine(relayCtx, module, statusReg)
+					})
 					releaseOrHold(logger, cleanup, &workersStuck, err, "l2_to_cosmos", srcChain)
 					if err != nil {
 						recordEngineErr(fmt.Errorf("l2_to_cosmos source %q: %w", srcChain, err))

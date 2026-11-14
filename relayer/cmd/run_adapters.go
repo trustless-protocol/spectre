@@ -11,6 +11,7 @@ import (
 	"relayer/relay"
 	"relayer/services"
 	"relayer/status"
+	workergroup "relayer/workers"
 
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 )
@@ -195,10 +196,16 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	go svc.RunQueueReporter(runCtx)
+	reporterPanic := startQueueReporter(runCtx, cancel, svc)
 	errCh := make(chan error, 2)
-	go func() { errCh <- cosmosToEth.Run(runCtx) }()
-	go func() { errCh <- ethToCosmos.Run(runCtx) }()
+	// Run's own goroutine is not one of the module's workers, so it is recovered
+	// here: a panic in either direction becomes that direction's error.
+	go func() {
+		errCh <- workergroup.Recover("cosmos->eth module", func() error { return cosmosToEth.Run(runCtx) })
+	}()
+	go func() {
+		errCh <- workergroup.Recover("eth->cosmos module", func() error { return ethToCosmos.Run(runCtx) })
+	}()
 
 	first := <-errCh // first module to exit
 	cancel()         // stop the other
@@ -207,7 +214,36 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 	// BOTH results, not just the first -- see the contract on this function.
 	// Reading the second only to avoid a goroutine leak is what discarded the
 	// other direction's drain failure before it could be recorded.
-	return errors.Join(first, second)
+	return errors.Join(first, second, reporterPanic())
+}
+
+// startQueueReporter runs the queue reporter until ctx ends and returns a
+// function that reports whether it panicked.
+//
+// The reporter is what names stuck packets, so it must not stop unnoticed. A
+// panic in it cancels the engine, and the engine returns it as its error.
+func startQueueReporter(ctx context.Context, cancel context.CancelFunc, svc *services.Services) (panicked func() error) {
+	done := make(chan error, 1)
+	go func() {
+		err := workergroup.Recover("queue-reporter", func() error {
+			svc.RunQueueReporter(ctx)
+			return nil
+		})
+		// Sent before the cancel: by the time the cancellation has made the
+		// modules return, the error is already there to be read.
+		done <- err
+		if err != nil {
+			cancel()
+		}
+	}()
+	return func() error {
+		select {
+		case err := <-done:
+			return err
+		default:
+			return nil // still running: nothing to report, and nothing to wait on
+		}
+	}
 }
 
 // cosmosPendingSettlementGuard adapts the durable Cosmos terminal-tombstone

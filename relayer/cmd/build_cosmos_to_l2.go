@@ -250,9 +250,10 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps servi
 	reg.AddQueues(engineCosmosL2, svc.QueueStatus)
 	reg.AddReactivator(engineCosmosL2, svc.ReactivateDeadLetter)
 
-	go svc.RunQueueReporter(runCtx)
-	if err := module.Run(runCtx); err != nil && !errors.Is(err, context.Canceled) {
-		return err
+	reporterPanic := startQueueReporter(runCtx, cancel, svc)
+	err = module.Run(runCtx)
+	if errors.Is(err, context.Canceled) {
+		err = nil
 	}
-	return nil
+	return errors.Join(err, reporterPanic())
 }

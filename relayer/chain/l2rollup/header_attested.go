@@ -11,6 +11,7 @@ import (
 	attestorpb "attestor/types/attestor"
 	"relayer/chain"
 	relayerclient "relayer/client"
+	workergroup "relayer/workers"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -154,7 +155,14 @@ func (a *attestedHeaderBuilder) bindToAttestation(ctx context.Context, height ui
 	results := make(chan result, len(a.attestors))
 	for _, endpoint := range a.attestors {
 		go func(endpoint SigningAttestor) {
-			verdict, err := endpoint.Client.VerifyStateRoot(queryCtx, request)
+			var verdict SignedVerdict
+			// A panic in one endpoint's client is that endpoint's failure: the
+			// signature quorum below already tolerates failed endpoints.
+			err := workergroup.Recover(fmt.Sprintf("attestor %d verdict", endpoint.Index), func() error {
+				var err error
+				verdict, err = endpoint.Client.VerifyStateRoot(queryCtx, request)
+				return err
+			})
 			results <- result{index: endpoint.Index, verdict: verdict, err: err}
 		}(endpoint)
 	}

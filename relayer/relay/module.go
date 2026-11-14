@@ -241,11 +241,36 @@ func (m *Module) Run(ctx context.Context) error {
 		runErr = ctx.Err()
 	case err := <-subscribeErr:
 		runErr = err
+	case err := <-workers.Failed():
+		// A worker panicked and has stopped. Stop the rest rather than run on
+		// without it: a path with no flush loop or no refresh loop looks alive.
+		runErr = err
 	}
 	cancel()
 
-	if running := workers.Drain(workergroup.ShutdownDrainTimeout); len(running) > 0 {
-		return fmt.Errorf("relay %s: shutdown drain timed out after %s; workers still running: %v", m.name, workergroup.ShutdownDrainTimeout, running)
+	running := workers.Drain(workergroup.ShutdownDrainTimeout)
+	// A panic may also arrive while the others are stopping, so it is read again
+	// after the drain, once every worker that will report has.
+	var panicked error
+	if errors.Is(runErr, workergroup.ErrWorkerPanicked) {
+		panicked = runErr
+	} else {
+		select {
+		case panicked = <-workers.Failed():
+		default:
+		}
+	}
+	if len(running) > 0 {
+		stuck := fmt.Errorf("relay %s: shutdown drain timed out after %s; workers still running: %v", m.name, workergroup.ShutdownDrainTimeout, running)
+		// A panic is the usual reason a worker cannot stop: it left a mutex
+		// locked. Report the cause together with the symptom.
+		if panicked != nil {
+			return errors.Join(fmt.Errorf("relay %s: %w", m.name, panicked), stuck)
+		}
+		return stuck
+	}
+	if panicked != nil {
+		return fmt.Errorf("relay %s: %w", m.name, panicked)
 	}
 
 	// On SIGTERM the select above takes ctx.Done() and never reads subscribeErr,

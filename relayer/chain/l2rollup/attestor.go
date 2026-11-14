@@ -8,6 +8,7 @@ import (
 
 	attestorpb "attestor/types/attestor"
 	"relayer/chain"
+	workergroup "relayer/workers"
 )
 
 type attestorFailure struct {
@@ -147,7 +148,17 @@ func (q *quorumAttestationFrontier) AttestedUpTo(ctx context.Context, srcChain s
 	results := make(chan result, len(q.attestors))
 	for _, endpoint := range q.attestors {
 		go func(endpoint SigningAttestor) {
-			root, found, err := endpoint.Client.AttestedUpTo(queryCtx, srcChain, includeProvisional)
+			var (
+				root  *attestorpb.AttestedRoot
+				found bool
+			)
+			// A panic in one endpoint's client is that endpoint's failure, not the
+			// process's: the quorum below already tolerates failed endpoints.
+			err := workergroup.Recover(fmt.Sprintf("attestor %d frontier", endpoint.Index), func() error {
+				var err error
+				root, found, err = endpoint.Client.AttestedUpTo(queryCtx, srcChain, includeProvisional)
+				return err
+			})
 			results <- result{index: endpoint.Index, root: root, found: found, err: err}
 		}(endpoint)
 	}
