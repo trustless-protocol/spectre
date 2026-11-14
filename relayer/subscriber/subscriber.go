@@ -132,6 +132,12 @@ func advanceQuietScans(quietScans *uint64) bool {
 }
 
 const cosmosTxSearchPerPage = 100
+
+// maxCosmosTxSearchPages bounds one recovery query (#575). The loop pages until
+// it has read TotalCount results or a page comes back empty, and both come from
+// the RPC: a node answering a huge total with a full page every time kept the
+// loop going for ever. 1000 pages is 100,000 transactions in one recovery chunk.
+const maxCosmosTxSearchPages = 1000
 const cosmosSeenEventRetentionHeights uint64 = 2_000
 
 const ethRecoveryChunkEnv = "ETH_RECOVERY_CHUNK_BLOCKS"

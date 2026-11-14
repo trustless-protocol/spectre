@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1905,5 +1906,48 @@ func TestRecoverCosmosEventsForQuery_TxSearchHonorsCancellation(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("TxSearch ignored cancellation")
+	}
+}
+
+// #575: the recovery loop paged until it had read TotalCount results or got an
+// empty page, and the RPC decides both. A node that answered a full page with a
+// huge total every time kept the loop going for ever.
+func TestRecoverCosmosEventsForQuery_StopsAtThePageCap(t *testing.T) {
+	var pages atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID json.RawMessage `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		pages.Add(1)
+		// One unrelated transaction per page, and a total that never runs out.
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(req.ID) +
+			`,"result":{"txs":[{"hash":"00","height":"5","index":0,"tx_result":{"code":0,"events":[]},"tx":""}],"total_count":"1000000000"}}`))
+	}))
+	t.Cleanup(server.Close)
+	client, err := rpchttp.New(server.URL, "/websocket")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := cosmosTestDeps("08-wasm-0", "eth-router-0")
+	deps.Cosmos = services.CosmosEndpoint{Client: client}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := recoverCosmosEventsForQuery(context.Background(), deps, services.NewBatchBuilder(),
+			"send_packet.packet_source_client EXISTS", 1, 10, map[cosmosEventKey]struct{}{})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "pages") {
+			t.Fatalf("err = %v, want the page cap reported", err)
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatal("the recovery query kept paging")
+	}
+	if got := pages.Load(); got != maxCosmosTxSearchPages {
+		t.Fatalf("asked for %d pages, want the cap %d", got, maxCosmosTxSearchPages)
 	}
 }

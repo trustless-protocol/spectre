@@ -748,6 +748,11 @@ func recoverCosmosEventsForQuery(
 	query := cosmosTxSearchQuery(baseQuery, startHeight, endHeight)
 
 	for {
+		if page > maxCosmosTxSearchPages {
+			// An error, so the cursor does not move past heights not fully read.
+			return stats, fmt.Errorf("TxSearch query %q is still returning results after %d pages; "+
+				"lower %s to scan fewer heights per query", query, maxCosmosTxSearchPages, cosmosRecoveryChunkEnv)
+		}
 		rpcCtx, cancel := context.WithTimeout(stdCtx, subscriberRPCTimeout)
 		result, err := ctx.Cosmos.CosmosClient().TxSearch(rpcCtx, query, false, &page, &perPage, "asc")
 		cancel()
