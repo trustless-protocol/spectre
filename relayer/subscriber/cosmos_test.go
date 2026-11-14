@@ -205,6 +205,44 @@ func TestCosmosPacketMatchesConfiguredClient(t *testing.T) {
 			want: true,
 		},
 		{
+			name:           "a Cosmos send on the configured pair",
+			ethClientID:    "08-wasm-0",
+			routerClientID: "cosmoshub-1",
+			packet:         &channeltypesv2.Packet{SourceClient: "08-wasm-0", DestinationClient: "cosmoshub-1"},
+			want:           true,
+		},
+		{
+			name:           "an EVM send on the configured pair",
+			ethClientID:    "08-wasm-0",
+			routerClientID: "cosmoshub-1",
+			packet:         &channeltypesv2.Packet{SourceClient: "cosmoshub-1", DestinationClient: "08-wasm-0"},
+			want:           true,
+		},
+		// #575: with both ids configured, one matching end is not enough. A client
+		// anyone created on Cosmos, with a counterparty named like ours, must not
+		// get its packets relayed (each one cost a client update).
+		{
+			name:           "a foreign client sending to our counterparty id",
+			ethClientID:    "08-wasm-0",
+			routerClientID: "cosmoshub-1",
+			packet:         &channeltypesv2.Packet{SourceClient: "07-tendermint-9", DestinationClient: "cosmoshub-1"},
+			want:           false,
+		},
+		{
+			name:           "our client sending to a foreign counterparty",
+			ethClientID:    "08-wasm-0",
+			routerClientID: "cosmoshub-1",
+			packet:         &channeltypesv2.Packet{SourceClient: "08-wasm-0", DestinationClient: "attacker-client"},
+			want:           false,
+		},
+		{
+			name:           "a foreign client acknowledging into ours",
+			ethClientID:    "08-wasm-0",
+			routerClientID: "cosmoshub-1",
+			packet:         &channeltypesv2.Packet{SourceClient: "attacker-client", DestinationClient: "08-wasm-0"},
+			want:           false,
+		},
+		{
 			name:        "destination matches eth client",
 			ethClientID: "08-wasm-0",
 			packet: &channeltypesv2.Packet{
@@ -914,7 +952,7 @@ func TestEnqueueCosmosPackets(t *testing.T) {
 		seen := map[cosmosEventKey]struct{}{}
 
 		stats, err := enqueueCosmosPackets(context.Background(), cosmosTestDeps(ethOnCosmos, cosmosOnEVM), bb,
-			[]services.CosmosPacket{cosmosTestPacket(1, "cosmos-client", cosmosOnEVM)}, seen, false)
+			[]services.CosmosPacket{cosmosTestPacket(1, ethOnCosmos, cosmosOnEVM)}, seen, false)
 		if err != nil {
 			t.Fatalf("enqueue: %v", err)
 		}
@@ -934,8 +972,8 @@ func TestEnqueueCosmosPackets(t *testing.T) {
 	// second time. The entry then stays pending for the life of the process.
 	t.Run("a send settled later in the same pass is removed from the queue too", func(t *testing.T) {
 		bb := services.NewBatchBuilder()
-		send := cosmosTestPacket(7, "cosmos-client", cosmosOnEVM)
-		settled := cosmosTestPacket(7, "cosmos-client", cosmosOnEVM)
+		send := cosmosTestPacket(7, ethOnCosmos, cosmosOnEVM)
+		settled := cosmosTestPacket(7, ethOnCosmos, cosmosOnEVM)
 		settled.Type = services.CosmosAcknowledged
 
 		if _, err := enqueueCosmosPackets(context.Background(), cosmosTestDeps(ethOnCosmos, cosmosOnEVM), bb,
@@ -964,7 +1002,7 @@ func TestEnqueueCosmosPackets(t *testing.T) {
 			settledOwed = append(settledOwed, p.Sequence)
 		})
 
-		packet := cosmosTestPacket(9, "cosmos-client", cosmosOnEVM)
+		packet := cosmosTestPacket(9, ethOnCosmos, cosmosOnEVM)
 		packet.Type = services.CosmosAcknowledged
 		bb.PendingTracker.Add(*packet.Packet, 40)
 
@@ -985,7 +1023,7 @@ func TestEnqueueCosmosPackets(t *testing.T) {
 	// with nothing left to do -- it would be proven, submitted, and rejected.
 	t.Run("a terminal acknowledge_packet settles the tracker and never reaches the batch", func(t *testing.T) {
 		bb := services.NewBatchBuilder()
-		packet := cosmosTestPacket(1, "cosmos-client", cosmosOnEVM)
+		packet := cosmosTestPacket(1, ethOnCosmos, cosmosOnEVM)
 		packet.Type = services.CosmosAcknowledged
 		bb.PendingTracker.Add(*packet.Packet, 40)
 		if bb.PendingTracker.Len() != 1 {
@@ -1027,10 +1065,28 @@ func TestEnqueueCosmosPackets(t *testing.T) {
 		}
 	})
 
-	t.Run("matches on either side of either configured client", func(t *testing.T) {
-		// The four ways a packet can belong to this relayer's path. Missing one
+	t.Run("matches both orientations of the configured pair", func(t *testing.T) {
+		// The two ways a packet belongs to this relayer's path. Missing one
 		// silently drops a whole direction -- an ack travels with the clients
 		// swapped relative to the send it answers.
+		for name, packet := range map[string]services.CosmosPacket{
+			"a Cosmos send (eth client -> router client)": cosmosTestPacket(1, ethOnCosmos, cosmosOnEVM),
+			"an EVM send (router client -> eth client)":   cosmosTestPacket(2, cosmosOnEVM, ethOnCosmos),
+		} {
+			t.Run(name, func(t *testing.T) {
+				bb := services.NewBatchBuilder()
+				stats, err := enqueueCosmosPackets(context.Background(), cosmosTestDeps(ethOnCosmos, cosmosOnEVM), bb,
+					[]services.CosmosPacket{packet}, map[cosmosEventKey]struct{}{}, false)
+				if err != nil || stats.recovered != 1 {
+					t.Fatalf("stats = %+v, err = %v; want recovered=1", stats, err)
+				}
+			})
+		}
+	})
+
+	// #575: one matching end used to be enough. A packet between this path's
+	// client and any other client is another pair's packet.
+	t.Run("skips a packet with only one end on the configured pair", func(t *testing.T) {
 		for name, packet := range map[string]services.CosmosPacket{
 			"source is the eth client":         cosmosTestPacket(1, ethOnCosmos, "x"),
 			"destination is the eth client":    cosmosTestPacket(2, "x", ethOnCosmos),
@@ -1041,8 +1097,11 @@ func TestEnqueueCosmosPackets(t *testing.T) {
 				bb := services.NewBatchBuilder()
 				stats, err := enqueueCosmosPackets(context.Background(), cosmosTestDeps(ethOnCosmos, cosmosOnEVM), bb,
 					[]services.CosmosPacket{packet}, map[cosmosEventKey]struct{}{}, false)
-				if err != nil || stats.recovered != 1 {
-					t.Fatalf("stats = %+v, err = %v; want recovered=1", stats, err)
+				if err != nil || stats.skipped != 1 || stats.recovered != 0 {
+					t.Fatalf("stats = %+v, err = %v; want skipped=1", stats, err)
+				}
+				if cosmos, _ := bb.QueueDepths(); cosmos != 0 {
+					t.Fatalf("queued %d packet(s) from another client pair", cosmos)
 				}
 			})
 		}
@@ -1066,7 +1125,7 @@ func TestEnqueueCosmosPackets(t *testing.T) {
 		// a submission the destination rejects.
 		bb := services.NewBatchBuilder()
 		seen := map[cosmosEventKey]struct{}{}
-		packet := cosmosTestPacket(1, "cosmos-client", cosmosOnEVM)
+		packet := cosmosTestPacket(1, ethOnCosmos, cosmosOnEVM)
 
 		for i := 0; i < 3; i++ {
 			if _, err := enqueueCosmosPackets(context.Background(), cosmosTestDeps(ethOnCosmos, cosmosOnEVM), bb,
@@ -1081,7 +1140,7 @@ func TestEnqueueCosmosPackets(t *testing.T) {
 
 	t.Run("an enqueued packet is recorded, which is what the dedupe above rests on", func(t *testing.T) {
 		seen := map[cosmosEventKey]struct{}{}
-		packet := cosmosTestPacket(1, "cosmos-client", cosmosOnEVM)
+		packet := cosmosTestPacket(1, ethOnCosmos, cosmosOnEVM)
 		bb := services.NewBatchBuilder()
 
 		if _, err := enqueueCosmosPackets(context.Background(), cosmosTestDeps(ethOnCosmos, cosmosOnEVM), bb,
@@ -1107,7 +1166,7 @@ func TestEnqueueCosmosPackets(t *testing.T) {
 		// here with no server standing in for the chain.
 		seen := map[cosmosEventKey]struct{}{}
 		bb := services.NewBatchBuilder()
-		packet := cosmosTestPacket(1, "cosmos-client", cosmosOnEVM)
+		packet := cosmosTestPacket(1, ethOnCosmos, cosmosOnEVM)
 		packet.Type = services.CosmosTimeout
 
 		stats, err := enqueueCosmosPackets(context.Background(), cosmosTestDeps(ethOnCosmos, cosmosOnEVM), bb,

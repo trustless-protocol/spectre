@@ -1042,14 +1042,22 @@ func cosmosPacketMatchesConfiguredClient(ctx cosmosDeps, packet *channeltypesv2.
 
 	ethClientID := ctx.IDs.EVMOnCosmos
 	routerClientID := ctx.IDs.CosmosOnEVM
-	if ethClientID == "" && routerClientID == "" {
+	switch {
+	case ethClientID == "" && routerClientID == "":
 		return true
+	case ethClientID == "":
+		return packet.SourceClient == routerClientID || packet.DestinationClient == routerClientID
+	case routerClientID == "":
+		return packet.SourceClient == ethClientID || packet.DestinationClient == ethClientID
 	}
 
-	return packet.SourceClient == ethClientID ||
-		packet.DestinationClient == ethClientID ||
-		packet.SourceClient == routerClientID ||
-		packet.DestinationClient == routerClientID
+	// Both ends, as the EVM and L2 sources filter (#575). Matching either one let a
+	// packet between this path's client and any other client in: with
+	// permissionless client creation, anyone can create a Cosmos client whose
+	// counterparty is named like ours, and each such packet cost a client update
+	// before its proof was refused.
+	return (packet.SourceClient == ethClientID && packet.DestinationClient == routerClientID) ||
+		(packet.SourceClient == routerClientID && packet.DestinationClient == ethClientID)
 }
 
 func shouldEnqueueRecoveredCosmosPacket(stdCtx context.Context, ctx cosmosDeps, packet services.CosmosPacket) (bool, error) {
