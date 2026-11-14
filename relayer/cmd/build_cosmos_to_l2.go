@@ -180,7 +180,7 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps servi
 		}
 		svc.UntrackCosmosPending(pkt)
 	}
-	isCosmosPendingSettled, markCosmosPendingSettled := cosmosPendingSettlementGuard(svc, "cosmos->l2")
+	isCosmosPendingSettled := cosmosPendingSettlementGuard(svc, "cosmos->l2")
 
 	// Pinned-set rotation cadence from the on-chain trusting period (a derivation
 	// failure is FATAL, as in the Cosmos→ETH path, so the client can't silently expire).
@@ -206,7 +206,7 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps servi
 		// age is the "cosmos-on-evm" figure -- same slot the ETH path fills.
 		relay.WithClientUpdateObserver(svc.ObserveCosmosOnEVMUpdate),
 		relay.WithPacketTracker(trackCosmosPending, untrackCosmosPending),
-		relay.WithPendingSettlementGuard(isCosmosPendingSettled, markCosmosPendingSettled),
+		relay.WithPendingSettlementGuard(isCosmosPendingSettled),
 		relay.WithPeriodicUpdate(periodicUpdateInterval, initialRotationDelay, func(c context.Context) error {
 			return svc.RotatePinnedSet(c, deps.Cosmos, deps.EVM, deps.IDs.CosmosOnEVM)
 		}),

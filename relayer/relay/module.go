@@ -102,7 +102,6 @@ type Module struct {
 	track               TrackFunc
 	untrack             UntrackFunc
 	pendingSettled      PendingSettledFunc
-	markPendingSettled  MarkPendingSettledFunc
 	observeClientUpdate ClientUpdateObserver
 	// dropped holds packets out of the relay path after a permanent failure
 	// (nil: a drop lasts only until the next flush pass). See dropped.go.

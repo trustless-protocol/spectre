@@ -83,17 +83,6 @@ func (s *Services) CosmosPendingSettled(packet channeltypesv2.Packet) bool {
 	return s.BatchBuilder.PendingTracker.IsSettled(packet)
 }
 
-// MarkCosmosPendingSettled records a terminal Cosmos event and removes its
-// matching pending entry atomically. False means persistence failed; callers
-// should log the failure, but must not relay a packet already known settled.
-func (s *Services) MarkCosmosPendingSettled(packet channeltypesv2.Packet) bool {
-	if err := s.BatchBuilder.PendingTracker.MarkSettled(packet); err != nil {
-		log.Printf("ERROR [PendingTracker][ATTENTION] failed to persist terminal Cosmos settlement seq=%d: %v", packet.Sequence, err)
-		return false
-	}
-	return true
-}
-
 // UntrackCosmosPending removes a Cosmos-origin packet from the pending tracker
 // once it has been successfully received on ETH — it can no longer time out, so
 // the timeout scanner need not keep querying its receipt. If persistence fails,

@@ -73,7 +73,7 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 		}
 		svc.UntrackCosmosPending(pkt)
 	}
-	isCosmosPendingSettled, markCosmosPendingSettled := cosmosPendingSettlementGuard(svc, "cosmos->eth")
+	isCosmosPendingSettled := cosmosPendingSettlementGuard(svc, "cosmos->eth")
 
 	// Pinned-set rotation cadence, derived from the on-chain trusting period. A
 	// derivation failure is FATAL: an unsafe or underivable interval must be
@@ -139,7 +139,7 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 			svc.ScanCosmosTimeouts(c, deps.Cosmos, deps.EVM, deps.IDs.EVMOnCosmos)
 		}),
 		relay.WithPacketTracker(trackCosmosPending, untrackCosmosPending),
-		relay.WithPendingSettlementGuard(isCosmosPendingSettled, markCosmosPendingSettled),
+		relay.WithPendingSettlementGuard(isCosmosPendingSettled),
 		relay.WithDropLedger(cosmosToEthDrops),
 		// Name the acknowledgements that never come back. The wait tracker only
 		// follows packets it OBSERVED, so an ack written while this process was
@@ -249,22 +249,15 @@ func startQueueReporter(ctx context.Context, cancel context.CancelFunc, svc *ser
 // cosmosPendingSettlementGuard adapts the durable Cosmos terminal-tombstone
 // tracker to the generic relay module. Both Cosmos->EVM engines use it because
 // they share SubscribeCosmos and its handoff race.
-func cosmosPendingSettlementGuard(svc *services.Services, label string) (relay.PendingSettledFunc, relay.MarkPendingSettledFunc) {
-	decode := func(raw []byte) (channeltypesv2.Packet, bool) {
+func cosmosPendingSettlementGuard(svc *services.Services, label string) relay.PendingSettledFunc {
+	return func(raw []byte) bool {
 		var pkt channeltypesv2.Packet
 		if err := pkt.Unmarshal(raw); err != nil {
 			log.Printf("ERROR [%s Relay] pending-settlement guard: decode packet: %v", label, err)
-			return channeltypesv2.Packet{}, false
+			return false
 		}
-		return pkt, true
+		return svc.CosmosPendingSettled(pkt)
 	}
-	return func(raw []byte) bool {
-			pkt, ok := decode(raw)
-			return ok && svc.CosmosPendingSettled(pkt)
-		}, func(raw []byte) bool {
-			pkt, ok := decode(raw)
-			return ok && svc.MarkCosmosPendingSettled(pkt)
-		}
 }
 
 // ackWatchHooks builds the record/settle pair for one ledger.

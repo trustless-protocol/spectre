@@ -57,6 +57,14 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 	// race this handoff, so first consult the durable terminal tombstone and the
 	// destination, then check the tombstone again after Add. Only SendPacket opens
 	// a receive that can time out; Add is idempotent.
+	//
+	// The destination answer only skips this pass. On an EVM or L2 destination it
+	// is a read at `latest`, which a reorg can undo, so it must not write the
+	// terminal tombstone: that removed the pending record, and a receipt that then
+	// disappeared left the send with no timeout refund from this relayer for the
+	// tombstone's 30 days (#575 L1). Only the terminal Cosmos event, which is
+	// final, writes it (SubscribeCosmos). A send skipped here is offered again by
+	// the flush backstop for as long as its Cosmos commitment is outstanding.
 	trackFailed := make([]bool, len(events))
 	// skippedSettled marks an event this pass neither relays nor re-queues: it
 	// is settled, or the drop ledger holds it after a permanent failure.
@@ -76,10 +84,6 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 			log.Printf("WARN [%s Relay] settlement check for %s seq=%d: %v; relaying anyway",
 				m.name, e.Type, e.Sequence, err)
 		} else if settled {
-			if e.Type == chain.SendPacket && m.markPendingSettled != nil && !m.markPendingSettled(e.Raw) {
-				log.Printf("ERROR [%s Relay][ATTENTION] packet %s seq=%d is settled but its terminal tombstone was not persisted",
-					m.name, e.Type, e.Sequence)
-			}
 			log.Printf("[%s Relay] skipping settled packet %s seq=%d before proof", m.name, e.Type, e.Sequence)
 			m.clearDrop(e.Type, e.Raw)
 			skippedSettled[i] = true

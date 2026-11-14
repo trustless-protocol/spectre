@@ -37,11 +37,6 @@ type UntrackFunc func(packet []byte)
 // where a terminal event and the batch handler run concurrently.
 type PendingSettledFunc func(packet []byte) bool
 
-// MarkPendingSettledFunc persists a settlement learned from a destination check.
-// It returns false only when durable persistence failed; callers still skip the
-// known-settled packet and log the degraded persistence separately.
-type MarkPendingSettledFunc func(packet []byte) bool
-
 // ClientUpdateObserver records the source-chain timestamp trusted by a client
 // after an update is submitted or the builder confirms it is current.
 type ClientUpdateObserver func(trustedAt time.Time)
@@ -84,14 +79,14 @@ func WithPacketTracker(track TrackFunc, untrack UntrackFunc) Option {
 	}
 }
 
-// WithPendingSettlementGuard wires the durable terminal-tombstone operations for
-// a packet tracker. It is paired with WithPacketTracker on paths whose source can
+// WithPendingSettlementGuard wires the durable terminal-tombstone check for a
+// packet tracker. It is paired with WithPacketTracker on paths whose source can
 // emit a terminal event while a packet is already handed to handleBatch.
-func WithPendingSettlementGuard(isSettled PendingSettledFunc, markSettled MarkPendingSettledFunc) Option {
-	return func(m *Module) {
-		m.pendingSettled = isSettled
-		m.markPendingSettled = markSettled
-	}
+//
+// It only reads the tombstone. The tombstone is written by the terminal source
+// event, never from a destination read (see handleBatchLocked, #575 L1).
+func WithPendingSettlementGuard(isSettled PendingSettledFunc) Option {
+	return func(m *Module) { m.pendingSettled = isSettled }
 }
 
 // WithClientUpdateObserver exposes successful client progress to observability
