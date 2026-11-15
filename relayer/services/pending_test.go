@@ -1070,6 +1070,43 @@ func TestClearSharedDeferrals_KeepsThePacketsOwnDeferrals(t *testing.T) {
 	}
 }
 
+// A dead letter that returns after deadLetterRetention starts with no deferrals
+// of either kind. Its shared count used to survive the return, and the first
+// recovered prerequisite subtracted it from the deferrals the packet took after
+// coming back: its backoff restarted at the first rung (#575 L3).
+func TestDeadLetterReturn_ClearsSharedDeferrals(t *testing.T) {
+	tracker, pkt := trackerWith(t, 32)
+	now := time.Now()
+	for i := 0; i < 3; i++ {
+		tracker.deferSharedTimeoutRetryForTest(pkt.SourceClient, pkt.Sequence, now)
+	}
+	for i := 0; i <= maxTimeoutAttempts; i++ {
+		tracker.recordTimeoutFailureForTest(pkt.SourceClient, pkt.Sequence, now)
+	}
+	if got := tracker.DeadLetteredTimeouts(); got != 1 {
+		t.Fatalf("dead-lettered = %d, want 1", got)
+	}
+	tracker.mtx.Lock()
+	tracker.deadLettered[0].DeadLetteredAt = now.Add(-deadLetterRetention)
+	tracker.mtx.Unlock()
+	if err := tracker.PurgeStaleWithoutTimeout(time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := tracker.currentPacketForTest(pkt.SourceClient, pkt.Sequence)
+	if !ok || got.Deferrals != 0 || got.SharedDeferrals != 0 {
+		t.Fatalf("returned packet: tracked=%v deferrals=%d shared=%d, want 0 and 0", ok, got.Deferrals, got.SharedDeferrals)
+	}
+
+	// Its own deferrals after the return survive the next recovered prerequisite.
+	for i := 0; i < 2; i++ {
+		tracker.deferTimeoutRetryForTest(pkt.SourceClient, pkt.Sequence, now)
+	}
+	tracker.clearSharedDeferralsForTest(pkt.SourceClient, pkt.Sequence)
+	if got, _ := tracker.currentPacketForTest(pkt.SourceClient, pkt.Sequence); got.Deferrals != 2 {
+		t.Fatalf("deferrals after a recovered prerequisite = %d, want the packet's own 2", got.Deferrals)
+	}
+}
+
 func settledTestPacket(sequence uint64, payload []byte) channeltypesv2.Packet {
 	return channeltypesv2.Packet{
 		SourceClient: "08-wasm-0", DestinationClient: "cosmoshub-1", Sequence: sequence, TimeoutTimestamp: 1_900_000_000,

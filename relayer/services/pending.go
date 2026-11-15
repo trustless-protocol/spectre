@@ -1106,7 +1106,11 @@ func (t *PendingPacketTracker) purgeStaleWithoutTimeoutLocked(now time.Time, max
 		key := packetKey{sourceClient: info.Packet.SourceClient, sequence: info.Packet.Sequence}
 		delete(t.deadLetteredByKey, key)
 		info.TimeoutAttempts = 0
+		// Both counts, or the shared part outlives the total it is part of and
+		// the next recovered prerequisite subtracts it from deferrals the packet
+		// takes after this (#575 L3).
 		info.Deferrals = 0
+		info.SharedDeferrals = 0
 		info.NotBefore = time.Time{}
 		info.DeadLetteredAt = time.Time{}
 		info.ObservedAt = now
