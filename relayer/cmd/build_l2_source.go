@@ -282,7 +282,7 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 	// account proof, and nothing about that is chain-specific any more. It takes the
 	// same endpoint set the source gates heights on, so the block it packages is
 	// bound to a threshold of replicas that independently recognise that height.
-	headerBuilder, err := l2rollup.NewAttestedHeaderBuilder(l2, router, chainID, cfg.Attestors, signingAttestors, cfg.AttestorSrcChain, headKind.RunMode(), fmt.Sprintf("l2-%s", cfg.kind))
+	headerBuilder, err := l2rollup.NewAttestedHeaderBuilder(l2, router, chainID, cfg.Attestors, signingAttestors, cfg.AttestorSrcChain, headKind.RunMode(), includeProvisional, fmt.Sprintf("l2-%s", cfg.kind))
 	if err != nil {
 		l2.Close()
 		if stopErr := cosmosClient.Stop(); stopErr != nil {

@@ -3,9 +3,13 @@ package l2rollup
 import (
 	"context"
 	"crypto/ed25519"
+	"errors"
 	"fmt"
+	"log"
 	"math/big"
 	"sort"
+	"strings"
+	"time"
 
 	"attestor/types/attestation"
 	attestorpb "attestor/types/attestor"
@@ -13,10 +17,16 @@ import (
 	relayerclient "relayer/client"
 	workergroup "relayer/workers"
 
+	ethereum "github.com/ethereum/go-ethereum"
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
 )
+
+// stepDownFrontierTimeout bounds the frontier round of a step-down. The answers
+// only order the attempts, so an endpoint slow to answer is left out rather than
+// waited for. A var only so tests can shorten it.
+var stepDownFrontierTimeout = 5 * time.Second
 
 // attestedHeaderBuilder assembles the only header shape the attestor-trusted L2
 // clients accept: the canonical L2 execution header at the target height, plus an
@@ -42,7 +52,10 @@ type attestedHeaderBuilder struct {
 	setHash   [attestation.HashLength]byte
 	srcChain  string             // attestor src_chain key, same as the source's
 	runMode   attestorpb.RunMode // replica head the attestor must answer against
-	name      string             // registry builder name, for logs and errors
+	// includeProvisional is the source's frontier policy, so a step-down asks for
+	// the same frontiers the source gates on.
+	includeProvisional bool
+	name               string // registry builder name, for logs and errors
 }
 
 // SigningAttestor is one reachable attestor endpoint assigned to its immutable
@@ -55,7 +68,9 @@ type SigningAttestor struct {
 // NewAttestedHeaderBuilder wires the builder to all configured signing attestors.
 // The endpoint list may contain more than the threshold to provide availability;
 // each emitted update carries exactly threshold valid signatures in index order.
-func NewAttestedHeaderBuilder(l2 *ethclient.Client, router ethcommon.Address, chainID uint64, set attestation.AttestorConfig, attestors []SigningAttestor, srcChain string, runMode attestorpb.RunMode, name string) (HeaderBuilder, error) {
+// includeProvisional must be the source's (NewSource): a step-down asks the
+// endpoints for the frontiers the source gates on.
+func NewAttestedHeaderBuilder(l2 *ethclient.Client, router ethcommon.Address, chainID uint64, set attestation.AttestorConfig, attestors []SigningAttestor, srcChain string, runMode attestorpb.RunMode, includeProvisional bool, name string) (HeaderBuilder, error) {
 	if l2 == nil {
 		return nil, fmt.Errorf("%s: L2 client must not be nil", name)
 	}
@@ -90,37 +105,167 @@ func NewAttestedHeaderBuilder(l2 *ethclient.Client, router ethcommon.Address, ch
 	if err != nil {
 		return nil, fmt.Errorf("%s: derive attestor set hash: %w", name, err)
 	}
-	return &attestedHeaderBuilder{l2: l2, router: router, chainID: chainID, set: set, setHash: setHash, attestors: ordered, srcChain: srcChain, runMode: runMode, name: name}, nil
+	return &attestedHeaderBuilder{l2: l2, router: router, chainID: chainID, set: set, setHash: setHash, attestors: ordered, srcChain: srcChain, runMode: runMode, includeProvisional: includeProvisional, name: name}, nil
 }
 
 func (a *attestedHeaderBuilder) Name() string { return a.name }
 
-// BuildHeader returns the header for exactly request.Height. Unlike the settlement
-// builders, there is no step-down: those had to commit whatever L2 block the newest
-// proven game or assertion covered, which could be far below the request. Here the
-// header IS the canonical block at the requested height, so the committed height
-// always equals the requested one and the caller advances by it directly.
+// BuildHeader returns the header for request.Height or, when threshold attestors
+// cannot sign that block, for the highest attestor frontier below it that they do
+// sign. The header is the canonical block at the height it returns.
+//
+// The request comes from Source.RelayableHeight: the threshold-th highest of the
+// endpoints' frontier answers, which are not signed. One endpoint that reports
+// more than its replica holds (faulty, or rewritten on the plaintext gRPC path)
+// lifts that answer to a block only threshold-1 honest replicas have reached, and
+// the signatures fall short there whenever the honest frontiers differ (#575). A
+// step-down costs one signature round per such endpoint; starting from the
+// threshold-th highest still keeps one low endpoint from pinning the client.
+//
+// The returned height is then below the request. The caller advances by it, and
+// packets above it wait for the next update (see HeaderBuilder).
 func (a *attestedHeaderBuilder) BuildHeader(ctx context.Context, request HeaderRequest) (ClientMessage, uint64, error) {
-	height := new(big.Int).SetUint64(request.Height)
-
-	l2Header, err := a.l2.HeaderByNumber(ctx, height)
-	if err != nil {
-		return nil, 0, fmt.Errorf("%s: L2 header at %d: %w", a.name, request.Height, err)
+	height := request.Height
+	l2Header, signatures, err := a.signedHeaderAt(ctx, height)
+	if err != nil && stepDownMayHelp(err) {
+		height, l2Header, signatures, err = a.stepDown(ctx, height, err)
 	}
-	signatures, err := a.bindToAttestation(ctx, request.Height, l2Header)
 	if err != nil {
 		return nil, 0, err
 	}
-	routerProof, err := relayerclient.EthGetProof(ctx, a.l2, a.router, nil, height)
+	routerProof, err := relayerclient.EthGetProof(ctx, a.l2, a.router, nil, new(big.Int).SetUint64(height))
 	if err != nil {
-		return nil, 0, fmt.Errorf("%s: router proof at L2 height %d: %w", a.name, request.Height, err)
+		return nil, 0, fmt.Errorf("%s: router proof at L2 height %d: %w", a.name, height, err)
 	}
 
 	return &SignedAttestedL2Header{
 		L2Header:          toCanonicalHeader(l2Header),
 		RouterProof:       EvmAccountProof{Proof: routerProof.AccountProof},
 		AttestorSignature: signatures,
-	}, request.Height, nil
+	}, height, nil
+}
+
+// signedHeaderAt reads the canonical L2 header at height and binds it to
+// threshold attestor signatures.
+func (a *attestedHeaderBuilder) signedHeaderAt(ctx context.Context, height uint64) (*types.Header, []IndexedAttestorSignature, error) {
+	l2Header, err := a.l2.HeaderByNumber(ctx, new(big.Int).SetUint64(height))
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: L2 header at %d: %w", a.name, height, err)
+	}
+	signatures, err := a.bindToAttestation(ctx, height, l2Header)
+	if err != nil {
+		return nil, nil, err
+	}
+	return l2Header, signatures, nil
+}
+
+// stepDownMayHelp reports whether a lower block can succeed where this one
+// failed: the L2 RPC has no block there yet, or an attestor replica has not
+// reached it. Any other failure, and a quorum no retry can complete, is the same
+// at every height.
+func stepDownMayHelp(err error) bool {
+	if chain.IsPermanent(err) {
+		return false
+	}
+	return errors.Is(err, ethereum.NotFound) || errors.Is(err, ErrAttestorReplicaBehind)
+}
+
+// stepDown builds at the next lower attestor frontier, then the next, until
+// threshold attestors sign one. Each endpoint names at most one candidate, so it
+// costs at most one signature round per endpoint. It returns cause when no
+// candidate is signed.
+func (a *attestedHeaderBuilder) stepDown(ctx context.Context, height uint64, cause error) (uint64, *types.Header, []IndexedAttestorSignature, error) {
+	frontiers := a.endpointFrontiers(ctx)
+	for _, candidate := range stepDownCandidates(frontiers, height) {
+		l2Header, signatures, err := a.signedHeaderAt(ctx, candidate)
+		if err == nil {
+			log.Printf("WARN [%s] L2 block %d could not be built (%v); built at %d, the next lower attestor frontier. "+
+				"Frontiers: %s. If this repeats, an attestor reports a frontier its replica cannot sign, "+
+				"or this relayer's L2 RPC lags the attestors",
+				a.name, height, cause, candidate, describeFrontiers(frontiers))
+			return candidate, l2Header, signatures, nil
+		}
+		if !stepDownMayHelp(err) {
+			return 0, nil, nil, err
+		}
+	}
+	return 0, nil, nil, cause
+}
+
+// endpointFrontier is one endpoint's AttestedUpTo answer.
+type endpointFrontier struct {
+	index  uint16
+	height uint64
+}
+
+// endpointFrontiers asks every endpoint for its attested frontier. One that
+// fails, has attested nothing, or does not answer within stepDownFrontierTimeout
+// names no candidate: the answers only order the attempts, and signatures still
+// decide each one.
+func (a *attestedHeaderBuilder) endpointFrontiers(ctx context.Context) []endpointFrontier {
+	queryCtx, cancel := context.WithTimeout(ctx, stepDownFrontierTimeout)
+	defer cancel()
+	type result struct {
+		index uint16
+		root  *attestorpb.AttestedRoot
+	}
+	results := make(chan result, len(a.attestors))
+	for _, endpoint := range a.attestors {
+		go func(endpoint SigningAttestor) {
+			var root *attestorpb.AttestedRoot
+			// A panic in one endpoint's client costs only its candidate.
+			_ = workergroup.Recover(fmt.Sprintf("attestor %d frontier", endpoint.Index), func() error {
+				answer, found, err := endpoint.Client.AttestedUpTo(queryCtx, a.srcChain, a.includeProvisional)
+				if err == nil && found {
+					root = answer
+				}
+				return err
+			})
+			results <- result{index: endpoint.Index, root: root}
+		}(endpoint)
+	}
+	frontiers := make([]endpointFrontier, 0, len(a.attestors))
+	for range a.attestors {
+		select {
+		case <-queryCtx.Done():
+			return frontiers
+		case one := <-results:
+			if one.root != nil {
+				frontiers = append(frontiers, endpointFrontier{index: one.index, height: one.root.GetL2BlockNumber()})
+			}
+		}
+	}
+	return frontiers
+}
+
+// stepDownCandidates are the distinct frontiers below height, highest first.
+func stepDownCandidates(frontiers []endpointFrontier, height uint64) []uint64 {
+	seen := make(map[uint64]bool, len(frontiers))
+	candidates := make([]uint64, 0, len(frontiers))
+	for _, frontier := range frontiers {
+		if frontier.height == 0 || frontier.height >= height || seen[frontier.height] {
+			continue
+		}
+		seen[frontier.height] = true
+		candidates = append(candidates, frontier.height)
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i] > candidates[j] })
+	return candidates
+}
+
+// describeFrontiers names each endpoint's answer, in index order, for the
+// step-down log: the endpoint that over-reports is the one above the rest.
+func describeFrontiers(frontiers []endpointFrontier) string {
+	if len(frontiers) == 0 {
+		return "none answered"
+	}
+	sorted := append([]endpointFrontier(nil), frontiers...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].index < sorted[j].index })
+	parts := make([]string, 0, len(sorted))
+	for _, frontier := range sorted {
+		parts = append(parts, fmt.Sprintf("attestor %d at %d", frontier.index, frontier.height))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // bindToAttestation refuses a header the attestor's replica does not recognise as the

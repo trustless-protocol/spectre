@@ -974,7 +974,8 @@ devnet values; set your own for a public chain.
 - **Chain id.** An EVM endpoint is held to the chain id it first reported, and under
   `start` to a chain the process locked. Another answer: nothing signed.
 - **L2 frontier.** `RelayableHeight` is the threshold-th highest attestor answer,
-  read within 500 ms of the threshold-th reply.
+  read within 500 ms of the threshold-th reply. A block the threshold cannot sign: the
+  header is built at the next lower answer.
 
 ## Relayer logs
 
@@ -1053,6 +1054,7 @@ profile). See the `ProofVerificationFailed()` row in the L2 [Failure modes](#fai
 | L2 client update panics the tx: `returning attributes from a contract is not allowed` | The deployed wasm predates the fix that made the client return data only. Rebuild through `cosmwasm/optimizer` and gov-store it. |
 | L2 client update fails: `unsigned L2 headers are unsupported` | The producer is stale or misconfigured: the authenticated client requires the relayer to collect the configured threshold of indexed attestor signatures before submitting any router proof. Confirm the relayer and wasm are from the same stack and that `attestor_endpoints`, indices and key set match the fresh authenticated client; see [docs/runbooks/L2_CLIENTS.md](L2_CLIENTS.md#signed-update-contract). |
 | `only N valid attestor signatures` or `only N attestor frontiers available` | Fewer than the configured threshold of endpoints answered with a valid signature/frontier. The relayer queries endpoints concurrently, so one failed endpoint is tolerated whenever the remaining endpoints still satisfy the threshold; check every endpoint address, immutable index and daemon health. |
+| `L2 block N could not be built (...); built at M, the next lower attestor frontier` | The threshold could not sign block N. The line lists each attestor's frontier: one far above the rest reports blocks its replica cannot sign, so check it. Otherwise this relayer's L2 RPC lags the attestors. Packets above M wait for the next update. |
 | `updateApplicationState` reverts, ~82k gas, no revert string | The relayer's signer lacks the ICS26Router relayer role on the L2. `cast run <tx>` shows `canCall(...) → false`; funding the address does not help. |
 | `updateApplicationState` / `updateConsensusState` reverts with `ProofVerificationFailed()` on every attempt; packet re-queued forever | `relayer/bin/n4/pk.bin` is not from the same setup as the `Groth16Verifier_N4` registered on that chain (typically `pk.bin` was lost and a new set was generated, or the contracts predate a regeneration). Run `./scripts/local/check_prover_pairing.sh --rpc <evm-rpc>`; fix per [Prover key and verifier must be a pair](#prover-key-and-verifier-must-be-a-pair). |
 | Send fails: `timeout exceeds the maximum expected value` | Sent without `--absolute-timeouts`, so the CLI writes `timeout_timestamp` in nanoseconds while IBC v2 reads seconds. |

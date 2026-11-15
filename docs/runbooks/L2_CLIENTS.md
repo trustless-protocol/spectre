@@ -152,8 +152,9 @@ Every update carries exactly `threshold` signatures in strictly increasing attes
 The relayer queries every configured endpoint concurrently and stops when a valid quorum is
 available; one slow or unavailable endpoint therefore cannot prevent a healthy threshold from
 building a header. `RelayableHeight` uses the same endpoint set rather than endpoint zero: it
-returns the minimum frontier reported by the first complete quorum, so every member of that quorum
-attests through the selected height. If fewer than `threshold` endpoints remain available, the
+returns the threshold-th highest frontier, read within 500 ms of the threshold-th reply. Frontier
+answers are not signed, so when `threshold` endpoints cannot sign that block the header is built at
+the next lower frontier they do sign. If fewer than `threshold` endpoints remain available, the
 relay fails closed instead of falling back to an unsigned or single-attestor update.
 
 The contract signs the fixed-width statement:

@@ -125,7 +125,7 @@ func TestBindToAttestation(t *testing.T) {
 			endpoints[i] = SigningAttestor{Index: uint16(i), Client: pair.attestor}
 		}
 		pairs[0].attestor.verifyValid = false // quorum must use indices 1 and 2.
-		built, err := NewAttestedHeaderBuilder(&ethclient.Client{}, ethcommon.HexToAddress("0x1111111111111111111111111111111111111111"), 8453, set, endpoints, "op", attestorpb.RunMode_RUN_MODE_SAFE, "l2-op")
+		built, err := NewAttestedHeaderBuilder(&ethclient.Client{}, ethcommon.HexToAddress("0x1111111111111111111111111111111111111111"), 8453, set, endpoints, "op", attestorpb.RunMode_RUN_MODE_SAFE, true, "l2-op")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -159,7 +159,7 @@ func TestBindToAttestation(t *testing.T) {
 			set.PublicKeys = append(set.PublicKeys, pair.signer.PublicKey())
 			endpoints[i] = SigningAttestor{Index: uint16(i), Client: pair.attestor}
 		}
-		built, err := NewAttestedHeaderBuilder(&ethclient.Client{}, ethcommon.HexToAddress("0x1111111111111111111111111111111111111111"), 8453, set, endpoints, "op", attestorpb.RunMode_RUN_MODE_SAFE, "l2-op")
+		built, err := NewAttestedHeaderBuilder(&ethclient.Client{}, ethcommon.HexToAddress("0x1111111111111111111111111111111111111111"), 8453, set, endpoints, "op", attestorpb.RunMode_RUN_MODE_SAFE, true, "l2-op")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -216,10 +216,10 @@ func TestNewAttestedHeaderBuilder_RejectsAnUnsafeConfiguration(t *testing.T) {
 		t.Fatal(err)
 	}
 	set := attestation.AttestorConfig{PublicKeys: [][]byte{signer.PublicKey()}, Threshold: 1}
-	if _, err := NewAttestedHeaderBuilder(nil, ethcommon.Address{}, 8453, set, []SigningAttestor{{Index: 0, Client: &fakeAttestor{}}}, "op", attestorpb.RunMode_RUN_MODE_SAFE, "l2-op"); err == nil {
+	if _, err := NewAttestedHeaderBuilder(nil, ethcommon.Address{}, 8453, set, []SigningAttestor{{Index: 0, Client: &fakeAttestor{}}}, "op", attestorpb.RunMode_RUN_MODE_SAFE, true, "l2-op"); err == nil {
 		t.Fatal("nil L2 client accepted")
 	}
-	if _, err := NewAttestedHeaderBuilder(&ethclient.Client{}, ethcommon.Address{}, 8453, set, nil, "op", attestorpb.RunMode_RUN_MODE_SAFE, "l2-op"); err == nil {
+	if _, err := NewAttestedHeaderBuilder(&ethclient.Client{}, ethcommon.Address{}, 8453, set, nil, "op", attestorpb.RunMode_RUN_MODE_SAFE, true, "l2-op"); err == nil {
 		t.Fatal("empty endpoint set accepted")
 	}
 }
