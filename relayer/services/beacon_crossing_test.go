@@ -52,10 +52,16 @@ type crossingBeacon struct {
 	finality  string
 	updates   func(start, count string) (string, int) // body, status
 	bootstrap bool                                    // serve a bootstrap for any root
+	// checkpoints, when set, are the only slots whose roots get a bootstrap, as
+	// on a node that keeps bootstraps for finalized checkpoints alone.
+	checkpoints map[string]bool
 
 	mu         sync.Mutex
 	rootsAsked []string
 }
+
+// rootOf is the block root the fake answers for a slot.
+func rootOf(slot string) string { return fmt.Sprintf("0x%064s", slot) }
 
 func (b *crossingBeacon) start(t *testing.T) string {
 	t.Helper()
@@ -73,10 +79,17 @@ func (b *crossingBeacon) start(t *testing.T) string {
 			b.mu.Lock()
 			b.rootsAsked = append(b.rootsAsked, slot)
 			b.mu.Unlock()
-			fmt.Fprintf(w, `{"data":{"root":"0x%064s"}}`, slot)
+			fmt.Fprintf(w, `{"data":{"root":"%s"}}`, rootOf(slot))
 		case strings.HasPrefix(path, "/eth/v1/beacon/light_client/bootstrap/"):
-			if !b.bootstrap {
-				http.Error(w, "NOT_FOUND: no light client bootstrap", http.StatusNotFound)
+			root := strings.TrimPrefix(path, "/eth/v1/beacon/light_client/bootstrap/")
+			servable := b.bootstrap
+			for slot := range b.checkpoints {
+				servable = servable || root == rootOf(slot)
+			}
+			if !servable {
+				// Lighthouse's answer for a block that is not a finalized checkpoint.
+				http.Error(w, "NOT_FOUND: Sync committee branch for block root "+root+
+					" not found. This typically occurs when the block is not a finalized checkpoint.", http.StatusNotFound)
 				return
 			}
 			fmt.Fprintf(w, `{"data":{"current_sync_committee":%s}}`, testCommittee)
@@ -198,6 +211,33 @@ func TestBuildEthClientUpdateHeaders_BootstrapFallbackUsesTheSignatureSlot(t *te
 	}
 	if asked := beacon.asked(); len(asked) != 1 || asked[0] != "64" {
 		t.Fatalf("bootstrap block roots asked = %v, want [64], the signature slot", asked)
+	}
+}
+
+// #575 review: the crossing header's fallback was moved to the signature slot,
+// whose block is not a finalized checkpoint, so a node that serves bootstraps
+// for checkpoints alone answered 404 where the finalized slot worked.
+func TestBuildEthClientUpdateHeaders_CrossingFallbackAsksTheFinalizedCheckpoint(t *testing.T) {
+	// Trusted in period 0; the period 1 update finalizes at 40, signed at 42.
+	finality := finalityJSON(41, 40, 42, 700)
+	beacon := &crossingBeacon{
+		finality:    finality,
+		checkpoints: map[string]bool{"40": true},
+		updates: func(string, string) (string, int) {
+			// No update carries next_sync_committee: the fallback has to answer.
+			return "[" + updateJSON(40, 42, 700, false) + "]", http.StatusOK
+		},
+	}
+	url := beacon.start(t)
+	build, err := buildCrossing(t, url, crossingTestState(16), 40, finality)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if len(build.headers) != 1 {
+		t.Fatalf("headers = %d, want the crossing header alone", len(build.headers))
+	}
+	if asked := beacon.asked(); len(asked) != 1 || asked[0] != "40" {
+		t.Fatalf("bootstrap block roots asked = %v, want [40], the finalized checkpoint", asked)
 	}
 }
 

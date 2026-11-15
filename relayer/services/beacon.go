@@ -140,7 +140,12 @@ func (w *Worker) buildEthClientUpdateHeadersWithPeriodCrossing(stdCtx context.Co
 				updateFinalizedSlot, updatePeriod, signatureSlot, signaturePeriod, updatePeriod)
 		}
 
-		syncCommittee, err := syncCommitteeForPeriod(stdCtx, beaconAPIURL, updatesByPeriod, updatePeriod, signatureSlot)
+		// The bootstrap fallback is asked at the finalized slot: a finalized
+		// checkpoint, the only kind of block nodes serve a bootstrap for (see
+		// resolveBootstrapCheckpoint). The signature slot is in the same period,
+		// checked above, so the committee is the same; its block is not a
+		// checkpoint and is answered 404.
+		syncCommittee, err := syncCommitteeForPeriod(stdCtx, beaconAPIURL, updatesByPeriod, updatePeriod, updateFinalizedSlot)
 		if err != nil {
 			return ethUpdateBuild{}, err
 		}
