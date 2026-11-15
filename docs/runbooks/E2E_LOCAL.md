@@ -992,9 +992,9 @@ are accepted by every subcommand. The flag takes precedence over the variable.
   and, under `start`, `relay_path`. This is the format a log viewer reads. If
   the relayer runs with a terminal attached (`docker run -t`), pass
   `--log-format json` explicitly, because `auto` picks `console`.
-- **Failed commands.** cobra prints its own `Error: ...` line and the usage text
-  as plain lines. The same error is then logged once at `fatal`. Alert on the
-  `fatal` line.
+- **Failed commands.** cobra prints the usage text as plain lines. The error is
+  logged once at `fatal`, URLs cut to scheme and host. Alert on the `fatal`
+  line.
 - **gnark.** gnark has its own logger, which by default prints three console
   lines on stdout for every proof. The relayer routes it through the same
   stream. These lines read `[gnark] <message>`, carry `"component":"gnark"` and
