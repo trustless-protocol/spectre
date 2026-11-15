@@ -442,7 +442,10 @@ func (s *Subscriber) processLiveCosmosEvent(
 		ctx.Logger.Printf("[SubscribeCosmos] skipped %d live Cosmos event(s)", stats.skipped)
 	}
 	if height > 0 {
-		pruneCosmosSeenEvents(seenEvents, height)
+		// At most the highest head read: the event's height comes from the RPC,
+		// and one far above the head forgot every packet seen so far, which the
+		// next recovery pass then queued again (#575 L4).
+		pruneCosmosSeenEvents(seenEvents, min(height, liveHealth.observedHead))
 	}
 }
 

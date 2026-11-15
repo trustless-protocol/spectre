@@ -1381,6 +1381,29 @@ func TestProcessLiveCosmosEvent(t *testing.T) {
 		}
 	})
 
+	// #575 L4: the seen set was still pruned at the event's own height. One event
+	// far above the head forgot every packet seen so far, and the next recovery
+	// pass queued them all again. It prunes at the highest head read instead.
+	t.Run("a live height above the chain head prunes only below the head", func(t *testing.T) {
+		deps, _ := emptyTxSearchCosmosDeps(t, "08-wasm-0", "eth-router-0")
+		s := NewSubscriber()
+		cursor := uint64(100)
+		const head = 5_000 // a recovery pass already read this head
+		recent := cosmosEventKey{Sequence: 2, Height: head - 500}
+		old := cosmosEventKey{Sequence: 1, Height: 1}
+		seen := map[cosmosEventKey]struct{}{recent: {}, old: {}}
+
+		s.processLiveCosmosEvent(context.Background(), deps, services.NewBatchBuilder(), &cursor,
+			seen, &cosmosLiveHealth{observedHead: head}, liveEventAtHeight(1_000_000_000_000))
+
+		if _, ok := seen[recent]; !ok {
+			t.Fatal("an event above the chain head pruned a packet seen 500 heights below the head")
+		}
+		if _, ok := seen[old]; ok {
+			t.Fatal("the seen set must still be pruned below the head's retention window")
+		}
+	})
+
 	// A head that cannot be read cannot confirm the height, so the cursor stays.
 	t.Run("an unreadable head does not move the cursor", func(t *testing.T) {
 		deps := failingCosmosDeps(t, "08-wasm-0", "eth-router-0")
