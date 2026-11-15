@@ -70,3 +70,23 @@ func TestPacketSettled_AsksPerEventType(t *testing.T) {
 		t.Fatalf("HasPacketReceipt = (%v, %v), want the receipt the store holds", ok, err)
 	}
 }
+
+// The source half: a send's commitment, under the packet's own source client.
+func TestHasPacketCommitment_ReadsTheSendCommitment(t *testing.T) {
+	node := rpcmock.NewCosmosNode(t)
+	present := map[string]bool{}
+	cosmosStore(t, node, present)
+	s := &Source{cosmos: services.CosmosEndpoint{Client: node.Client(t)}}
+
+	sent := channeltypesv2.Packet{Sequence: 5, SourceClient: "08-wasm-0", DestinationClient: "cosmoshub-1"}
+	raw, _ := sent.Marshal()
+
+	present[string(utils.IBCCommitmentPath(sent, []byte{1})[1])] = true
+	if committed, err := s.HasPacketCommitment(context.Background(), raw); err != nil || !committed {
+		t.Fatalf("commitment stored: committed=%v err=%v, want committed", committed, err)
+	}
+	delete(present, string(utils.IBCCommitmentPath(sent, []byte{1})[1]))
+	if committed, err := s.HasPacketCommitment(context.Background(), raw); err != nil || committed {
+		t.Fatalf("commitment deleted: committed=%v err=%v, want gone", committed, err)
+	}
+}

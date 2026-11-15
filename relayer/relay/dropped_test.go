@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -176,6 +177,107 @@ func TestDeliveryAndSettlementClearTheLedger(t *testing.T) {
 		captureLog(func() { m.flushOnce(context.Background(), src) })
 		if got := m.Status(context.Background()).Dropped; len(got) != 0 {
 			t.Fatalf("status.Dropped = %+v, want none: the destination holds a receipt", got)
+		}
+	})
+}
+
+// commitmentSource answers chain.CommitmentChecker: whether the source still
+// holds a send's commitment.
+type commitmentSource struct {
+	listerSource
+	committed       bool
+	commitErr       error
+	commitmentCalls int
+}
+
+func (s *commitmentSource) HasPacketCommitment(context.Context, []byte) (bool, error) {
+	s.commitmentCalls++
+	return s.committed, s.commitErr
+}
+
+// countingDest counts the receipt reads the flush makes.
+type countingDest struct {
+	mockDest
+	receiptCalls int
+}
+
+func (d *countingDest) HasPacketReceipt(ctx context.Context, packet []byte) (bool, error) {
+	d.receiptCalls++
+	return d.mockDest.HasPacketReceipt(ctx, packet)
+}
+
+// #575 review: an expired send is dropped ("deferred to timeout scanner") and
+// refunded by the timeout scanner, so it never gets a receipt. Its entry stayed
+// in status as stranded until a restart aged it out 30 days later, and every
+// flush pass asked the destination about it. A send whose commitment is gone has
+// nothing left to relay.
+func TestDroppedSendIsForgottenOnceItsCommitmentIsGone(t *testing.T) {
+	send := chain.Event{Type: chain.SendPacket, Sequence: 3, Height: 40, Raw: []byte("expired-send")}
+	newSource := func() *commitmentSource {
+		return &commitmentSource{
+			listerSource: listerSource{mockSource: mockSource{latest: 100, relayable: 100,
+				permanentMembershipOn: map[string]bool{"expired-send": true}}},
+			committed: true,
+		}
+	}
+
+	src := newSource()
+	dst := &countingDest{}
+	m, now := newLedgerModule(t, src, dst, &mockBuilder{})
+
+	// The live path offers it once; the ETH and L2 flushes skip an expired send.
+	captureLog(func() { m.handleBatch(context.Background(), []chain.Event{send}) })
+	if got := m.Status(context.Background()).Dropped; len(got) != 1 {
+		t.Fatalf("status.Dropped = %+v, want the expired send", got)
+	}
+
+	*now = now.Add(10 * time.Minute)
+	captureLog(func() { m.flushOnce(context.Background(), src) })
+	if got := m.Status(context.Background()).Dropped; len(got) != 1 {
+		t.Fatalf("status.Dropped = %+v before the refund, want the send kept: the source still holds it", got)
+	}
+
+	src.committed = false // refunded by the timeout scanner
+	*now = now.Add(5 * time.Minute)
+	captureLog(func() { m.flushOnce(context.Background(), src) })
+	if got := m.Status(context.Background()).Dropped; len(got) != 0 {
+		t.Fatalf("status.Dropped = %+v after the refund, want none", got)
+	}
+
+	reads := dst.receiptCalls + src.commitmentCalls
+	for pass := 0; pass < 288; pass++ { // a day of 5-minute passes
+		*now = now.Add(5 * time.Minute)
+		captureLog(func() { m.flushOnce(context.Background(), src) })
+	}
+	if got := dst.receiptCalls + src.commitmentCalls - reads; got != 0 {
+		t.Fatalf("%d settlement reads in a day of passes after the entry was forgotten, want 0", got)
+	}
+
+	t.Run("a failed commitment read keeps the entry", func(t *testing.T) {
+		src := newSource()
+		src.committed, src.commitErr = false, errors.New("connection refused")
+		m, now := newLedgerModule(t, src, &countingDest{}, &mockBuilder{})
+		captureLog(func() { m.handleBatch(context.Background(), []chain.Event{send}) })
+		*now = now.Add(10 * time.Minute)
+		captureLog(func() { m.flushOnce(context.Background(), src) })
+		if got := m.Status(context.Background()).Dropped; len(got) != 1 {
+			t.Fatalf("status.Dropped = %+v, want the send kept: an error is not an answer", got)
+		}
+	})
+
+	// An acknowledgement's packet was sent by the other chain, so this source
+	// never holds its commitment. Asking would forget every stranded ack.
+	t.Run("an ack is not judged by the source", func(t *testing.T) {
+		ack := chain.Event{Type: chain.AckPacket, Sequence: 7, Height: 40, Raw: []byte("poison-ack")}
+		src := newSource()
+		src.committed = false
+		dst := &countingDest{mockDest: mockDest{poison: map[string]bool{"poison-ack": true}}}
+		m, now := newLedgerModule(t, src, dst, &mockBuilder{})
+		captureLog(func() { m.handleBatch(context.Background(), []chain.Event{ack}) })
+		*now = now.Add(10 * time.Minute)
+		captureLog(func() { m.flushOnce(context.Background(), src) })
+		if got := m.Status(context.Background()).Dropped; len(got) != 1 || src.commitmentCalls != 0 {
+			t.Fatalf("status.Dropped = %+v after %d commitment read(s), want the ack kept and none read", got, src.commitmentCalls)
 		}
 	})
 }

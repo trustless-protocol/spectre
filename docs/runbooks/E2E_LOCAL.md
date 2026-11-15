@@ -966,7 +966,8 @@ devnet values; set your own for a public chain.
   `dropped-<direction>.json`.
 - **Dropped packet.** A permanent failure (the pre-flight `eth_call` or the mined tx
   reverts) holds the packet: retry after 10 min, doubling, cap 6 h. Cleared on
-  delivery or settlement. `relayer status` lists held packets under `ATTENTION`.
+  delivery or settlement; a send also once its source commitment is gone (timeout
+  refund). `relayer status` lists held packets under `ATTENTION`.
 - **Pre-flight.** Every EVM packet tx (`recvPacket`, `ackPacket`, `timeoutPacket`,
   multicall) runs as an `eth_call` first; a revert there spends no gas.
 - **Chain id.** An EVM endpoint is held to the chain id it first reported, and under

@@ -75,12 +75,16 @@ func (m *Module) dropHeld(events []chain.Event) ([]chain.Event, int) {
 	return free, len(events) - len(free)
 }
 
-// reconcileDropped forgets dropped packets that settled without this process.
+// reconcileDropped forgets dropped packets that closed without this process.
 //
 // The source stops listing a packet once it is settled, so nothing would ever
 // offer it to the batch again and its entry would stay in status as stranded.
-// Only entries whose backoff has expired are asked about: that bounds the cost
-// to one settlement read per entry per backoff interval.
+// A send can also close on the source alone: an expired one is refunded by the
+// timeout scanner and never gets a receipt (see dropClosed).
+//
+// Only entries whose backoff has expired are asked about. One the flush still
+// lists is retried in the same pass; one nothing offers again (an expired ETH
+// or L2 send waiting for its refund) is asked on every pass until it closes.
 func (m *Module) reconcileDropped(ctx context.Context) {
 	if m.dropped == nil {
 		return
@@ -90,13 +94,36 @@ func (m *Module) reconcileDropped(ctx context.Context) {
 			return
 		}
 		event := chain.Event{Type: entry.Type, Sequence: entry.Sequence, Raw: entry.Packet}
-		settled, err := m.packetSettled(ctx, event)
-		if err != nil || !settled {
+		closed, err := m.dropClosed(ctx, event)
+		if err != nil || !closed {
 			continue // unknown or still outstanding: the flush offers it again
 		}
 		m.clearDrop(entry.Type, entry.Packet)
-		log.Printf("[%s Relay] dropped %s seq=%d has settled; forgotten", m.name, entry.Type, entry.Sequence)
+		log.Printf("[%s Relay] dropped %s seq=%d has closed; forgotten", m.name, entry.Type, entry.Sequence)
 	}
+}
+
+// dropClosed reports whether a dropped packet needs nothing more from this
+// relay: the destination settled it or, for a send, the source no longer holds
+// its commitment (acknowledged, or timed out and refunded).
+//
+// The commitment is read at the source's latest state. A wrong "gone" (a reorg
+// restores the commitment) costs one early retry and nothing else: the entry
+// only holds the packet out of the relay path.
+func (m *Module) dropClosed(ctx context.Context, e chain.Event) (bool, error) {
+	settled, err := m.packetSettled(ctx, e)
+	if err != nil || settled || e.Type != chain.SendPacket {
+		return settled, err
+	}
+	checker, ok := m.src.(chain.CommitmentChecker)
+	if !ok {
+		return false, nil
+	}
+	committed, err := checker.HasPacketCommitment(ctx, e.Raw)
+	if err != nil {
+		return false, err
+	}
+	return !committed, nil
 }
 
 // DroppedPacket is one packet held after a permanent failure, as status shows it.
