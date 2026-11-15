@@ -102,8 +102,13 @@ func (e *Ethereum) BroadcastTx(ctx context.Context, userKey *ecdsa.PrivateKey, g
 }
 
 func (e Ethereum) ForgeScript(deployer *ecdsa.PrivateKey, solidityContract string, args ...string) ([]byte, error) {
+	// Fees pinned as in SendEth. forge takes its tip from recent blocks; on a
+	// devnet whose blocks are mostly empty that came out at 1 wei, under geth's
+	// default minimum tip (1 mwei), so no deploy tx was mined and the suite hung
+	// until its timeout.
 	args = append(args, "script", "--rpc-url", e.RPC, "--private-key",
 		hex.EncodeToString(crypto.FromECDSA(deployer)), "--broadcast",
+		"--priority-gas-price", "1gwei", "--with-gas-price", "3gwei",
 		"--non-interactive", "-vvvv", solidityContract,
 	)
 	cmd := exec.Command(
