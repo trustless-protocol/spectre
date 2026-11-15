@@ -3,11 +3,15 @@ package relay
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"relayer/chain"
+	"relayer/services"
 )
 
 // errSource fails RelayableHeight the way an RPC client does: the error quotes
@@ -61,6 +65,53 @@ func TestStatus_ProbeErrorIsClassifiedAndRedacted(t *testing.T) {
 		if src.ctxErrOnCall != nil {
 			t.Fatalf("the probe ran on a cancelled context (%v); a requester could force an error on demand", src.ctxErrOnCall)
 		}
+	})
+}
+
+// #575 L7, through two more fields /status serves: a drop reason and a loop
+// note quote the RPC error behind them, API key included. The ledger file kept
+// the drop reason too.
+func TestStatus_DropReasonsAndLoopNotesAreRedacted(t *testing.T) {
+	const key = "s3cr3t-api-key"
+	rpcErr := errors.New(`Post "https://eth-mainnet.example.com/v2/` + key + `": dial tcp: connection refused`)
+
+	t.Run("drop reason", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), services.DropLedgerFileName("cosmos-to-eth"))
+		ledger, err := services.NewDropLedger(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := NewModule("cosmos->eth", "client-0", &mockSource{}, &mockDest{}, &mockBuilder{}, WithDropLedger(ledger))
+		// The unresolved-nonce drop quotes the failed cancel broadcast.
+		m.recordDrop(chain.SendPacket, 3, []byte("send"), chain.Permanent(fmt.Errorf("nonce unresolved; cancel: %w", rpcErr)))
+
+		got := m.Status(context.Background()).Dropped
+		if len(got) != 1 || strings.Contains(got[0].Reason, key) || !strings.Contains(got[0].Reason, "https://eth-mainnet.example.com") {
+			t.Fatalf("status.Dropped = %+v, want one reason with the host and no API key", got)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), key) {
+			t.Fatalf("the ledger file keeps the API key:\n%s", data)
+		}
+	})
+
+	t.Run("loop note", func(t *testing.T) {
+		src := &listerSource{mockSource: mockSource{latest: 100, relayable: 100}, listErr: rpcErr}
+		m := NewModule("eth->cosmos", "client-0", src, &mockDest{}, &mockBuilder{})
+		m.flushOnce(context.Background(), src)
+		for _, loop := range m.Status(context.Background()).Loops {
+			if loop.Worker != workerPacketFlush {
+				continue
+			}
+			if strings.Contains(loop.Note, key) || !strings.Contains(loop.Note, "https://eth-mainnet.example.com") {
+				t.Fatalf("flush note = %q, want the host and no API key", loop.Note)
+			}
+			return
+		}
+		t.Fatal("the failed flush recorded no loop note")
 	})
 }
 

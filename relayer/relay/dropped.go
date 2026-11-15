@@ -6,6 +6,8 @@ import (
 	"log"
 	"time"
 
+	"attestor/types/redact"
+
 	"relayer/chain"
 )
 
@@ -39,11 +41,15 @@ func (m *Module) heldAfterDrop(typ chain.EventType, raw []byte) bool {
 
 // recordDrop notes a permanent failure and returns the text a DROP line appends
 // to say when the packet is retried.
+//
+// The reason is stored with its URLs cut to scheme and host: /status serves it
+// and the ledger file keeps it, and an RPC error quotes the endpoint URL, API
+// key included (#575 L7).
 func (m *Module) recordDrop(typ chain.EventType, sequence uint64, raw []byte, cause error) string {
 	if m.dropped == nil {
 		return ""
 	}
-	entry, err := m.dropped.Record(typ, sequence, raw, cause.Error(), m.now())
+	entry, err := m.dropped.Record(typ, sequence, raw, redact.Error(cause).Error(), m.now())
 	if err != nil {
 		log.Printf("ERROR [%s Relay][ATTENTION] dropped %s seq=%d is held in memory only: %v", m.name, typ, sequence, err)
 	}
