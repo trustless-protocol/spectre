@@ -956,7 +956,8 @@ devnet values; set your own for a public chain.
   `COSMOS_MAX_GAS`.
 - Not signed (`operator spending cap exceeded`): EVM base fee + tip above the fee cap;
   simulated Cosmos gas above `COSMOS_MAX_GAS`; Cosmos fee above `COSMOS_MAX_FEE`.
-  Packets stay queued; a splittable Cosmos batch is halved first.
+  Packets stay queued; a splittable Cosmos batch is halved first. Path then held 1 min,
+  doubling to 15 min; lifted when a send lands.
 - One-shot commands honour a cap that is set and run without one. Except
   `create-clients-cosmos`: no cap read; signs at `COSMOS_GAS_LIMIT` / `COSMOS_FEE_AMOUNT`.
 
@@ -1043,7 +1044,7 @@ profile). See the `ProofVerificationFailed()` row in the L2 [Failure modes](#fai
 
 | Symptom | Cause |
 |---|---|
-| `not signed: operator spending cap exceeded` | Fee or gas above a [spending cap](#spending-caps). Raise it, or wait for fees to fall; packets stay queued. |
+| `not signed: operator spending cap exceeded` | Fee or gas above a [spending cap](#spending-caps). Raise it, or wait for fees to fall; packets stay queued, path retried after 1 min, doubling to 15 min. |
 | `would revert ... not broadcast, no gas spent` | The pre-flight `eth_call` reverts. The packet is held after the drop; `relayer status` lists it. |
 | `endpoint reported chain id X but this process signs for Y` | The EVM RPC now answers another chain. Fix the RPC; nothing is signed meanwhile. |
 | `signer lock: ... is owned by uid N` / `has mode` / `is a symlink` | Someone else created or opened `/tmp/spectre-relayer-<uid>`. Remove it (as its owner or root). |

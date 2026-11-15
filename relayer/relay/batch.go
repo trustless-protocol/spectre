@@ -126,12 +126,17 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 	// refund -- the hold skips the RPC and the proof, never the durable record.
 	//
 	// The destination-client hold works the same way: a frozen client rejects
-	// everything, so nothing is proven or submitted until it is active again.
+	// everything, so nothing is proven or submitted until it is active again. So
+	// does the spending-cap hold (spend_hold.go).
 	if m.clientHeldOff(ctx, time.Now()) {
 		m.lastWait = waitLogState{}
 		return nonSettledIndices(skippedSettled)
 	}
 	if m.sourceHeldOff(time.Now()) {
+		m.lastWait = waitLogState{}
+		return nonSettledIndices(skippedSettled)
+	}
+	if m.spendHeldOff(time.Now()) {
 		m.lastWait = waitLogState{}
 		return nonSettledIndices(skippedSettled)
 	}
@@ -209,6 +214,9 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 	// tx completes, preventing a refresh update from racing the planned height.
 	foldPlan, proofHeight, err := m.prepareBatchUpdate(ctx, relayable)
 	if err != nil {
+		if m.holdIfSpendCapped(err, fmt.Sprintf("update client to height %d", relayable)) {
+			return append(requeue, provableIdx...)
+		}
 		if m.holdIfClientInactive(ctx, err) {
 			return append(requeue, provableIdx...)
 		}
@@ -399,6 +407,7 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 	}
 	if err == nil {
 		m.noteClientActive("")
+		m.noteSpendAllowed()
 		m.settleDelivered(packets)
 		return requeue
 	}
@@ -427,6 +436,15 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 		}
 	}
 
+	// A spending cap refused to sign: nothing reached the chain, and a plain
+	// re-queue rebuilds the update and the proofs every flush for as long as the
+	// cap stays binding.
+	if m.holdIfSpendCapped(err, fmt.Sprintf("relay %d packet(s) at height %d", len(packets), proofHeight)) {
+		if foldPlan != nil {
+			foldPlan.release()
+		}
+		return append(requeue, relayedIdx...)
+	}
 	// The client refused, not the packets: hold the direction and keep them all.
 	// Checked before the permanent/transient split, because neither ending is
 	// right -- a drop loses the packets, and a plain re-queue retries every flush
@@ -509,6 +527,9 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 			// any packet, so nothing may be dropped: hold them all and let the
 			// next flush rebuild against whatever the client then trusts.
 			foldPlan.release()
+			if m.holdIfSpendCapped(updateErr, fmt.Sprintf("client update at height %d, sent alone", foldPlan.update.Height)) {
+				return append(requeue, relayedIdx...)
+			}
 			if m.holdIfClientInactive(ctx, updateErr) {
 				return append(requeue, relayedIdx...)
 			}
@@ -578,6 +599,9 @@ func (m *Module) submitFoldedUpdateAlone(ctx context.Context, foldPlan *foldedUp
 	// Destination.UpdateClient, not the folding path: RelayWithUpdate is
 	// specified to carry packets, and there are none.
 	if err := m.dst.UpdateClient(ctx, m.clientID, foldPlan.update); err != nil {
+		if m.holdIfSpendCapped(err, fmt.Sprintf("client update (no relayable packets) to height %d", foldPlan.update.Height)) {
+			return
+		}
 		if m.holdIfClientInactive(ctx, err) {
 			return
 		}
@@ -585,6 +609,7 @@ func (m *Module) submitFoldedUpdateAlone(ctx context.Context, foldPlan *foldedUp
 			m.name, foldPlan.update.Height, err)
 		return
 	}
+	m.noteSpendAllowed()
 	m.lastHeight = foldPlan.update.Height // foldPlan still holds m.mu
 	m.recordClientUpdate(foldPlan.update)
 	foldPlan.release()
@@ -726,6 +751,11 @@ func (m *Module) relayIsolated(ctx context.Context, packets []chain.RelayPacket,
 				requeue = append(requeue, relayedIdx[j:]...)
 				break
 			}
+			// The cap refuses every singleton after this one too.
+			if m.holdIfSpendCapped(err, fmt.Sprintf("isolated relay (%s seq=%d height=%d)", p.Type, p.Sequence, p.Height)) {
+				requeue = append(requeue, relayedIdx[j:]...)
+				break
+			}
 			if chain.IsPermanent(err) {
 				if status, inactive := m.destinationClientInactive(ctx); inactive {
 					m.noteClientInactive(status, err)
@@ -746,6 +776,7 @@ func (m *Module) relayIsolated(ctx context.Context, packets []chain.RelayPacket,
 			continue
 		}
 		m.noteClientActive("")
+		m.noteSpendAllowed()
 		m.settleDelivered(single)
 	}
 	return requeue

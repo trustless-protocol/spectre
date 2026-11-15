@@ -148,6 +148,13 @@ type Module struct {
 	sourceProbeAt time.Time
 	sourceBackoff time.Duration
 
+	// spendProbeAt is when the destination may be sent to again after an operator
+	// spending cap refused a transaction, and spendBackoff is the interval that
+	// produced it. Both zero while the caps allow sending. Guarded by batchMu. See
+	// spend_hold.go.
+	spendProbeAt time.Time
+	spendBackoff time.Duration
+
 	// clientInactive is set while the destination's light client refuses every
 	// message (frozen, or on Cosmos otherwise not Active); clientProbeAt and
 	// clientBackoff space the re-checks the same way the source hold does. All
