@@ -957,7 +957,8 @@ devnet values; set your own for a public chain.
 - Not signed (`operator spending cap exceeded`): EVM base fee + tip above the fee cap;
   simulated Cosmos gas above `COSMOS_MAX_GAS`; Cosmos fee above `COSMOS_MAX_FEE`.
   Packets stay queued; a splittable Cosmos batch is halved first.
-- One-shot commands honour a cap that is set and run without one.
+- One-shot commands honour a cap that is set and run without one. Except
+  `create-clients-cosmos`: no cap read; signs at `COSMOS_GAS_LIMIT` / `COSMOS_FEE_AMOUNT`.
 
 ## Relayer state and status
 
