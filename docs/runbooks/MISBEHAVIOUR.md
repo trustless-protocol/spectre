@@ -162,6 +162,8 @@ cd relayer
 
 Success is a confirmed transaction receipt and prints the client ID, height,
 and conflicting hashes. A transaction hash or queued transaction is not success.
+Refused while another process on this machine signs that chain with the same
+key; the error names the lock file.
 
 ## 6. Verify the freeze
 

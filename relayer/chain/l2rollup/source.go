@@ -310,6 +310,11 @@ func (s *Source) head(ctx context.Context) (uint64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("l2 source: head (kind=%d): %w", s.headKind, err)
 	}
+	// Uint64 on a wider number returns its low 64 bits: a garbage head that
+	// would be scanned to as if it were real.
+	if h == nil || h.Number == nil || !h.Number.IsUint64() {
+		return 0, fmt.Errorf("l2 source: head (kind=%d): the endpoint returned a block number that is not a uint64", s.headKind)
+	}
 	return h.Number.Uint64(), nil
 }
 

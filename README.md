@@ -201,6 +201,9 @@ RELAYER_LOG_LEVEL=debug RELAYER_LOG_FORMAT=console ./relayer start --config conf
 | `--log-level` / `RELAYER_LOG_LEVEL` | `debug`, `info`, `warn`, `error` | `info` |
 | `--log-format` / `RELAYER_LOG_FORMAT` | `json`, `console`, `auto` | `auto`: `console` on a terminal, `json` otherwise |
 
+URLs in log lines are reduced to `scheme://host`: providers put API keys in the
+path or query.
+
 The notes for operators (where the variables are read from, the JSON fields,
 failed commands, gnark lines) are in
 [docs/runbooks/E2E_LOCAL.md](docs/runbooks/E2E_LOCAL.md#relayer-logs).

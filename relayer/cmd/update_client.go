@@ -49,6 +49,21 @@ func UpdateClient(logger *zap.Logger) *cobra.Command {
 				return fmt.Errorf("failed to create Cosmos RPC client: %w", err)
 			}
 
+			// start's lock on this nonce domain (#575): refused, naming the lock
+			// file, while another process signs this chain with ETH_PRIVATE_KEY.
+			// Before the prover loads, so a refusal costs nothing.
+			txHandler := &transaction.Handler{}
+			ethSigner, err := txHandler.EthSignerAddress()
+			if err != nil {
+				return fmt.Errorf("update-client: %w", err)
+			}
+			releaseSignerLock, err := acquireOneShotEVMSignerLock(cmd.Context(), "cosmos_to_eth.eth_rpc_url",
+				cfg.CosmosToEthConfig.EthRpcUrl, ethSigner, txHandler)
+			if err != nil {
+				return err
+			}
+			defer releaseSignerLock()
+
 			binDir := envOrDefault("PROVER_BIN_DIR", "./bin")
 			p, err := buildProverService(cmd, binDir)
 			if err != nil {
@@ -144,7 +159,7 @@ func UpdateClient(logger *zap.Logger) *cobra.Command {
 				return fmt.Errorf("update-client: --max-hops must be greater than 0")
 			}
 
-			worker := services.NewOneShotWorker(&transaction.Handler{}, p)
+			worker := services.NewOneShotWorker(txHandler, p)
 
 			// RLY-01: validator churn can force the builder onto a multi-hop
 			// path that only advances the client to an intermediate height

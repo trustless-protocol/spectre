@@ -162,7 +162,7 @@ func runCreateClientsCosmos(logger *zap.Logger, cfg *appConfig, configPath, wasm
 // spectre_client address back into config. wasmClientID must already be known
 // (created by the Cosmos step) so the on-chain counterparty is wired to the
 // real id. Idempotent: if spectre_client already has deployed code, it is reused.
-func runCreateClientsEth(logger *zap.Logger, cfg *appConfig, configPath, wasmClientID, trustLevel string, trustingPeriod uint32) (common.Address, error) {
+func runCreateClientsEth(logger *zap.Logger, cfg *appConfig, configPath, wasmClientID, trustLevel string, trustingPeriod uint32, txHandler *transaction.Handler) (common.Address, error) {
 	if wasmClientID == "" {
 		return common.Address{}, fmt.Errorf("cosmos_wasm_client_id is empty; run create-clients-cosmos first")
 	}
@@ -173,7 +173,7 @@ func runCreateClientsEth(logger *zap.Logger, cfg *appConfig, configPath, wasmCli
 	}
 	defer cosmosClient.Stop()
 
-	return deployCosmosClientOnEth(logger, cfg, configPath, wasmClientID, trustLevel, trustingPeriod, deps, cosmosClient)
+	return deployCosmosClientOnEth(logger, cfg, configPath, wasmClientID, trustLevel, trustingPeriod, deps, cosmosClient, txHandler)
 }
 
 // deployCosmosClientOnEth is runCreateClientsEth once both chains are dialed. It is
@@ -186,6 +186,7 @@ func deployCosmosClientOnEth(
 	trustingPeriod uint32,
 	deps services.RelayDeps,
 	cosmosClient *rpchttp.HTTP,
+	txHandler *transaction.Handler,
 ) (common.Address, error) {
 	// Idempotency: skip the deploy when the configured spectre_client is a light
 	// client this run can actually keep, so re-running after a partial failure
@@ -230,7 +231,7 @@ func deployCosmosClientOnEth(
 		clockDrift = tendermintClient.DefaultClockDrift
 	}
 
-	worker := services.NewWorker(&transaction.Handler{}, nil)
+	worker := services.NewWorker(txHandler, nil)
 	logger.Sugar().Infof(
 		"Creating Cosmos light client on Ethereum (trustingPeriod=%d, trustLevel=%s, proofType=%s, clockDrift=%d, counterparty=%s)...",
 		trustingPeriod, trustLevel, proofType, clockDrift, wasmClientID,
@@ -285,6 +286,13 @@ func CreateClientsCosmos(logger *zap.Logger) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// start's Cosmos signer lock (#575), held across every client this run
+			// creates.
+			releaseSignerLock, err := acquireCosmosSignerLock()
+			if err != nil {
+				return err
+			}
+			defer releaseSignerLock()
 
 			// One invocation creates one kind of client. --l2-config means "create these
 			// L2 clients"; without it the command creates the Ethereum client for the
@@ -401,7 +409,19 @@ func CreateClientsEth(logger *zap.Logger) *cobra.Command {
 			if wasmClientID == "" {
 				return fmt.Errorf("cosmos_wasm_client_id is empty in config; run create-clients-cosmos first")
 			}
-			_, err = runCreateClientsEth(logger, cfg, configPath, wasmClientID, trustLevel, trustingPeriod)
+			// start's lock on this nonce domain (#575).
+			txHandler := &transaction.Handler{}
+			ethSigner, err := txHandler.EthSignerAddress()
+			if err != nil {
+				return fmt.Errorf("create-clients-eth: %w", err)
+			}
+			releaseSignerLock, err := acquireOneShotEVMSignerLock(cmd.Context(), oneShotEVMEndpointLabel(cfg),
+				cfg.CosmosToEthConfig.EthRpcUrl, ethSigner, txHandler)
+			if err != nil {
+				return err
+			}
+			defer releaseSignerLock()
+			_, err = runCreateClientsEth(logger, cfg, configPath, wasmClientID, trustLevel, trustingPeriod, txHandler)
 			return err
 		},
 	}

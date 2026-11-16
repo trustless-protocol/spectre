@@ -50,6 +50,9 @@ type SpectreClientTestSuite struct {
 	contract *spectreclient.Contract
 	// The ICS26 router contract, needed for the relayer to pass proofs
 	ics26Contract *ics26router.Contract
+	// The running `relayer start`. It holds the ETH key's signer lock, so
+	// UpdateClient stops it before running update-client on the same key.
+	relayerProcess *os.Process
 }
 
 func readCosmosToEthConfig(configPath string) (relayer.CosmosToEthModuleConfig, error) {
@@ -143,7 +146,6 @@ func (s *SpectreClientTestSuite) SetupSuite(ctx context.Context, proofType types
 		s.Require().NoError(err)
 	}))
 
-	var relayerProcess *os.Process
 	s.Require().True(s.Run("Create clients", func() {
 		beaconAPI := ""
 		// The BeaconAPIClient is nil when the testnet is `pow`
@@ -193,17 +195,15 @@ func (s *SpectreClientTestSuite) SetupSuite(ctx context.Context, proofType types
 
 	s.Require().True(s.Run("Start Relayer", func() {
 		var err error
-		relayerProcess, err = relayer.StartRelayer(testvalues.RelayerConfigFilePath)
+		s.relayerProcess, err = relayer.StartRelayer(testvalues.RelayerConfigFilePath)
 		s.Require().NoError(err)
 	}))
 
 	s.T().Cleanup(func() {
-		if relayerProcess != nil {
-			err := relayerProcess.Kill()
-			if err != nil {
-				s.T().Logf("Failed to kill the relayer process: %v", err)
-			}
+		if err := relayer.StopRelayer(s.relayerProcess); err != nil {
+			s.T().Logf("Failed to stop the relayer process: %v", err)
 		}
+		s.relayerProcess = nil
 	})
 }
 
@@ -291,6 +291,13 @@ func (s *SpectreClientTestSuite) UpdateClient(ctx context.Context) clienttypes.H
 		s.Require().NotZero(clientState.LatestHeight.RevisionHeight)
 
 		initialHeight = clientState.LatestHeight.RevisionHeight
+	}))
+
+	s.Require().True(s.Run("Stop the relayer", func() {
+		// update-client signs with the relayer's ETH key, and a running start
+		// holds that key's signer lock: the command is refused beside it (#575).
+		s.Require().NoError(relayer.StopRelayer(s.relayerProcess))
+		s.relayerProcess = nil
 	}))
 
 	var finalHeight spectreclient.IICS02ClientMsgsHeight

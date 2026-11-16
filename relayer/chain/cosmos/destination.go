@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"math/bits"
 	"strconv"
 	"time"
 
@@ -377,16 +379,45 @@ func (d *Destination) ClientExpiresAt(ctx context.Context, _ string) (time.Time,
 // unset). Reporting the zero time rather than an error is what the module reads as
 // "no expiry", so it falls back to the periodic refresh instead of treating a
 // malformed client state as an expiry emergency.
+//
+// Every step is checked (#575): the factors come from a client state read off the
+// chain, and an overflowing product or sum wrapped to a time in the past or the
+// far future. A state whose numbers do not fit is treated like a zero one.
 func ethClientExpiry(cs *relayerclient.EthereumClientState) (time.Time, time.Duration) {
-	periodSecs := cs.EpochsPerSyncCommitteePeriod * cs.SlotsPerEpoch * cs.SecondsPerSlot
-	if periodSecs == 0 {
+	hi, slotsPerPeriod := bits.Mul64(cs.EpochsPerSyncCommitteePeriod, cs.SlotsPerEpoch)
+	hi2, periodSecs := bits.Mul64(slotsPerPeriod, cs.SecondsPerSlot)
+	if hi != 0 || hi2 != 0 || periodSecs == 0 || periodSecs > maxDurationSeconds {
+		return time.Time{}, 0
+	}
+	trustedAt, ok := checkedTimestampAtSlot(cs, cs.LatestSlot)
+	if !ok {
+		return time.Time{}, 0
+	}
+	expiry, carry := bits.Add64(trustedAt, periodSecs, 0)
+	if carry != 0 || expiry > math.MaxInt64 {
 		return time.Time{}, 0
 	}
 	// One sync-committee period stands in for the trusting period here: it is the
 	// window the client must be advanced within, and it is what the expiry above
 	// is measured from.
-	return time.Unix(int64(cs.ComputeTimestampAtSlot(cs.LatestSlot)+periodSecs), 0),
-		time.Duration(periodSecs) * time.Second
+	return time.Unix(int64(expiry), 0), time.Duration(periodSecs) * time.Second
+}
+
+// maxDurationSeconds is the most seconds a time.Duration holds.
+const maxDurationSeconds = uint64(math.MaxInt64 / int64(time.Second))
+
+// checkedTimestampAtSlot is EthereumClientState.ComputeTimestampAtSlot with every
+// step checked; ok is false when the result does not fit in a uint64.
+func checkedTimestampAtSlot(cs *relayerclient.EthereumClientState, slot uint64) (uint64, bool) {
+	if slot <= cs.GenesisSlot {
+		return cs.GenesisTime, true
+	}
+	hi, elapsed := bits.Mul64(slot-cs.GenesisSlot, cs.SecondsPerSlot)
+	if hi != 0 {
+		return 0, false
+	}
+	at, carry := bits.Add64(cs.GenesisTime, elapsed, 0)
+	return at, carry == 0
 }
 
 // ClientActive asks ibc-go for the client's status. Anything but Active --

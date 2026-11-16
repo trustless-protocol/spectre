@@ -426,7 +426,7 @@ func TestFindL2TimeoutReturnPath(t *testing.T) {
 
 func TestL2PendingTrackerHooks(t *testing.T) {
 	svc := services.New(nil, nil, services.DefaultConfig())
-	track, untrack := l2PendingTrackerHooks(svc)
+	track, untrack, delivered := l2PendingTrackerHooks(svc)
 
 	packet := channeltypesv2.Packet{SourceClient: "client-0", Sequence: 11}
 	raw, err := packet.Marshal()
@@ -446,5 +446,22 @@ func TestL2PendingTrackerHooks(t *testing.T) {
 	untrack(raw)
 	if got := svc.BatchBuilder.L2PendingTracker.Len(); got != 0 {
 		t.Fatalf("pending len after untrack = %d, want 0", got)
+	}
+	// A terminal L2 event leaves no tombstone: the L2 read may not be final, and
+	// a send it removed must be trackable again after a reorg.
+	if svc.BatchBuilder.L2PendingTracker.IsSettled(packet) {
+		t.Fatal("a terminal L2 event left a tombstone")
+	}
+
+	// #575: a receive this process delivered to Cosmos is final. It closes the
+	// record with a tombstone, so the L2 flush cannot track the send again while
+	// its acknowledgement is on the way.
+	track(raw, 790)
+	delivered(raw)
+	if got := svc.BatchBuilder.L2PendingTracker.Len(); got != 0 {
+		t.Fatalf("pending len after delivery = %d, want 0", got)
+	}
+	if !track(raw, 791) || svc.BatchBuilder.L2PendingTracker.Len() != 0 {
+		t.Fatal("a delivered send was tracked again")
 	}
 }

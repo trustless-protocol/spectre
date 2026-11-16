@@ -3,6 +3,8 @@ package relay
 import (
 	"sync"
 	"time"
+
+	"attestor/types/redact"
 )
 
 // Worker names. They are constants because Run passes them to the worker group
@@ -58,13 +60,17 @@ func newHeartbeats() *heartbeats {
 // record marks a completed pass. A pass that FAILED still counts: the loop ran,
 // which is what this measures. Whether the work succeeded is a separate question
 // that the loop's own log and the rest of the status snapshot answer.
+//
+// The note of a failed pass quotes its RPC error, and /status serves it, so its
+// URLs are cut to scheme and host: an endpoint URL carries the provider's API
+// key (#575 L7).
 func (h *heartbeats) record(worker, note string) {
 	if h == nil {
 		return
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.last[worker] = heartbeat{At: h.now(), Note: note}
+	h.last[worker] = heartbeat{At: h.now(), Note: redact.URLs(note)}
 }
 
 // snapshot lists the loops that have completed at least one pass, least recently

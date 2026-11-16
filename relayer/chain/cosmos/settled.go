@@ -39,3 +39,18 @@ func (d *Destination) PacketSettled(ctx context.Context, e chain.Event) (bool, e
 }
 
 var _ chain.SettlementChecker = (*Destination)(nil)
+
+// HasPacketCommitment implements chain.CommitmentChecker: whether Cosmos still
+// holds the commitment of a packet it sent (Cosmos->ETH, Cosmos->L2).
+func (s *Source) HasPacketCommitment(ctx context.Context, packet []byte) (bool, error) {
+	if s.cosmos.CosmosClient() == nil {
+		return false, fmt.Errorf("cosmos source: no Cosmos client to query the commitment on")
+	}
+	var pkt channeltypesv2.Packet
+	if err := pkt.Unmarshal(packet); err != nil {
+		return false, fmt.Errorf("cosmos source: decode packet: %w", err)
+	}
+	return subscriber.HasPendingCosmosPacketCommitment(ctx, s.cosmos, pkt)
+}
+
+var _ chain.CommitmentChecker = (*Source)(nil)

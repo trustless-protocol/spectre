@@ -180,7 +180,7 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps servi
 		}
 		svc.UntrackCosmosPending(pkt)
 	}
-	isCosmosPendingSettled, markCosmosPendingSettled := cosmosPendingSettlementGuard(svc, "cosmos->l2")
+	isCosmosPendingSettled := cosmosPendingSettlementGuard(svc, "cosmos->l2")
 
 	// Pinned-set rotation cadence from the on-chain trusting period (a derivation
 	// failure is FATAL, as in the Cosmos→ETH path, so the client can't silently expire).
@@ -206,7 +206,7 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps servi
 		// age is the "cosmos-on-evm" figure -- same slot the ETH path fills.
 		relay.WithClientUpdateObserver(svc.ObserveCosmosOnEVMUpdate),
 		relay.WithPacketTracker(trackCosmosPending, untrackCosmosPending),
-		relay.WithPendingSettlementGuard(isCosmosPendingSettled, markCosmosPendingSettled),
+		relay.WithPendingSettlementGuard(isCosmosPendingSettled),
 		relay.WithPeriodicUpdate(periodicUpdateInterval, initialRotationDelay, func(c context.Context) error {
 			return svc.RotatePinnedSet(c, deps.Cosmos, deps.EVM, deps.IDs.CosmosOnEVM)
 		}),
@@ -230,6 +230,11 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps servi
 		// the settlement from the other side find the entry.
 		options = append(options, relay.WithAckWatch(0, 0, ackDue, ackSettled, nil))
 	}
+	drops, err := svc.OpenDropLedger("cosmos-to-l2")
+	if err != nil {
+		return fmt.Errorf("cosmos->l2: %w", err)
+	}
+	options = append(options, relay.WithDropLedger(drops))
 	module := relay.NewModule(
 		"cosmos->l2",
 		deps.IDs.CosmosOnEVM,
@@ -245,9 +250,10 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps servi
 	reg.AddQueues(engineCosmosL2, svc.QueueStatus)
 	reg.AddReactivator(engineCosmosL2, svc.ReactivateDeadLetter)
 
-	go svc.RunQueueReporter(runCtx)
-	if err := module.Run(runCtx); err != nil && !errors.Is(err, context.Canceled) {
-		return err
+	reporterPanic := startQueueReporter(runCtx, cancel, svc)
+	err = module.Run(runCtx)
+	if errors.Is(err, context.Canceled) {
+		err = nil
 	}
-	return nil
+	return errors.Join(err, reporterPanic())
 }

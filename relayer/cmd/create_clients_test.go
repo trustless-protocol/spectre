@@ -11,6 +11,7 @@ import (
 
 	"relayer/rpcmock"
 	"relayer/services"
+	"relayer/transaction"
 )
 
 // ethToCosmosPlusL2Config is the shape that makes #310 reachable: an eth_to_cosmos
@@ -105,7 +106,7 @@ func TestDeployCosmosClientOnEth_ChecksTheModulesBeforeSpendingAnything(t *testi
 			IDs:    services.ClientIDs{CosmosOnEVM: "client-0", EVMOnCosmos: "08-wasm-0"},
 		}
 		// A trusting period is passed so the unbonding-time query is not what fails.
-		_, err := deployCosmosClientOnEth(zap.NewNop(), cfg, "", "08-wasm-0", "2/3", 100, deps, deps.Cosmos.Client)
+		_, err := deployCosmosClientOnEth(zap.NewNop(), cfg, "", "08-wasm-0", "2/3", 100, deps, deps.Cosmos.Client, &transaction.Handler{})
 		return err
 	}
 

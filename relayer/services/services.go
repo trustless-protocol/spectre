@@ -67,6 +67,10 @@ type Services struct {
 	clientUpdates clientUpdateTimes
 	recovery      *RecoveryStateStore
 
+	// stateDir is where this instance keeps its durable state; "" when it was
+	// built without one (New), which keeps drop ledgers in memory only.
+	stateDir string
+
 	// ackDue is the retry ledger for owed-acknowledgement records. Zero value is
 	// usable, so neither constructor has to build it. See ackdue.go for why it
 	// lives here and not in relay.Module.
@@ -123,6 +127,7 @@ func NewWithPendingState(txHandler TransactionHandler, prover Prover, cosmosConf
 		worker:       NewWorker(txHandler, prover),
 		BatchBuilder: batchBuilder,
 		recovery:     recoveryStore,
+		stateDir:     stateDir,
 	}
 	svc.BatchBuilder.WithOwedAckSettler(svc.ClearAckDue)
 	return svc, nil

@@ -2,8 +2,11 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"time"
+
+	"attestor/types/redact"
 
 	"relayer/chain"
 )
@@ -51,6 +54,11 @@ type Status struct {
 	// the pending set from services, it is the "which half is stuck" split: this
 	// one is "not relayable yet", that one is "relayed, awaiting delivery".
 	Waiting []WaitingPacket `json:"waiting"`
+
+	// Dropped is the set of packets held after a permanent failure, oldest first.
+	// A dropped acknowledgement or timeout has no other exit, so each entry is
+	// funds that stay locked until a retry lands.
+	Dropped []DroppedPacket `json:"dropped,omitempty"`
 }
 
 // WaitingPacket is one parked packet with the age that separates "waiting for
@@ -72,6 +80,7 @@ func (m *Module) Status(ctx context.Context) Status {
 		Dest:     m.dst.Chain(),
 		Waiting:  m.waits.snapshot(),
 		Loops:    m.beats.snapshot(),
+		Dropped:  m.droppedSnapshot(),
 	}
 
 	// TryLock, not Lock. updateClientTo holds m.mu across the builder, which on
@@ -89,14 +98,32 @@ func (m *Module) Status(ctx context.Context) Status {
 		s.UpdateInFlight = true
 	}
 
-	probeCtx, cancel := context.WithTimeout(ctx, statusProbeTimeout)
+	// Detached from the caller: the caller is an HTTP request, and a requester
+	// that hangs up would cancel the probe and get back an error quoting the RPC
+	// URL on demand (#575 L7). The timeout still bounds it.
+	probeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), statusProbeTimeout)
 	defer cancel()
 	if height, err := m.src.RelayableHeight(probeCtx); err != nil {
-		s.RelayableHeightErr = err.Error()
+		s.RelayableHeightErr = describeProbeError(err)
 	} else {
 		s.RelayableHeight = height
 	}
 	return s
+}
+
+// describeProbeError is the status text for a failed RelayableHeight probe: its
+// class, then the error with every URL reduced to scheme and host. The raw text
+// of an RPC error quotes the endpoint, and an endpoint URL carries the
+// provider's API key.
+func describeProbeError(err error) string {
+	class := "transient"
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		class = "timed out"
+	case chain.IsPermanent(err):
+		class = "permanent"
+	}
+	return class + ": " + redact.Error(err).Error()
 }
 
 // snapshot lists what is parked, oldest first -- the order an operator reads in,

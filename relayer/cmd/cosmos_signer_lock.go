@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -65,12 +64,12 @@ func acquireCosmosSignerLock() (release func(), err error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("signer lock: create %q: %w", dir, err)
+	if err := ensureSignerLockDir(dir); err != nil {
+		return nil, err
 	}
 	path := filepath.Join(dir, signerLockPrefix+address+".lock")
 
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	file, err := openSignerLockFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("signer lock: open %q: %w", path, err)
 	}

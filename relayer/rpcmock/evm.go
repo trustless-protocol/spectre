@@ -104,6 +104,9 @@ type RawReceipt struct {
 	Status      uint64
 	GasUsed     uint64
 	BlockNumber uint64
+	// OmitBlockNumber leaves blockNumber out of the receipt. The field is
+	// optional as go-ethereum decodes a receipt, so a node may do exactly that.
+	OmitBlockNumber bool
 }
 
 // NewEVMNode starts a stub EVM node and stops it when the test finishes.
@@ -611,6 +614,14 @@ func addressParam(params []json.RawMessage) common.Address {
 }
 
 func receiptJSON(hash common.Hash, r *RawReceipt) map[string]any {
+	receipt := receiptFields(hash, r)
+	if r.OmitBlockNumber {
+		delete(receipt, "blockNumber")
+	}
+	return receipt
+}
+
+func receiptFields(hash common.Hash, r *RawReceipt) map[string]any {
 	return map[string]any{
 		"transactionHash":   hash.Hex(),
 		"transactionIndex":  "0x0",

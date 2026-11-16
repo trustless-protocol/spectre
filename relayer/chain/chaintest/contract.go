@@ -85,6 +85,26 @@ func RunSourceContract(t *testing.T, f SourceFixture) {
 			})
 		})
 
+		// The receipt rule, on the source side: an error means DO NOT KNOW.
+		// "false, nil" reads as "the commitment is gone", and the drop ledger
+		// forgets a dropped send on it.
+		if checker, ok := src.(chain.CommitmentChecker); ok {
+			t.Run("cannot answer the commitment check without an endpoint", func(t *testing.T) {
+				var committed bool
+				err := mustNotPanic(t, "HasPacketCommitment", func() error {
+					var err error
+					committed, err = checker.HasPacketCommitment(context.Background(), marshalPacket(t))
+					return err
+				})
+				if err == nil {
+					t.Fatal("an unwired commitment check answered instead of erroring; 'false, nil' reads as 'commitment gone'")
+				}
+				if committed {
+					t.Fatal("reported a commitment AND an error; the caller cannot use either")
+				}
+			})
+		}
+
 		// eventType selects which ICS-24 path is proven. An unknown one has no
 		// path, so proving anything for it would prove the wrong thing.
 		t.Run("rejects an event type it does not prove", func(t *testing.T) {

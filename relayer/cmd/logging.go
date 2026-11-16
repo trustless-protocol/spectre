@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 
+	"relayer/logbridge"
+
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -150,6 +152,8 @@ func newLogger(s logSettings, out zapcore.WriteSyncer) *zap.Logger {
 	} else {
 		encoder = zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig())
 	}
-	return zap.New(zapcore.NewCore(encoder, out, s.level),
+	// Every line, from zap and (through logbridge) from the standard logger,
+	// passes this core: a URL in it keeps its scheme and host only.
+	return zap.New(logbridge.RedactURLs(zapcore.NewCore(encoder, out, s.level)),
 		zap.AddCaller(), zap.AddStacktrace(zap.DPanicLevel))
 }

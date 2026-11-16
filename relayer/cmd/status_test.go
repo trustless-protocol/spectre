@@ -79,6 +79,27 @@ func TestRenderStatus(t *testing.T) {
 		}
 	})
 
+	// A dropped ack or timeout has no other exit: its escrow stays locked until a
+	// retry lands, so it must be named even when nothing is waiting.
+	t.Run("a packet held after a permanent failure is named", func(t *testing.T) {
+		dropped := status.Snapshot{Now: now, Paths: []relay.Status{{
+			Path: "cosmos->eth", ClientID: "07-tendermint-0", Source: "cosmos", Dest: "ethereum",
+			Dropped: []relay.DroppedPacket{{
+				Type: "ack", Sequence: 7, Since: now.Add(-time.Hour), Drops: 3,
+				NextRetry: now.Add(40 * time.Minute), Reason: "ackPacket seq=7 would revert",
+			}},
+		}}}
+		out := render(t, dropped)
+		for _, want := range []string{"ATTENTION", "ack seq=7", "3 drop(s)", "2026-09-13T10:40:00Z", "would revert"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("dropped packet line is missing %q:\n%s", want, out)
+			}
+		}
+		if strings.Contains(render(t, full), "dropped after a permanent failure") {
+			t.Errorf("a path with nothing dropped printed the dropped section")
+		}
+	})
+
 	// An incident is the wrong time to scroll past idle trackers.
 	t.Run("idle trackers are left out", func(t *testing.T) {
 		out := render(t, full)

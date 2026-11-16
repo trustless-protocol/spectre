@@ -94,6 +94,9 @@ func parseMerkleProof(proofs []*ics23.CommitmentProof, sequence uint64) (spectre
 		if err != nil {
 			return merkleProof, fmt.Errorf("failed to parse commitment proof for seq=%d: %w", sequence, err)
 		}
+		if commitmentProof == nil {
+			return merkleProof, fmt.Errorf("commitment proof for seq=%d parsed to nothing", sequence)
+		}
 		merkleProof.Proofs = append(merkleProof.Proofs, *commitmentProof)
 	}
 	return merkleProof, nil

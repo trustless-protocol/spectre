@@ -35,11 +35,31 @@ func timeoutOutcomeForError(err error) timeoutSendOutcome {
 	return timeoutDeferred
 }
 
-// deferTimeoutRetries returns false when the state transition was not durable.
-// Callers must stop this scan: the tracker has entered its fail-closed circuit
-// breaker and a later scan will first verify that persistence recovered.
+// deferTimeoutRetries backs off packets whose OWN step failed after the shared
+// prerequisites were met: a receipt check, a proof, a submission. A recovered
+// shared prerequisite does not clear these (#575 L3).
+//
+// It returns false when the state transition was not durable. Callers must stop
+// this scan: the tracker has entered its fail-closed circuit breaker and a later
+// scan will first verify that persistence recovered.
 func deferTimeoutRetries(tracker *PendingPacketTracker, pending []pendingPacketInfo, now time.Time, tag string) bool {
-	deferralCounts, err := tracker.DeferTimeoutRetriesIfCurrent(pending, now)
+	return recordDeferrals(tracker.DeferTimeoutRetriesIfCurrent, pending, now, tag)
+}
+
+// deferSharedTimeoutRetries backs off packets because a prerequisite every
+// timeout in the scan depends on failed (a header, the client update). The next
+// cycle that gets past it clears these again.
+func deferSharedTimeoutRetries(tracker *PendingPacketTracker, pending []pendingPacketInfo, now time.Time, tag string) bool {
+	return recordDeferrals(tracker.DeferSharedTimeoutRetriesIfCurrent, pending, now, tag)
+}
+
+func recordDeferrals(
+	deferFn func([]pendingPacketInfo, time.Time) ([]int, error),
+	pending []pendingPacketInfo,
+	now time.Time,
+	tag string,
+) bool {
+	deferralCounts, err := deferFn(pending, now)
 	if err != nil {
 		log.Printf("ERROR [%sTimeoutScan][ATTENTION] timeout retry state was not durable: %v; pausing timeout work", tag, err)
 		return false

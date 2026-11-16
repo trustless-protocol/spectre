@@ -1,9 +1,9 @@
 package services
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -47,6 +47,14 @@ type pendingPacketInfo struct {
 	// DeferTimeoutRetry.
 	Deferrals int
 
+	// SharedDeferrals is the part of Deferrals caused by a shared prerequisite
+	// (the client update or header every timeout in a scan depends on). It is
+	// the only part a recovered prerequisite clears. A deferral for this
+	// packet's own step -- its receipt check, its proof, its submission -- is
+	// not, so a packet that keeps failing after each paid client update backs
+	// off instead of retrying at the first rung forever (#575 L3).
+	SharedDeferrals int
+
 	// DeadLetteredAt is when the packet stopped being retried. Zero until then.
 	// The age matters as much as the count: a count says a timeout gave up, the
 	// age says how long nobody has looked (RLY-02).
@@ -60,10 +68,57 @@ type pendingPacketInfo struct {
 // It is keyed by the full packet identity rather than source-client/sequence:
 // client migration is allowed to reuse a sequence, and a terminal event for
 // the old packet must never suppress the replacement.
+//
+// It holds the identity, not the packet. The whole state file is rewritten on
+// every mutation, and 30 days of tombstones carrying full payloads made each
+// write -- under the tracker mutex, with an fsync -- grow with all the traffic
+// of the past month (#575 L5).
 type settledPacketInfo struct {
+	SettledAt time.Time
+}
+
+// settledRecord is a tombstone as the state file stores it (version 3).
+type settledRecord struct {
+	SourceClient      string    `json:"source_client"`
+	DestinationClient string    `json:"destination_client"`
+	Sequence          uint64    `json:"sequence"`
+	TimeoutTimestamp  uint64    `json:"timeout_timestamp"`
+	PayloadsDigest    string    `json:"payloads_digest"`
+	SettledAt         time.Time `json:"settled_at"`
+}
+
+// legacySettledRecord is a tombstone as versions 1 and 2 stored it: the whole
+// packet. Read only, to load an older state file.
+type legacySettledRecord struct {
 	Packet    channeltypesv2.Packet
 	SettledAt time.Time
-	identity  packetIdentity
+}
+
+func settledRecordOf(identity packetIdentity, info settledPacketInfo) settledRecord {
+	return settledRecord{
+		SourceClient:      identity.sourceClient,
+		DestinationClient: identity.destinationClient,
+		Sequence:          identity.sequence,
+		TimeoutTimestamp:  identity.timeoutTimestamp,
+		PayloadsDigest:    hex.EncodeToString(identity.payloadsDigest[:]),
+		SettledAt:         info.SettledAt,
+	}
+}
+
+func (r settledRecord) identity() (packetIdentity, error) {
+	digest, err := hex.DecodeString(r.PayloadsDigest)
+	if err != nil || len(digest) != sha256.Size {
+		return packetIdentity{}, fmt.Errorf("settled packet %s/%d: payloads digest %q is not %d hex bytes",
+			r.SourceClient, r.Sequence, r.PayloadsDigest, sha256.Size)
+	}
+	identity := packetIdentity{
+		sourceClient:      r.SourceClient,
+		destinationClient: r.DestinationClient,
+		sequence:          r.Sequence,
+		timeoutTimestamp:  r.TimeoutTimestamp,
+	}
+	copy(identity.payloadsDigest[:], digest)
+	return identity, nil
 }
 
 // packetIdentity states exactly which packet value owns retry state. The
@@ -141,6 +196,12 @@ const (
 	// across a client migration that reuses a sequence.
 	settledPacketRetention = 30 * 24 * time.Hour
 
+	// settledPacketMaxEntries bounds terminal tombstones per tracker; the oldest
+	// is evicted first. A tombstone guards the short handoff race and replays
+	// inside a recovery scan; past it, a replayed send is still stopped by the
+	// destination receipt check, the pre-flight eth_call and the drop ledger.
+	settledPacketMaxEntries = 4096
+
 	// deferralAlertThreshold is how many un-charged back-offs a packet may take
 	// before the scanner says so out loud, and how often it repeats after that.
 	//
@@ -211,13 +272,17 @@ func NewPendingPacketTracker() *PendingPacketTracker {
 	}
 }
 
-const pendingPacketStateVersion = 2
+// pendingPacketStateVersion 3 stores tombstones as identities. 1 and 2 are
+// still read.
+const pendingPacketStateVersion = 3
 
 type pendingPacketState struct {
 	Version      int                 `json:"version"`
 	Packets      []pendingPacketInfo `json:"packets"`
 	DeadLettered []pendingPacketInfo `json:"dead_lettered"`
-	Settled      []settledPacketInfo `json:"settled,omitempty"`
+	Settled      []settledRecord     `json:"settled_identities,omitempty"`
+	// LegacySettled is the tombstone list of versions 1 and 2. Never written.
+	LegacySettled []legacySettledRecord `json:"settled,omitempty"`
 }
 
 // NewPersistentPendingPacketTracker restores the complete active and tombstone
@@ -254,7 +319,7 @@ func (t *PendingPacketTracker) load() error {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return fmt.Errorf("decode pending packet state %s: %w", t.statePath, err)
 	}
-	if state.Version != 1 && state.Version != pendingPacketStateVersion {
+	if state.Version < 1 || state.Version > pendingPacketStateVersion {
 		return fmt.Errorf("decode pending packet state %s: unsupported version %d", t.statePath, state.Version)
 	}
 	for _, info := range state.Packets {
@@ -277,14 +342,42 @@ func (t *PendingPacketTracker) load() error {
 		t.deadLettered = append(t.deadLettered, info)
 		t.deadLetteredByKey[key] = info
 	}
-	for _, info := range state.Settled {
-		info.identity = identifyPacket(info.Packet)
-		if _, duplicate := t.settled[info.identity]; duplicate {
-			return fmt.Errorf("decode pending packet state %s: duplicate settled packet %s/%d", t.statePath, info.Packet.SourceClient, info.Packet.Sequence)
+	records := state.Settled
+	for _, legacy := range state.LegacySettled {
+		records = append(records, settledRecordOf(identifyPacket(legacy.Packet), settledPacketInfo{SettledAt: legacy.SettledAt}))
+	}
+	for _, record := range records {
+		identity, err := record.identity()
+		if err != nil {
+			return fmt.Errorf("decode pending packet state %s: %w", t.statePath, err)
 		}
-		t.settled[info.identity] = info
+		if _, duplicate := t.settled[identity]; duplicate {
+			return fmt.Errorf("decode pending packet state %s: duplicate settled packet %s/%d", t.statePath, record.SourceClient, record.Sequence)
+		}
+		t.settled[identity] = settledPacketInfo{SettledAt: record.SettledAt}
+	}
+	// An older file may hold more than the cap.
+	for len(t.settled) > settledPacketMaxEntries {
+		t.evictOldestSettledLocked()
 	}
 	return nil
+}
+
+// evictOldestSettledLocked removes the tombstone settled longest ago.
+func (t *PendingPacketTracker) evictOldestSettledLocked() {
+	var (
+		oldest   packetIdentity
+		oldestAt time.Time
+		found    bool
+	)
+	for identity, info := range t.settled {
+		if !found || info.SettledAt.Before(oldestAt) {
+			oldest, oldestAt, found = identity, info.SettledAt, true
+		}
+	}
+	if found {
+		delete(t.settled, oldest)
+	}
 }
 
 // persistLocked atomically replaces the state file while t.mtx is held.
@@ -296,13 +389,13 @@ func (t *PendingPacketTracker) persistLocked() error {
 		Version:      pendingPacketStateVersion,
 		Packets:      make([]pendingPacketInfo, 0, len(t.packets)),
 		DeadLettered: append([]pendingPacketInfo(nil), t.deadLettered...),
-		Settled:      make([]settledPacketInfo, 0, len(t.settled)),
+		Settled:      make([]settledRecord, 0, len(t.settled)),
 	}
 	for _, info := range t.packets {
 		state.Packets = append(state.Packets, info)
 	}
-	for _, info := range t.settled {
-		state.Settled = append(state.Settled, info)
+	for identity, info := range t.settled {
+		state.Settled = append(state.Settled, settledRecordOf(identity, info))
 	}
 	sort.Slice(state.Packets, func(i, j int) bool {
 		a, b := state.Packets[i].Packet, state.Packets[j].Packet
@@ -312,7 +405,7 @@ func (t *PendingPacketTracker) persistLocked() error {
 		return a.Sequence < b.Sequence
 	})
 	sort.Slice(state.Settled, func(i, j int) bool {
-		a, b := state.Settled[i].Packet, state.Settled[j].Packet
+		a, b := state.Settled[i], state.Settled[j]
 		if a.SourceClient != b.SourceClient {
 			return a.SourceClient < b.SourceClient
 		}
@@ -325,8 +418,7 @@ func (t *PendingPacketTracker) persistLocked() error {
 		if a.TimeoutTimestamp != b.TimeoutTimestamp {
 			return a.TimeoutTimestamp < b.TimeoutTimestamp
 		}
-		ai, bi := identifyPacket(a), identifyPacket(b)
-		return bytes.Compare(ai.payloadsDigest[:], bi.payloadsDigest[:]) < 0
+		return a.PayloadsDigest < b.PayloadsDigest
 	})
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err == nil {
@@ -462,11 +554,10 @@ func (t *PendingPacketTracker) MarkSettled(packet channeltypesv2.Packet) error {
 		return nil
 	}
 	return t.commitLocked(func() {
-		t.settled[identity] = settledPacketInfo{
-			Packet:    packet,
-			SettledAt: time.Now(),
-			identity:  identity,
+		if !alreadySettled && len(t.settled) >= settledPacketMaxEntries {
+			t.evictOldestSettledLocked()
 		}
+		t.settled[identity] = settledPacketInfo{SettledAt: time.Now()}
 		if activeExists && active.identity == identity {
 			delete(t.packets, key)
 		}
@@ -499,32 +590,43 @@ func (t *PendingPacketTracker) removeDeadLettered(key packetKey) {
 	t.deadLettered = retained
 }
 
-// ClearDeferralsIfCurrent resets a packet's deferral count after a cycle that got far
-// enough to prove the shared prerequisites are healthy again.
+// ClearSharedDeferralsIfCurrent removes the deferrals a shared-prerequisite
+// outage caused, after a cycle that got far enough to prove the shared
+// prerequisites are healthy again.
 //
 // Without it the count only ever grows, so one outage early in a packet's life
 // leaves it permanently near the backoff cap and permanently inside the stuck
 // gauge — a stale alarm, and a slower retry than the packet deserves.
+//
+// It clears ONLY the shared part. Clearing the whole count after every
+// successful client update reset a packet whose own timeout kept failing to the
+// first backoff rung each cycle: one paid client update a minute, forever, and
+// never a STUCK line (#575 L3).
+//
 // It ignores a recovered prerequisite result from a scan whose packet was
 // replaced while the scan was in flight.
-func (t *PendingPacketTracker) ClearDeferralsIfCurrent(scanned pendingPacketInfo) error {
-	return t.ClearDeferralsIfCurrentBatch([]pendingPacketInfo{scanned})
+func (t *PendingPacketTracker) ClearSharedDeferralsIfCurrent(scanned pendingPacketInfo) error {
+	return t.ClearSharedDeferralsIfCurrentBatch([]pendingPacketInfo{scanned})
 }
 
-// ClearDeferralsIfCurrentBatch resets matching scan snapshots in one durable
-// mutation, avoiding one complete snapshot/fsync per packet after a shared
-// prerequisite recovers.
-func (t *PendingPacketTracker) ClearDeferralsIfCurrentBatch(scanned []pendingPacketInfo) error {
+// ClearSharedDeferralsIfCurrentBatch clears matching scan snapshots in one
+// durable mutation, avoiding one complete snapshot/fsync per packet after a
+// shared prerequisite recovers.
+func (t *PendingPacketTracker) ClearSharedDeferralsIfCurrentBatch(scanned []pendingPacketInfo) error {
 	t.mtx.Lock()
 	defer t.mtx.Unlock()
 	updates := make(map[packetKey]pendingPacketInfo)
 	for _, snapshot := range scanned {
 		key := packetKey{sourceClient: snapshot.Packet.SourceClient, sequence: snapshot.Packet.Sequence}
 		info, ok := t.packets[key]
-		if !ok || info.identity != identityOf(snapshot) || info.Deferrals == 0 {
+		if !ok || info.identity != identityOf(snapshot) || info.SharedDeferrals == 0 {
 			continue
 		}
-		info.Deferrals = 0
+		info.Deferrals -= info.SharedDeferrals
+		if info.Deferrals < 0 {
+			info.Deferrals = 0
+		}
+		info.SharedDeferrals = 0
 		updates[key] = info
 	}
 	if len(updates) == 0 {
@@ -746,11 +848,24 @@ func (t *PendingPacketTracker) DeferTimeoutRetryIfCurrent(scanned pendingPacketI
 }
 
 // DeferTimeoutRetriesIfCurrent backs off all still-current scan snapshots with
-// one lock and one persisted snapshot. The returned counts align with scanned;
+// one lock and one persisted snapshot, for a failure of each packet's own step.
+// A recovered shared prerequisite does not clear these (see
+// ClearSharedDeferralsIfCurrentBatch). The returned counts align with scanned;
 // zero with a nil error means the packet was replaced or removed. A non-nil
 // error means the whole mutation was rolled back and timeout retries are
 // circuit-broken until persistence recovers.
 func (t *PendingPacketTracker) DeferTimeoutRetriesIfCurrent(scanned []pendingPacketInfo, now time.Time) ([]int, error) {
+	return t.deferTimeoutRetriesIfCurrent(scanned, now, false)
+}
+
+// DeferSharedTimeoutRetriesIfCurrent is DeferTimeoutRetriesIfCurrent for a
+// failure of a shared prerequisite: the next cycle that gets past it clears
+// these deferrals again.
+func (t *PendingPacketTracker) DeferSharedTimeoutRetriesIfCurrent(scanned []pendingPacketInfo, now time.Time) ([]int, error) {
+	return t.deferTimeoutRetriesIfCurrent(scanned, now, true)
+}
+
+func (t *PendingPacketTracker) deferTimeoutRetriesIfCurrent(scanned []pendingPacketInfo, now time.Time, shared bool) ([]int, error) {
 	t.mtx.Lock()
 	defer t.mtx.Unlock()
 	counts := make([]int, len(scanned))
@@ -762,6 +877,9 @@ func (t *PendingPacketTracker) DeferTimeoutRetriesIfCurrent(scanned []pendingPac
 			continue
 		}
 		info.Deferrals++
+		if shared {
+			info.SharedDeferrals++
+		}
 		info.NotBefore = now.Add(nextTimeoutBackoff(info.Deferrals))
 		updates[key] = info
 		counts[i] = info.Deferrals
@@ -988,7 +1106,11 @@ func (t *PendingPacketTracker) purgeStaleWithoutTimeoutLocked(now time.Time, max
 		key := packetKey{sourceClient: info.Packet.SourceClient, sequence: info.Packet.Sequence}
 		delete(t.deadLetteredByKey, key)
 		info.TimeoutAttempts = 0
+		// Both counts, or the shared part outlives the total it is part of and
+		// the next recovered prerequisite subtracts it from deferrals the packet
+		// takes after this (#575 L3).
 		info.Deferrals = 0
+		info.SharedDeferrals = 0
 		info.NotBefore = time.Time{}
 		info.DeadLetteredAt = time.Time{}
 		info.ObservedAt = now

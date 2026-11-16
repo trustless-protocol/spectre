@@ -168,6 +168,10 @@ type cosmosLiveHealth struct {
 	// this file exists to remove. A boundary cannot be wrong about that, because
 	// it describes the heights themselves rather than who is asking.
 	armFromHeight uint64
+	// observedHead is the highest chain head this subscription has read. A live
+	// event above it makes the live path read the head again before the event may
+	// move the recovery cursor (#575 L4).
+	observedHead uint64
 	// staleSince is when the CURRENT outage was first judged stale; zero when the
 	// live path is healthy. It survives a reconnect on purpose: the question the
 	// ladder answers is "how long has this been broken", not "how long since the
@@ -210,6 +214,13 @@ func (h *cosmosLiveHealth) establishArmFrom(latestHeight uint64) {
 // this subscription was running to deliver.
 func (h *cosmosLiveHealth) armsFromHeight(chunkEnd uint64) bool {
 	return h.armFromHeight != 0 && chunkEnd > h.armFromHeight
+}
+
+// observeHead records a chain head read. The value only grows.
+func (h *cosmosLiveHealth) observeHead(height uint64) {
+	if height > h.observedHead {
+		h.observedHead = height
+	}
 }
 
 func (h *cosmosLiveHealth) recordEvent() {
@@ -402,8 +413,15 @@ func (s *Subscriber) processLiveCosmosEvent(
 ) {
 	height := txHeightFromEvent(e.Data, e.Events)
 	if height > 0 && *nextRecoveryStartHeight > 0 && height > *nextRecoveryStartHeight {
-		stats, err := recoverCosmosEvents(stdCtx, ctx, batchBuilder, *nextRecoveryStartHeight, height-1, seenEvents)
-		if err != nil {
+		if head, ok := liveHeightAtOrBelowHead(stdCtx, ctx, liveHealth, height); !ok {
+			// The event's height comes from the RPC. Moving the cursor to a height
+			// the chain has not reached turned gap recovery and the stale watchdog
+			// off for as long as the head stayed below it (#575 L4). The cursor
+			// stays; the periodic pass still covers the gap, and the packets in the
+			// event are still processed below.
+			ctx.Logger.Printf("WARN [SubscribeCosmos] live event at height %d is above the chain head %d; "+
+				"the recovery cursor stays at %d", height, head, *nextRecoveryStartHeight)
+		} else if stats, err := recoverCosmosEvents(stdCtx, ctx, batchBuilder, *nextRecoveryStartHeight, height-1, seenEvents); err != nil {
 			ctx.Logger.Printf("WARN [SubscribeCosmos] gap recovery before live height %d failed: %v", height, err)
 		} else {
 			ctx.Logger.Printf("[SubscribeCosmos] gap recovery complete before live height %d: recovered=%d skipped=%d",
@@ -424,8 +442,30 @@ func (s *Subscriber) processLiveCosmosEvent(
 		ctx.Logger.Printf("[SubscribeCosmos] skipped %d live Cosmos event(s)", stats.skipped)
 	}
 	if height > 0 {
-		pruneCosmosSeenEvents(seenEvents, height)
+		// At most the highest head read: the event's height comes from the RPC,
+		// and one far above the head forgot every packet seen so far, which the
+		// next recovery pass then queued again (#575 L4).
+		pruneCosmosSeenEvents(seenEvents, min(height, liveHealth.observedHead))
 	}
+}
+
+// liveHeightAtOrBelowHead reports whether a live event's height is one the chain
+// has reached, reading the head again only when the event is above the highest
+// head already observed. It returns the head it judged against.
+//
+// A failed read is a "no": the cursor must not move on an unconfirmed height,
+// and the periodic recovery pass covers the gap either way.
+func liveHeightAtOrBelowHead(stdCtx context.Context, ctx cosmosDeps, liveHealth *cosmosLiveHealth, height uint64) (uint64, bool) {
+	if height <= liveHealth.observedHead {
+		return liveHealth.observedHead, true
+	}
+	head, err := latestCosmosHeight(stdCtx, ctx)
+	if err != nil {
+		ctx.Logger.Printf("WARN [SubscribeCosmos] head read for live height %d failed: %v", height, err)
+		return liveHealth.observedHead, false
+	}
+	liveHealth.observeHead(head)
+	return liveHealth.observedHead, height <= liveHealth.observedHead
 }
 
 type cosmosEventKey struct {
@@ -521,6 +561,7 @@ func (s *Subscriber) recoverCosmosGapToLatest(
 	}
 	// The head this pass already read is the block-rate sample; see blockRate.
 	rate.observe(latestHeight, time.Now())
+	liveHealth.observeHead(latestHeight)
 
 	// The first head this subscription manages to read is its boundary: heights
 	// above it are the ones the live path was running to deliver. Establishing it
@@ -710,6 +751,11 @@ func recoverCosmosEventsForQuery(
 	query := cosmosTxSearchQuery(baseQuery, startHeight, endHeight)
 
 	for {
+		if page > maxCosmosTxSearchPages {
+			// An error, so the cursor does not move past heights not fully read.
+			return stats, fmt.Errorf("TxSearch query %q is still returning results after %d pages; "+
+				"lower %s to scan fewer heights per query", query, maxCosmosTxSearchPages, cosmosRecoveryChunkEnv)
+		}
 		rpcCtx, cancel := context.WithTimeout(stdCtx, subscriberRPCTimeout)
 		result, err := ctx.Cosmos.CosmosClient().TxSearch(rpcCtx, query, false, &page, &perPage, "asc")
 		cancel()
@@ -1004,14 +1050,22 @@ func cosmosPacketMatchesConfiguredClient(ctx cosmosDeps, packet *channeltypesv2.
 
 	ethClientID := ctx.IDs.EVMOnCosmos
 	routerClientID := ctx.IDs.CosmosOnEVM
-	if ethClientID == "" && routerClientID == "" {
+	switch {
+	case ethClientID == "" && routerClientID == "":
 		return true
+	case ethClientID == "":
+		return packet.SourceClient == routerClientID || packet.DestinationClient == routerClientID
+	case routerClientID == "":
+		return packet.SourceClient == ethClientID || packet.DestinationClient == ethClientID
 	}
 
-	return packet.SourceClient == ethClientID ||
-		packet.DestinationClient == ethClientID ||
-		packet.SourceClient == routerClientID ||
-		packet.DestinationClient == routerClientID
+	// Both ends, as the EVM and L2 sources filter (#575). Matching either one let a
+	// packet between this path's client and any other client in: with
+	// permissionless client creation, anyone can create a Cosmos client whose
+	// counterparty is named like ours, and each such packet cost a client update
+	// before its proof was refused.
+	return (packet.SourceClient == ethClientID && packet.DestinationClient == routerClientID) ||
+		(packet.SourceClient == routerClientID && packet.DestinationClient == ethClientID)
 }
 
 func shouldEnqueueRecoveredCosmosPacket(stdCtx context.Context, ctx cosmosDeps, packet services.CosmosPacket) (bool, error) {

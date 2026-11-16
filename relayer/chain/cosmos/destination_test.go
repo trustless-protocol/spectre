@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"relayer/chain"
 	relayerclient "relayer/client"
 	"relayer/services"
@@ -355,6 +356,26 @@ func TestDestination(t *testing.T) {
 // ethClientExpiry is what the module's anti-expiry refresh acts on. Reporting it
 // too late lets the 08-wasm client lapse, which stops the ETH→Cosmos direction
 // entirely; too early only costs an extra update.
+// #575: the expiry multiplied and added numbers read off the chain without
+// checks, so a state whose factors overflow wrapped to a wrong expiry.
+func TestEthClientExpiry_OverflowIsNoExpiry(t *testing.T) {
+	max := ^uint64(0)
+	for name, cs := range map[string]*relayerclient.EthereumClientState{
+		"period product overflows": {EpochsPerSyncCommitteePeriod: max, SlotsPerEpoch: 32, SecondsPerSlot: 12, LatestSlot: 1},
+		"period beyond a Duration": {EpochsPerSyncCommitteePeriod: 1 << 40, SlotsPerEpoch: 1 << 10, SecondsPerSlot: 1, LatestSlot: 1},
+		"slot timestamp overflows": {EpochsPerSyncCommitteePeriod: 256, SlotsPerEpoch: 32, SecondsPerSlot: 12, LatestSlot: max},
+		"expiry beyond an int64":   {EpochsPerSyncCommitteePeriod: 256, SlotsPerEpoch: 32, SecondsPerSlot: 1, GenesisTime: math.MaxInt64 - 10},
+		"genesis plus slots wraps": {EpochsPerSyncCommitteePeriod: 256, SlotsPerEpoch: 32, SecondsPerSlot: 12, GenesisTime: max - 5, LatestSlot: 10},
+	} {
+		t.Run(name, func(t *testing.T) {
+			expiry, period := ethClientExpiry(cs)
+			if !expiry.IsZero() || period != 0 {
+				t.Fatalf("expiry = %s, period = %s; want no expiry for a state whose numbers do not fit", expiry, period)
+			}
+		})
+	}
+}
+
 func TestEthClientExpiry(t *testing.T) {
 	// Mainnet-shaped geometry: 32 slots per epoch, 256 epochs per sync-committee
 	// period, 12s slots -> one period is 98,304 seconds.
