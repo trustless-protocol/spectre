@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"sync"
 )
 
 // Dummy padding fills the unused slots of a bucket. Every slot in a batch is
@@ -62,8 +63,7 @@ func PadWithDummies(sigs []ValidatorSignature, n int) ([]ValidatorSignature, err
 	out := make([]ValidatorSignature, n)
 	copy(out, sigs)
 	for i := len(sigs); i < n; i++ {
-		seed := sha256.Sum256(fmt.Appendf(nil, dummySeedFmt, n, i))
-		priv := ed25519.NewKeyFromSeed(seed[:])
+		priv := dummyKey(n, i)
 		msg := DummyMsgBytes(uint16(n), uint16(i))
 		out[i] = ValidatorSignature{
 			Signature:   ed25519.Sign(priv, msg),
@@ -73,4 +73,37 @@ func PadWithDummies(sigs []ValidatorSignature, n int) ([]ValidatorSignature, err
 		}
 	}
 	return out, nil
+}
+
+// dummyKey derives the padding keypair of slot i in bucket n.
+func dummyKey(n, i int) ed25519.PrivateKey {
+	seed := sha256.Sum256(fmt.Appendf(nil, dummySeedFmt, n, i))
+	return ed25519.NewKeyFromSeed(seed[:])
+}
+
+// dummyKeyIndex maps the padding public key of every slot of every supported
+// bucket to that (bucket, slot). It is built once, on first use, and only read
+// after that.
+var (
+	dummyKeyIndexOnce sync.Once
+	dummyKeyIndex     map[string][2]int
+)
+
+// DummyKeySlot reports whether publicKey is the padding key PadWithDummies uses
+// for a slot of a supported bucket, and which one. The padding keys come from
+// public seeds, so their private keys are public: anyone can sign as a validator
+// that uses one, and no honest key generation produces one. The circuit still
+// proves a batch in which such a validator's key repeats a padding slot's key
+// (#579 item 4), so this only tells the relayer whom to warn about.
+func DummyKeySlot(publicKey []byte) (bucket, slot int, ok bool) {
+	dummyKeyIndexOnce.Do(func() {
+		dummyKeyIndex = make(map[string][2]int)
+		for _, n := range SupportedBuckets {
+			for i := 0; i < n; i++ {
+				dummyKeyIndex[string(dummyKey(n, i).Public().(ed25519.PublicKey))] = [2]int{n, i}
+			}
+		}
+	})
+	at, ok := dummyKeyIndex[string(publicKey)]
+	return at[0], at[1], ok
 }

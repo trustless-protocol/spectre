@@ -3,6 +3,7 @@ package services
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/sha512"
 	"fmt"
 	"strings"
@@ -144,5 +145,76 @@ func TestReportedKeys_ClearsAtTheBound(t *testing.T) {
 	}
 	if !r.firstReport([]byte("0")) {
 		t.Fatal("a key from before the clear was not reported again")
+	}
+}
+
+// rekeyWithDummyKey gives validator idx the public padding key of (bucket, slot)
+// and signs its vote with it. The seed format mirrors witness.dummySeedFmt; the
+// test checks witness.DummyKeySlot recognises the key, so a format change fails
+// loudly instead of silently testing nothing.
+func rekeyWithDummyKey(t *testing.T, lb *relayerclient.LightBlock, chainID string, idx, bucket, slot int) cmted25519.PubKey {
+	t.Helper()
+	seed := sha256.Sum256(fmt.Appendf(nil, "spectre-dummy-seed|bucket=%d|slot=%d", bucket, slot))
+	priv := ed25519.NewKeyFromSeed(seed[:])
+	cmtPub := cmted25519.PubKey(priv.Public().(ed25519.PublicKey))
+	if b, s, ok := witness.DummyKeySlot(cmtPub.Bytes()); !ok || b != bucket || s != slot {
+		t.Fatalf("witness.DummyKeySlot does not recognise the bucket %d slot %d key: (%d, %d, %v)", bucket, slot, b, s, ok)
+	}
+	commit := lb.SignedHeader.Commit
+	lb.ValSet.Validators[idx].PubKey = cmtPub
+	lb.ValSet.Validators[idx].Address = cmtPub.Address()
+	commit.Signatures[idx].ValidatorAddress = cmtPub.Address()
+	commit.Signatures[idx].Signature = ed25519.Sign(priv, commit.VoteSignBytes(chainID, int32(idx)))
+	return cmtPub
+}
+
+// TestExtractValidatorSignatures_WarnsAboutADummyKeySigner covers #579 item 4.
+// A validator keyed with a public padding key still proves, so it stays selected,
+// but the relayer names it once at WARN and at DEBUG after that.
+func TestExtractValidatorSignatures_WarnsAboutADummyKeySigner(t *testing.T) {
+	chainID := "test-chain"
+	lb := makeSignedCommit(t, chainID, []int64{30, 25, 25, 20}, []bool{true, true, true, true})
+	bad := rekeyWithDummyKey(t, lb, chainID, 0, 16, 15)
+
+	var got *ExtractorResult
+	var err error
+	logs := captureLog(t, func() { got, err = ExtractValidatorSignatures(lb, chainID, 4) })
+	if err != nil {
+		t.Fatalf("ExtractValidatorSignatures: %v", err)
+	}
+	selected := false
+	for _, s := range got.Signatures {
+		selected = selected || s.Index == 0
+	}
+	if !selected {
+		t.Fatal("the validator with the padding key was dropped; its signature still proves and must stay selectable")
+	}
+	wantWarn := fmt.Sprintf("WARN [ExtractValidatorSignatures] validator %s (index 0, power 30, pubkey %X) at height 100 "+
+		"uses the public padding key of bucket 16 slot 15", bad.Address(), bad.Bytes())
+	if !strings.Contains(logs, wantWarn) {
+		t.Fatalf("missing warning, want %q in:\n%s", wantWarn, logs)
+	}
+
+	logs = captureLog(t, func() { _, err = ExtractValidatorSignatures(lb, chainID, 4) })
+	if err != nil {
+		t.Fatalf("second ExtractValidatorSignatures: %v", err)
+	}
+	if !strings.HasPrefix(logs, "DEBUG [ExtractValidatorSignatures] validator "+bad.Address().String()) {
+		t.Fatalf("a repeat must log at DEBUG, got:\n%s", logs)
+	}
+}
+
+// TestExtractValidatorSignatures_NoWarningForHonestKeys: an ordinary commit logs
+// nothing about padding keys or unprovable signers.
+func TestExtractValidatorSignatures_NoWarningForHonestKeys(t *testing.T) {
+	chainID := "test-chain"
+	lb := makeSignedCommit(t, chainID, []int64{30, 25, 25, 20}, []bool{true, true, true, true})
+	var err error
+	logs := captureLog(t, func() { _, err = ExtractValidatorSignatures(lb, chainID, 4) })
+	if err != nil {
+		t.Fatalf("ExtractValidatorSignatures: %v", err)
+	}
+	if strings.Contains(logs, "[ExtractValidatorSignatures]") {
+		t.Fatalf("honest validators were reported:\n%s", logs)
 	}
 }
