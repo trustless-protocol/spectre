@@ -3,7 +3,9 @@ package services
 import (
 	"crypto/ed25519"
 	"fmt"
+	"log"
 	"sort"
+	"sync"
 
 	relayerclient "relayer/client"
 	"relayer/prover/witness"
@@ -17,9 +19,10 @@ import (
 // consumes the resulting witness.ValidatorSignature slice.
 //
 // ExtractValidatorSignatures collects non-absent, locally-verified commit
-// signatures until their cumulative voting power exceeds 2/3 of
-// TotalVotingPower. Candidates are sorted by power for selection, while the
-// selected proof slots are returned in validator-index order.
+// signatures the proof circuit can prove (witness.CheckCircuitEncoding) until
+// their cumulative voting power exceeds 2/3 of TotalVotingPower. Candidates are
+// sorted by power for selection, while the selected proof slots are returned in
+// validator-index order.
 //
 // allowedIndices restricts which validator slots may be selected. When nil,
 // all signing validators are candidates. Pass the set of cached signer indices
@@ -71,6 +74,14 @@ func ExtractValidatorSignatures(
 		}
 		voteData := commit.VoteSignBytes(chainID, int32(i))
 		if !ed25519.Verify(pubKeyBytes, voteData, sig.Signature) {
+			continue
+		}
+		// crypto/ed25519 accepts a few key and signature encodings the proof
+		// circuit rejects (#579). Selecting one would fail every proof over this
+		// quorum, and the relayer would select it again on every retry, so skip
+		// the signer and build the quorum from the others.
+		if err := witness.CheckCircuitEncoding(pubKeyBytes, sig.Signature); err != nil {
+			reportUnprovableSigner(unprovableSigners, validator, i, commit.Height, err)
 			continue
 		}
 		candidates = append(candidates, witness.ValidatorSignature{
@@ -133,4 +144,50 @@ func sortSelectedSignaturesByIndex(sigs []witness.ValidatorSignature) {
 type ExtractorResult struct {
 	Candidates []witness.ValidatorSignature
 	Signatures []witness.ValidatorSignature
+}
+
+// unprovableSigners holds the keys already reported by reportUnprovableSigner.
+// Every caller of ExtractValidatorSignatures shares it (the relay modules and the
+// misbehaviour path run on their own goroutines), so reportedKeys guards it
+// with its own mutex.
+var unprovableSigners = &reportedKeys{keys: make(map[string]struct{})}
+
+// maxReportedKeys bounds reportedKeys. Reaching it clears the set, which costs
+// one repeated WARN per key and nothing else.
+const maxReportedKeys = 1024
+
+// reportedKeys remembers which keys were reported, so that a validator that
+// signs every block in a shape the circuit rejects is reported at WARN once and
+// at DEBUG after that (logbridge: DEBUG is for repeats with nothing new to say).
+type reportedKeys struct {
+	mu   sync.Mutex
+	keys map[string]struct{}
+}
+
+// firstReport records key and reports whether it was not recorded before.
+func (r *reportedKeys) firstReport(key []byte) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, seen := r.keys[string(key)]; seen {
+		return false
+	}
+	if len(r.keys) >= maxReportedKeys {
+		clear(r.keys)
+	}
+	r.keys[string(key)] = struct{}{}
+	return true
+}
+
+// reportUnprovableSigner logs a validator whose signature verifies but cannot be
+// proven. An honestly generated key and nonce never take these shapes, so the
+// line names the validator for the operator to follow up.
+func reportUnprovableSigner(reported *reportedKeys, validator *types.Validator, index int, height int64, err error) {
+	level := "DEBUG"
+	if reported.firstReport(validator.PubKey.Bytes()) {
+		level = "WARN"
+	}
+	log.Printf("%s [ExtractValidatorSignatures] skipping validator %s (index %d, power %d, pubkey %X) at height %d: "+
+		"the proof circuit cannot prove its signature: %v. An honestly generated key and nonce never do this, so this "+
+		"validator is most likely trying to stall the light client; the quorum is built from the other signers",
+		level, validator.Address, index, validator.VotingPower, validator.PubKey.Bytes(), height, err)
 }

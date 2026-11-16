@@ -48,11 +48,15 @@ func validateSignatures(sigs []witness.ValidatorSignature) error {
 			continue
 		}
 		active++
-		// A full stdlib Ed25519 verify (~50µs/slot) subsumes point
-		// decompression and canonicity checks, and catches a bad signature
-		// here instead of as a cryptic in-circuit failure minutes later.
+		// A full stdlib Ed25519 verify (~50µs/slot) catches a bad signature here
+		// instead of as a cryptic in-circuit failure minutes later. It is not
+		// enough on its own: it accepts a few key and signature encodings the
+		// circuit rejects (#579), which CheckCircuitEncoding covers.
 		if !ed25519.Verify(ed25519.PublicKey(s.PublicKey), s.SignedBytes, s.Signature) {
 			return &ErrInvalidInput{Reason: "signature does not verify", Slot: i}
+		}
+		if err := witness.CheckCircuitEncoding(s.PublicKey, s.Signature); err != nil {
+			return &ErrInvalidInput{Reason: "the circuit cannot prove this signature: " + err.Error(), Slot: i}
 		}
 	}
 	if active == 0 {
