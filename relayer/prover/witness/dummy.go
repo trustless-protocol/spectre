@@ -10,10 +10,12 @@ import (
 
 // Dummy padding fills the unused slots of a bucket. Every slot in a batch is
 // Ed25519-verified in-circuit — padding is not gated — so each dummy carries a
-// real signature from a deterministic keypair, and each (R, A) point in the
-// batch stays distinct (duplicated points would hit the doubling branch of the
-// ECIP divisor). What marks a slot as padding is the committed Active byte
-// plus the on-chain quorum check.
+// real signature from a deterministic keypair. The padding keys differ from one
+// another by derivation, but nothing keeps them apart from the active slots'
+// points, and the circuit does not need that: a batch whose active signer
+// repeats a padding slot's A or R still proves (#579 item 4,
+// TestBatchCircuit_SolvesWhenASignerCollidesWithADummy). What marks a slot as
+// padding is the committed Active byte plus the on-chain quorum check.
 //
 // Neither string below is checked on-chain: SignatureVerifier hashes only each
 // slot's Active byte and pubkey, and the dummy pubkeys travel in calldata. Only

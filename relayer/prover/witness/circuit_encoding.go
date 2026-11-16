@@ -7,17 +7,21 @@ import (
 )
 
 // The batch circuit is stricter than crypto/ed25519.Verify about how a
-// signature's points and scalar are encoded. Verify follows the ZIP-215 reading
-// of RFC 8032 and accepts a public key A whose y coordinate is written as y + p,
-// and it accepts any point with x = 0. The circuit rejects all of them:
+// signature's points are encoded. Verify checks the equation cofactorless,
+// takes S only below ℓ, and requires sig[:32] to equal the canonical encoding
+// of the R it recomputes, so R is canonical whenever Verify accepts. It decodes
+// A leniently, though, accepting an A whose y coordinate is written as y + p,
+// and it accepts points with x = 0 as A or R. The circuit rejects those:
 //
 //   - it asserts x != 0 for both A and R (ecip-gnark signature/eddsa
 //     assertOnEdwardsCurve), which rules out the identity (0, 1) and the
 //     order-2 point (0, -1). R is the identity when the signer used nonce r = 0;
 //   - it hashes A's canonical re-encoding into the witness digest, while the
 //     relayer and SignatureVerifier hash the raw bytes, so the public input never
-//     matches when A is written non-canonically;
-//   - it asserts S < ℓ (Verify does too).
+//     matches when A is written non-canonically.
+//
+// CheckCircuitEncoding also checks R's encoding and S < ℓ, which Verify already
+// guarantees, so that it does not depend on being called after Verify for them.
 //
 // An honest signer produces none of these: a random key or nonce lands on them
 // with negligible probability. A validator that does is choosing to, and if the

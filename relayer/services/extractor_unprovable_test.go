@@ -62,12 +62,25 @@ func rekeyWithZeroNonce(t *testing.T, lb *relayerclient.LightBlock, chainID stri
 	return cmtPub
 }
 
+// freshReportedKeys gives the test an empty set in place of the package-level
+// one *target points at, and restores that set when the test ends. The tests
+// that use it assert on the first report's WARN level, which depends on what
+// earlier tests in the process reported. They are not parallel, so no other
+// test calls ExtractValidatorSignatures while the variable is swapped.
+func freshReportedKeys(t *testing.T, target **reportedKeys) {
+	t.Helper()
+	previous := *target
+	*target = &reportedKeys{keys: make(map[string]struct{})}
+	t.Cleanup(func() { *target = previous })
+}
+
 // TestExtractValidatorSignatures_SkipsSignerTheCircuitRejects is the #579 item 3
 // regression. The highest-power validator signs with nonce r = 0: the signature
 // verifies, so the greedy selection used to take it first, and every proof over
 // the quorum failed. It must be skipped, reported once at WARN, and the quorum
 // built from the other validators.
 func TestExtractValidatorSignatures_SkipsSignerTheCircuitRejects(t *testing.T) {
+	freshReportedKeys(t, &unprovableSigners)
 	chainID := "test-chain"
 	// Sorted by power, the 30 is index 0. Without it 70 of 100 still sign.
 	lb := makeSignedCommit(t, chainID, []int64{30, 25, 25, 20}, []bool{true, true, true, true})
@@ -172,6 +185,9 @@ func rekeyWithDummyKey(t *testing.T, lb *relayerclient.LightBlock, chainID strin
 // A validator keyed with a public padding key still proves, so it stays selected,
 // but the relayer names it once at WARN and at DEBUG after that.
 func TestExtractValidatorSignatures_WarnsAboutADummyKeySigner(t *testing.T) {
+	// The padding key is fixed, so under -count=N or after another test that
+	// reports it, the package-level set would already hold it and log DEBUG.
+	freshReportedKeys(t, &dummyKeySigners)
 	chainID := "test-chain"
 	lb := makeSignedCommit(t, chainID, []int64{30, 25, 25, 20}, []bool{true, true, true, true})
 	bad := rekeyWithDummyKey(t, lb, chainID, 0, 16, 15)
