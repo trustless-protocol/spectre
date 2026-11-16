@@ -953,11 +953,12 @@ devnet values; set your own for a public chain.
 | `COSMOS_MAX_FEE` | fee of one tx | `COSMOS_FEE_DENOM` base units |
 
 - Held at the cap: an EVM fee or tip above its cap; Cosmos gas headroom above
-  `COSMOS_MAX_GAS`.
+  `COSMOS_MAX_GAS` (a splittable batch is halved instead).
 - Not signed (`operator spending cap exceeded`): EVM base fee + tip above the fee cap;
   simulated Cosmos gas above `COSMOS_MAX_GAS`; Cosmos fee above `COSMOS_MAX_FEE`.
-  Packets stay queued; a splittable Cosmos batch is halved first. Path then held 1 min,
-  doubling to 15 min; lifted when a send lands.
+  Packets stay queued; a splittable Cosmos batch is halved, an update + packets tx
+  resent apart (update, then packets). Still refused: path held 1 min, doubling to
+  15 min; lifted when a send lands.
 - One-shot commands honour a cap that is set and run without one. Except
   `create-clients-cosmos`: no cap read; signs at `COSMOS_GAS_LIMIT` / `COSMOS_FEE_AMOUNT`.
 

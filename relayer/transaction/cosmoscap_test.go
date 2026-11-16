@@ -141,6 +141,33 @@ func TestCosmosSpendCaps_SimulateCannotRaiseTheGas(t *testing.T) {
 		if mock.broadcasts != 0 {
 			t.Fatalf("broadcast %d transaction(s), want 0", mock.broadcasts)
 		}
+		// It names what the node said, not that plus the headroom (39000000).
+		if !strings.Contains(err.Error(), "simulated gas 30000000 ") {
+			t.Fatalf("err = %v, want it to name the 30000000 simulated gas", err)
+		}
+	})
+
+	// #575 M4: an atomic batch -- a client update and the packets proven against
+	// it -- was refused on its headroom: 16M simulated is 20.8M with it, over a
+	// 20M cap the batch fits under. One message in the same spot is signed at the
+	// cap; so is the batch now.
+	t.Run("an atomic batch under the cap is signed at the cap", func(t *testing.T) {
+		configureCosmosOOGTest(t)
+		setCosmosCaps(t, 20_000_000, 0)
+		mock := &cosmosOOGRPC{t: t, simulateGasPerMsg: 8_000_000}
+
+		nextSequence, succeeded, err := (&Handler{}).sendCosmosTxBatchWithSplitting(
+			context.Background(), newCosmosOOGEndpoint(t, mock),
+			[]sdk.Msg{cosmosOOGTestMessage(), cosmosOOGTestMessage()}, 7, 10, false)
+		if err != nil {
+			t.Fatalf("send: %v", err)
+		}
+		if nextSequence != 11 || succeeded != 2 {
+			t.Fatalf("result = sequence:%d succeeded:%d, want 11:2: one transaction", nextSequence, succeeded)
+		}
+		if len(mock.gasLimits) != 1 || mock.gasLimits[0] != 20_000_000 {
+			t.Fatalf("broadcast gas limits = %v, want one transaction at the cap", mock.gasLimits)
+		}
 	})
 
 	// At the cap there is no more gas to give. Retrying with the identical limit
@@ -261,6 +288,46 @@ func TestCosmosSpendCaps_Fee(t *testing.T) {
 		}
 		if mock.broadcasts != 0 {
 			t.Fatalf("broadcast %d transaction(s), want 0", mock.broadcasts)
+		}
+	})
+}
+
+// The ceiling can be the block's gas limit rather than the cap. An atomic batch
+// is judged against it the same way: signed at the limit when its simulated gas
+// fits, refused -- and not as a spending cap -- when it does not.
+func TestCosmosAtomicBatch_BlockGasCeiling(t *testing.T) {
+	send := func(t *testing.T, mock *cosmosOOGRPC) error {
+		t.Helper()
+		_, _, err := (&Handler{}).sendCosmosTxBatchWithSplitting(
+			context.Background(), newCosmosOOGEndpoint(t, mock),
+			[]sdk.Msg{cosmosOOGTestMessage(), cosmosOOGTestMessage()}, 7, 10, false)
+		return err
+	}
+
+	t.Run("simulated gas under the block limit is signed at the limit", func(t *testing.T) {
+		configureCosmosOOGTest(t)
+		setCosmosCaps(t, 0, 0)
+		mock := &cosmosOOGRPC{t: t, simulateGasPerMsg: 8_000_000, blockMaxGas: 20_000_000}
+
+		if err := send(t, mock); err != nil {
+			t.Fatalf("send: %v", err)
+		}
+		if len(mock.gasLimits) != 1 || mock.gasLimits[0] != 20_000_000 {
+			t.Fatalf("broadcast gas limits = %v, want one transaction at the block limit", mock.gasLimits)
+		}
+	})
+
+	t.Run("simulated gas over the block limit is not signed", func(t *testing.T) {
+		configureCosmosOOGTest(t)
+		setCosmosCaps(t, 0, 0)
+		mock := &cosmosOOGRPC{t: t, simulateGasPerMsg: 15_000_000, blockMaxGas: 20_000_000}
+
+		err := send(t, mock)
+		if err == nil || errors.Is(err, services.ErrSpendCapExceeded) {
+			t.Fatalf("err = %v, want a refusal that is not a spending cap", err)
+		}
+		if mock.broadcasts != 0 {
+			t.Fatalf("broadcast %d transaction(s), want 0: no block can hold it", mock.broadcasts)
 		}
 	})
 }

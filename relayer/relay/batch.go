@@ -401,6 +401,14 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 			m.lastHeight = foldPlan.update.Height // foldPlan still holds m.mu
 			m.recordClientUpdate(foldPlan.update)
 			foldPlan.release()
+		} else if errors.Is(err, services.ErrSpendCapExceeded) {
+			if !m.sendUpdateApart(ctx, foldPlan, len(packets)) {
+				return append(requeue, relayedIdx...)
+			}
+			// The client now covers the height the proofs were built at, so what
+			// follows is an ordinary packets-only send.
+			foldPlan = nil
+			committed, err = m.dst.RelayPackets(ctx, packets)
 		}
 	} else {
 		committed, err = m.dst.RelayPackets(ctx, packets)
@@ -615,6 +623,35 @@ func (m *Module) submitFoldedUpdateAlone(ctx context.Context, foldPlan *foldedUp
 	foldPlan.release()
 	log.Printf("[%s Relay] advanced client to height %d with no packets to relay",
 		m.name, foldPlan.update.Height)
+}
+
+// sendUpdateApart submits a folded update on its own after a spending cap
+// refused the folded transaction, and reports whether it landed. When it did
+// not, the caller re-queues the packets; a refusal by the cap or by an inactive
+// client has already armed its hold.
+//
+// A Cosmos cap bounds one transaction, and one carrying the update and every
+// packet can be over it while each part is not. Holding instead retried the
+// same folded batch, each time with an update to a newer height, and an
+// L2->Cosmos path, whose client nothing else updates, stopped (#575 M4). The
+// packets then go out on the path that splits. An EVM cap prices gas, so there
+// the update alone is refused too, before a nonce is taken.
+func (m *Module) sendUpdateApart(ctx context.Context, foldPlan *foldedUpdatePlan, packets int) bool {
+	err := m.dst.UpdateClient(ctx, m.clientID, foldPlan.update)
+	if err != nil {
+		foldPlan.release()
+		what := fmt.Sprintf("client update at height %d, sent apart from %d packet(s)", foldPlan.update.Height, packets)
+		if !m.holdIfSpendCapped(err, what) && !m.holdIfClientInactive(ctx, err) {
+			log.Printf("WARN [%s Relay] %s: %v; re-queued", m.name, what, err)
+		}
+		return false
+	}
+	m.lastHeight = foldPlan.update.Height // foldPlan still holds m.mu
+	m.recordClientUpdate(foldPlan.update)
+	foldPlan.release()
+	log.Printf("[%s Relay] the spending cap refused update + %d packet(s) as one transaction; the update landed alone at height %d, sending the packets",
+		m.name, packets, foldPlan.update.Height)
+	return true
 }
 
 type foldedUpdatePlan struct {

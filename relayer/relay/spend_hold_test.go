@@ -57,7 +57,16 @@ func TestSpendCapHoldsTheDirection(t *testing.T) {
 	}{
 		{"refused client update", &mockDest{updateErr: capRefusal}, &mockSource{latest: 100}},
 		{"refused packet transaction", &mockDest{relayErr: capRefusal}, &mockSource{latest: 100}},
-		{"refused folded transaction", &foldingMockDest{enabled: true, foldErr: capRefusal}, &mockSource{latest: 100}},
+		{
+			"refused folded transaction, then its update sent apart",
+			&foldingMockDest{enabled: true, foldErr: capRefusal, mockDest: mockDest{updateErr: capRefusal}},
+			&mockSource{latest: 100},
+		},
+		{
+			"refused folded transaction, then its packets sent apart",
+			&foldingMockDest{enabled: true, foldErr: capRefusal, mockDest: mockDest{relayErr: capRefusal}},
+			&mockSource{latest: 100},
+		},
 		{
 			"refused update sent with no provable packet",
 			&foldingMockDest{enabled: true, mockDest: mockDest{updateErr: capRefusal}},
@@ -105,6 +114,58 @@ func TestSpendCapHoldsTheDirection(t *testing.T) {
 		}
 		if !m.spendProbeAt.IsZero() {
 			t.Fatal("only a spending-cap refusal holds")
+		}
+	})
+}
+
+// #575 M4: a Cosmos cap bounds one transaction, and the folded one -- the update
+// and every packet -- can be over it while each part is not. The path held and
+// retried that same folded batch, each time with an update to a newer height,
+// and an L2->Cosmos path, whose client nothing else updates, stopped. The parts
+// now go apart: the update alone, then the packets on the path that splits.
+func TestSpendCapRefusedFoldedTransactionIsSentApart(t *testing.T) {
+	dst := &foldingMockDest{enabled: true, foldErr: capRefusal}
+	src := &mockSource{latest: 100}
+	trusted := time.Unix(1_700_000_000, 0)
+	var observed []time.Time
+	m := NewModule("l2->cosmos", "client-0", src, dst, &mockBuilder{trustedAt: trusted},
+		WithClientUpdateObserver(func(at time.Time) { observed = append(observed, at) }))
+
+	if rq := m.handleBatch(context.Background(), threePackets()); len(rq) != 0 {
+		t.Fatalf("want every packet delivered, got %v re-queued", rq)
+	}
+	if dst.foldCalls != 1 || len(dst.updates) != 1 || dst.updates[0].Height != 100 {
+		t.Fatalf("want the refused folded tx, then the update at 100 alone: folds=%d updates=%v", dst.foldCalls, dst.updates)
+	}
+	if dst.relayCalls != 1 || len(dst.relayed) != 3 {
+		t.Fatalf("want the 3 packets in one packets-only send, got %d call(s), %d relayed", dst.relayCalls, len(dst.relayed))
+	}
+	for _, h := range src.proofHeights {
+		if h != 100 {
+			t.Fatalf("proof heights = %v, want every proof at the update's 100", src.proofHeights)
+		}
+	}
+	if m.lastHeight != 100 || len(observed) != 1 || !observed[0].Equal(trusted) {
+		t.Fatalf("lastHeight = %d, observed %v: want the update at 100 recorded once", m.lastHeight, observed)
+	}
+	if !m.spendProbeAt.IsZero() {
+		t.Fatal("a refusal its parts get past must not hold the path")
+	}
+
+	// Once the update has landed, a packet that reverts is that packet's own
+	// failure: it is isolated like any packets-only send, and the update is not
+	// submitted a second time to attribute it.
+	t.Run("a reverting packet after the update landed is isolated", func(t *testing.T) {
+		dst := &foldingMockDest{enabled: true, foldErr: capRefusal, mockDest: mockDest{poison: map[string]bool{"b": true}}}
+		m := NewModule("l2->cosmos", "client-0", &mockSource{latest: 100}, dst, &mockBuilder{})
+
+		var rq []int
+		out := captureLog(func() { rq = m.handleBatch(context.Background(), threePackets()) })
+		if len(dst.updates) != 1 {
+			t.Fatalf("the update was submitted %d times, want once", len(dst.updates))
+		}
+		if len(rq) != 0 || len(dst.relayed) != 2 || !strings.Contains(out, "DROP packet (ack seq=2") {
+			t.Fatalf("want a and c delivered and the reverting b dropped: rq=%v relayed=%d\n%s", rq, len(dst.relayed), out)
 		}
 	})
 }

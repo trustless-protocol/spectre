@@ -720,26 +720,30 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 			if gasCeiling > 0 && adjustedGas >= gasCeiling {
 				log.Printf("WARN [SendCosmosTx] Adjusted gas %d exceeds the gas ceiling %d (block max %d, %s %d) for batch of size %d",
 					adjustedGas, gasCeiling, maxBlockGas, EnvCosmosMaxGas, caps.maxGas, len(sdkMsgs))
-				if len(sdkMsgs) > 1 {
-					if !allowSplit {
-						cause := fmt.Errorf("[SendCosmosTx] adjusted gas %d exceeds the gas ceiling %d; refusing to split atomic batch", adjustedGas, gasCeiling)
-						if capErr := caps.gasAboveCap(adjustedGas); capErr != nil {
-							cause = fmt.Errorf("[SendCosmosTx] atomic batch of %d: %w", len(sdkMsgs), capErr)
-							log.Printf("ERROR [SendCosmosTx][ATTENTION] %v", cause)
-						}
-						return sequence, 0, cause
-					}
+				if allowSplit && len(sdkMsgs) > 1 {
 					log.Printf("[SendCosmosTx] Splitting batch...")
 					shouldSplit = true
 				} else {
-					// One message, and the node already says it uses more than the
-					// operator allows: at the cap it would only run out of gas.
+					// One transaction that cannot split: one message, or an atomic
+					// batch (a client update and the packets proven against it). It
+					// is refused only when the node says it needs more than
+					// COSMOS_MAX_GAS, since at the cap it would only run out of gas.
+					// Refusing an atomic batch on its headroom refused one that fits
+					// (#575 M4).
 					if capErr := caps.gasAboveCap(simulatedGas); capErr != nil {
+						if len(sdkMsgs) > 1 {
+							capErr = fmt.Errorf("atomic batch of %d: %w", len(sdkMsgs), capErr)
+						}
 						log.Printf("ERROR [SendCosmosTx][ATTENTION] %v", capErr)
 						return sequence, 0, fmt.Errorf("[SendCosmosTx] %w", capErr)
 					}
-					// Single message exceeds the ceiling once headroom is added; send
-					// it at the ceiling, which still covers the simulated gas.
+					// Within the cap but over the block's limit: no block can hold
+					// the batch. A single message keeps its old clamp.
+					if len(sdkMsgs) > 1 && simulatedGas > gasCeiling {
+						return sequence, 0, fmt.Errorf("[SendCosmosTx] simulated gas %d exceeds max block gas %d; refusing to split atomic batch",
+							simulatedGas, gasCeiling)
+					}
+					// The ceiling still covers the simulated gas; send it there.
 					finalGasLimit = gasCeiling
 				}
 			} else {

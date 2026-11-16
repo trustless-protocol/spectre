@@ -20,6 +20,7 @@ import (
 	cmtjson "github.com/cometbft/cometbft/libs/json"
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	coretypes "github.com/cometbft/cometbft/rpc/core/types"
+	cmttypes "github.com/cometbft/cometbft/types"
 	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	sdkbech32 "github.com/cosmos/cosmos-sdk/types/bech32"
@@ -98,10 +99,13 @@ type cosmosOOGRPC struct {
 	// simulateGasPerMsg, when non-zero, answers Simulate with this much gas for
 	// every message in the simulated transaction, so halving a batch halves it.
 	simulateGasPerMsg uint64
-	broadcasts        int
-	txQueries         int
-	gasLimits         []uint64
-	feeAmounts        []int64
+	// blockMaxGas, when non-zero, is the block gas limit consensus_params reports;
+	// zero keeps the failing query, which reads as no block limit.
+	blockMaxGas int64
+	broadcasts  int
+	txQueries   int
+	gasLimits   []uint64
+	feeAmounts  []int64
 }
 
 type cosmosRPCRequest struct {
@@ -128,6 +132,13 @@ func (m *cosmosOOGRPC) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch req.Method {
 	case "consensus_params":
+		if m.blockMaxGas != 0 {
+			m.writeResult(w, req.ID, &coretypes.ResultConsensusParams{
+				BlockHeight:     1,
+				ConsensusParams: cmttypes.ConsensusParams{Block: cmttypes.BlockParams{MaxBytes: 22020096, MaxGas: m.blockMaxGas}},
+			})
+			return
+		}
 		m.writeError(w, req.ID, -32603, "block max unavailable")
 	case "abci_query":
 		if m.simulateGasPerMsg != 0 {
