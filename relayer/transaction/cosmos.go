@@ -731,11 +731,7 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 					// Refusing an atomic batch on its headroom refused one that fits
 					// (#575 M4).
 					if capErr := caps.gasAboveCap(simulatedGas); capErr != nil {
-						if len(sdkMsgs) > 1 {
-							capErr = fmt.Errorf("atomic batch of %d: %w", len(sdkMsgs), capErr)
-						}
-						log.Printf("ERROR [SendCosmosTx][ATTENTION] %v", capErr)
-						return sequence, 0, fmt.Errorf("[SendCosmosTx] %w", capErr)
+						return sequence, 0, refusedByCap(len(sdkMsgs), capErr)
 					}
 					// Within the cap but over the block's limit: no block can hold
 					// the batch. A single message keeps its old clamp.
@@ -837,8 +833,7 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 				feeAmount, feeDenom, len(sdkMsgs), EnvCosmosMaxFee, caps.maxFee)
 			return splitHalves()
 		}
-		log.Printf("ERROR [SendCosmosTx][ATTENTION] %v", capErr)
-		return sequence, 0, fmt.Errorf("[SendCosmosTx] %w", capErr)
+		return sequence, 0, refusedByCap(len(sdkMsgs), capErr)
 	}
 
 	// Build, sign, and broadcast through the signer seam.

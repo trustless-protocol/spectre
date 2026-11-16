@@ -168,6 +168,28 @@ func TestSpendCapRefusedFoldedTransactionIsSentApart(t *testing.T) {
 			t.Fatalf("want a and c delivered and the reverting b dropped: rq=%v relayed=%d\n%s", rq, len(dst.relayed), out)
 		}
 	})
+
+	// The client froze between the folded refusal and the update sent apart: that
+	// arms the client hold, not the spending-cap one, and nothing is dropped.
+	t.Run("a client frozen before the update apart holds as frozen", func(t *testing.T) {
+		dst := &foldingMockDest{enabled: true, foldErr: capRefusal, mockDest: mockDest{updateErr: frozenRevert}}
+		src := &mockSource{latest: 100}
+		b := &mockBuilder{}
+		m := NewModule("l2->cosmos", "client-0", src, dst, b)
+
+		if rq := m.handleBatch(context.Background(), threePackets()); len(rq) != 3 {
+			t.Fatalf("want all 3 kept, got %v", rq)
+		}
+		if m.clientHold.Load() == nil || !m.spendProbeAt.IsZero() {
+			t.Fatalf("want the client hold and no spending-cap hold: client=%v spendProbeAt=%v", m.clientHold.Load(), m.spendProbeAt)
+		}
+		built, proofs, sends := b.built, src.membershipCalls, packetSends(t, dst)
+		if rq := m.handleBatch(context.Background(), threePackets()); len(rq) != 3 ||
+			b.built != built || src.membershipCalls != proofs || packetSends(t, dst) != sends {
+			t.Fatalf("held batch must cost nothing: rq=%v builds %d->%d proofs %d->%d sends %d->%d",
+				rq, built, b.built, proofs, src.membershipCalls, sends, packetSends(t, dst))
+		}
+	})
 }
 
 // The hold is tried again once it expires: a repeat refusal widens it on the

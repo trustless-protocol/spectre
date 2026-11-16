@@ -9,6 +9,7 @@ package transaction
 
 import (
 	"fmt"
+	"log"
 	"math"
 	"os"
 	"strconv"
@@ -103,6 +104,22 @@ func (c cosmosSpendCaps) gasAboveCap(simulatedGas uint64) error {
 	}
 	return fmt.Errorf("simulated gas %d is above %s=%d; not signed: %w",
 		simulatedGas, EnvCosmosMaxGas, c.maxGas, services.ErrSpendCapExceeded)
+}
+
+// refusedByCap logs and wraps a cap's refusal of one transaction of msgCount
+// messages. One message is the operator's to act on: raise the cap or wait for
+// fees to fall, so it is an ATTENTION error. A batch that reaches a refusal is
+// atomic, and only a folded relay sends one: the relay module then sends its
+// update and packets apart, and a part refused again says ATTENTION itself. As
+// an ATTENTION error it put one on every batch of a path that works (#575 M4).
+func refusedByCap(msgCount int, capErr error) error {
+	if msgCount > 1 {
+		capErr = fmt.Errorf("atomic batch of %d: %w", msgCount, capErr)
+		log.Printf("WARN [SendCosmosTx] %v", capErr)
+	} else {
+		log.Printf("ERROR [SendCosmosTx][ATTENTION] %v", capErr)
+	}
+	return fmt.Errorf("[SendCosmosTx] %w", capErr)
 }
 
 // feeAboveCap reports a fee the operator's cap does not allow.

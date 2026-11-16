@@ -3,6 +3,7 @@ package transaction
 import (
 	"context"
 	"errors"
+	"log"
 	"math"
 	"strconv"
 	"strings"
@@ -290,6 +291,74 @@ func TestCosmosSpendCaps_Fee(t *testing.T) {
 			t.Fatalf("broadcast %d transaction(s), want 0", mock.broadcasts)
 		}
 	})
+}
+
+// captureStdLog returns what fn wrote to the standard logger. It reads the
+// buffer only after the logger is restored, so a late write cannot race it.
+func captureStdLog(t *testing.T, fn func()) (out string) {
+	t.Helper()
+	var buf strings.Builder
+	prev, flags := log.Writer(), log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	defer func() {
+		log.SetOutput(prev)
+		log.SetFlags(flags)
+		out = buf.String()
+	}()
+	fn()
+	return ""
+}
+
+// A cap refusing one message is the operator's to act on: an ATTENTION error.
+// An atomic batch is only ever a folded relay, which the relay module then sends
+// apart, so its refusal is a warning; a part refused again says ATTENTION
+// itself. One ATTENTION line per batch on a path that works dilutes the label
+// (#575 M4).
+func TestCosmosCapRefusal_LogLevel(t *testing.T) {
+	cases := []struct {
+		name           string
+		maxGas, maxFee int64
+		feePerMsg      string // COSMOS_FEE_AMOUNT; empty keeps the gas-matching fee
+		msgs           int
+		simPerMsg      uint64
+		want           string
+	}{
+		{"one message over the gas cap", 20_000_000, 0, "", 1, 30_000_000, "ERROR [SendCosmosTx][ATTENTION] simulated gas"},
+		{"atomic batch over the gas cap", 20_000_000, 0, "", 2, 15_000_000, "WARN [SendCosmosTx] atomic batch of 2: simulated gas"},
+		{"one message over the fee cap", 0, 1_000_000, "", 1, 1_000_000, "ERROR [SendCosmosTx][ATTENTION] fee"},
+		{"atomic batch over the fee cap", 0, 1500, "1000", 2, 100_000, "WARN [SendCosmosTx] atomic batch of 2: fee"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			configureCosmosOOGTest(t)
+			setCosmosCaps(t, tc.maxGas, tc.maxFee)
+			if tc.feePerMsg != "" {
+				t.Setenv("COSMOS_FEE_AMOUNT", tc.feePerMsg)
+			}
+			mock := &cosmosOOGRPC{t: t, simulateGasPerMsg: tc.simPerMsg}
+			msgs := make([]sdk.Msg, tc.msgs)
+			for i := range msgs {
+				msgs[i] = cosmosOOGTestMessage()
+			}
+
+			var err error
+			out := captureStdLog(t, func() {
+				// A single message may split; a batch here is atomic.
+				_, _, err = (&Handler{}).sendCosmosTxBatchWithSplitting(
+					context.Background(), newCosmosOOGEndpoint(t, mock), msgs, 7, 10, tc.msgs == 1)
+			})
+			if !errors.Is(err, services.ErrSpendCapExceeded) {
+				t.Fatalf("err = %v, want ErrSpendCapExceeded", err)
+			}
+			if !strings.Contains(out, tc.want) {
+				t.Fatalf("log does not contain %q:\n%s", tc.want, out)
+			}
+			if tc.msgs > 1 && strings.Contains(out, "ATTENTION") {
+				t.Fatalf("an atomic batch the relay sends apart must not log ATTENTION:\n%s", out)
+			}
+		})
+	}
 }
 
 // The ceiling can be the block's gas limit rather than the cap. An atomic batch

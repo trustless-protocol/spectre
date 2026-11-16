@@ -1045,7 +1045,7 @@ profile). See the `ProofVerificationFailed()` row in the L2 [Failure modes](#fai
 
 | Symptom | Cause |
 |---|---|
-| `not signed: operator spending cap exceeded` | Fee or gas above a [spending cap](#spending-caps). Raise it, or wait for fees to fall; packets stay queued, path retried after 1 min, doubling to 15 min. |
+| `not signed: operator spending cap exceeded` | Fee or gas above a [spending cap](#spending-caps). `WARN ... atomic batch`: an update + packets tx, resent apart; nothing to do. `ERROR`: raise the cap, or wait for fees to fall; packets stay queued, path retried after 1 min, doubling to 15 min. |
 | `would revert ... not broadcast, no gas spent` | The pre-flight `eth_call` reverts. The packet is held after the drop; `relayer status` lists it. |
 | `endpoint reported chain id X but this process signs for Y` | The EVM RPC now answers another chain. Fix the RPC; nothing is signed meanwhile. |
 | `signer lock: ... is owned by uid N` / `has mode` / `is a symlink` | Someone else created or opened `/tmp/spectre-relayer-<uid>`. Remove it (as its owner or root). |
