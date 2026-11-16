@@ -70,11 +70,9 @@ func (d *Destination) Chain() chain.ChainType { return chain.Cosmos }
 // header (the sole update payload, produced by the L2 builder) in a wasm
 // ClientMessage.
 //
-// No ETH-first ordering step is needed: the header builder assembles its L1 proofs
-// against the ETH client's already-trusted L1 block (EthClientLatestSlotAndBlock), so
-// every L2 update verifies against the ETH state the client already holds. The ETH
-// client's freshness bounds how recent an L2 update can be, but advancing it is not a
-// prerequisite for this submit to verify.
+// No ETH-first ordering step is needed: the header is threshold-signed by the
+// configured attestors and the wasm client verifies those signatures. It does not
+// depend on the Ethereum client on Cosmos.
 func (d *Destination) UpdateClient(ctx context.Context, _ string, update chain.ClientUpdate) error {
 	if err := ctx.Err(); err != nil {
 		return err // shutting down — do not start a client-update tx
@@ -301,11 +299,10 @@ func (d *Destination) HasPacketReceipt(ctx context.Context, packet []byte) (bool
 }
 
 // ClientExpiresAt reports when the L2 wasm client would expire on its own timer.
-// Unlike a Tendermint client, an optimistic L2 client has NO independent trusting
-// period: it advances per-packet via header updates and its trust roots in the
-// SHARED L1 (Ethereum) client, whose freshness the ETH path refreshes. So the L2
-// client has no self-expiry timer — return a far-future time so the anti-expiry
-// refresh routine never force-updates it (its freshness is the L1 client's).
+// It has none: its status is only Active or Frozen
+// (packages/l2-client/src/entrypoints.rs), and it trusts attestor-signed headers,
+// not a trusting period. A far-future time keeps the anti-expiry refresh routine
+// from force-updating it.
 func (d *Destination) ClientExpiresAt(_ context.Context, _ string) (time.Time, time.Duration, error) {
 	// No self-expiry, so no trusting period to size a margin against.
 	return time.Now().Add(100 * 365 * 24 * time.Hour), 0, nil

@@ -93,6 +93,14 @@ type Handler struct {
 	mu           sync.Mutex
 	cosmosMu     sync.Mutex
 	senderStates map[evmNonceKey]*ethTxSenderState
+	// minedBlocks is the highest block this process saw one of its own
+	// transactions mined in, per endpoint. Guarded by mu. See preflightEthCall.
+	minedBlocks map[*ethclient.Client]uint64
+	// pinnedChainIDs is the chain id each endpoint first reported, and
+	// allowedChainIDs the ids `start` locked a nonce domain for (nil: any).
+	// Guarded by mu. See chainid.go.
+	pinnedChainIDs  map[*ethclient.Client]string
+	allowedChainIDs map[string]struct{}
 
 	signerOnce sync.Once
 	signer     Signer
@@ -282,6 +290,20 @@ func misbehaviourPrivateKey() (*ecdsa.PrivateKey, error) {
 func ValidateMisbehaviourPrivateKey() error {
 	_, err := misbehaviourPrivateKey()
 	return err
+}
+
+// MisbehaviourSignerAddress is the address MISBEHAVIOUR_PRIVATE_KEY signs as:
+// the nonce domain submit-misbehaviour locks.
+func MisbehaviourSignerAddress() (common.Address, error) {
+	privateKey, err := misbehaviourPrivateKey()
+	if err != nil {
+		return common.Address{}, err
+	}
+	publicKey, err := keys.PublicKey(privateKey)
+	if err != nil {
+		return common.Address{}, fmt.Errorf("failed to derive misbehaviour key address: %w", err)
+	}
+	return crypto.PubkeyToAddress(*publicKey), nil
 }
 
 const ethDeployGasHeadroomPercent uint64 = 20
@@ -585,7 +607,7 @@ func (h *Handler) CreateCosmosClientContract(stdCtx context.Context, endpoint se
 	if err != nil {
 		return common.Address{}, fmt.Errorf("failed waiting for deploy receipt: %w", err)
 	}
-	log.Printf("[CreateCosmosClient] SpectreClient deployed at %s (block %d, gasUsed=%d)", address.String(), receipt.BlockNumber.Uint64(), receipt.GasUsed)
+	log.Printf("[CreateCosmosClient] SpectreClient deployed at %s (block %s, gasUsed=%d)", address.String(), receiptBlock(receipt), receipt.GasUsed)
 
 	ics26Router, err := routerContract.NewContractICS26Router(*endpoint.RouterContract(), endpoint.EthClient())
 	if err != nil {
@@ -617,7 +639,7 @@ func (h *Handler) CreateCosmosClientContract(stdCtx context.Context, endpoint se
 		return common.Address{}, err
 	}
 
-	log.Printf("[CreateCosmosClient] AddClient confirmed (block %d, gasUsed=%d)", addClientReceipt.BlockNumber.Uint64(), addClientReceipt.GasUsed)
+	log.Printf("[CreateCosmosClient] AddClient confirmed (block %s, gasUsed=%d)", receiptBlock(addClientReceipt), addClientReceipt.GasUsed)
 	return address, nil
 }
 
@@ -723,12 +745,26 @@ func (h *Handler) SendEthTx(stdCtx context.Context, endpoint services.EVMEndpoin
 		}
 	}
 
+	// A packet is simulated before it is broadcast; a client update is not (see
+	// preflightEthCall).
+	if input, label, isPacket, err := packetCallInput(msg); err != nil {
+		return err
+	} else if isPacket {
+		from, err := h.EthSignerAddress()
+		if err != nil {
+			return err
+		}
+		if err := h.preflightEthCall(stdCtx, endpoint, from, *endpoint.RouterContract(), input, gasLimit, label); err != nil {
+			return err
+		}
+	}
+
 	receipt, submitDur, waitDur, err := h.executeWithRetryAndResubmission(stdCtx, endpoint, privateKey, gasLimit, senderFn, knobEthGasLimit)
 	if err != nil {
 		return err
 	}
 
-	log.Printf("[SendEthTx] Tx %s confirmed in block %d (gasUsed=%d)", receipt.TxHash.Hex(), receipt.BlockNumber.Uint64(), receipt.GasUsed)
+	log.Printf("[SendEthTx] Tx %s confirmed in block %s (gasUsed=%d)", receipt.TxHash.Hex(), receiptBlock(receipt), receipt.GasUsed)
 	if benchEnabled {
 		log.Printf("[bench] eth %s gasUsed=%d submit=%s wait=%s total=%s tx=%s",
 			txLabel, receipt.GasUsed, submitDur, waitDur, time.Since(benchStart), receipt.TxHash.Hex())
@@ -828,7 +864,7 @@ func (h *Handler) SubmitMisbehaviour(
 	if err != nil {
 		return fmt.Errorf("submit misbehaviour: %w", err)
 	}
-	log.Printf("[Misbehaviour] report signed by %s confirmed in block %d", fromAddress.Hex(), receipt.BlockNumber.Uint64())
+	log.Printf("[Misbehaviour] report signed by %s confirmed in block %s", fromAddress.Hex(), receiptBlock(receipt))
 	return nil
 }
 
@@ -949,6 +985,21 @@ func (h *Handler) SendEthTxBatch(stdCtx context.Context, endpoint services.EVMEn
 		benchStart = time.Now()
 	}
 
+	// Simulate the whole multicall before it is broadcast. One reverting inner
+	// call reverts all of it, so a revert here is reported exactly as the mined
+	// revert would be, and the module isolates the packets as it already does.
+	multicallInput, err := parsedABI.Pack("multicall", calldata)
+	if err != nil {
+		return fmt.Errorf("[SendEthTx] pack multicall (%s): %w", labelStr, err)
+	}
+	from, err := h.EthSignerAddress()
+	if err != nil {
+		return fmt.Errorf("[SendEthTx] %w", err)
+	}
+	if err := h.preflightEthCall(stdCtx, endpoint, from, *endpoint.RouterContract(), multicallInput, multicallGasLimit, "multicall "+labelStr); err != nil {
+		return fmt.Errorf("multicall labels=%s: %w", labelStr, err)
+	}
+
 	senderFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
 		log.Printf("[SendEthTx] Submitting multicall: %d inner calls (%s)", len(calldata), labelStr)
 		return ics26Router.Multicall(auth, calldata)
@@ -959,8 +1010,8 @@ func (h *Handler) SendEthTxBatch(stdCtx context.Context, endpoint services.EVMEn
 		return fmt.Errorf("multicall labels=%s: %w", labelStr, err)
 	}
 
-	log.Printf("[SendEthTx] Tx %s confirmed in block %d (gasUsed=%d, inner=%d)",
-		receipt.TxHash.Hex(), receipt.BlockNumber.Uint64(), receipt.GasUsed, len(calldata))
+	log.Printf("[SendEthTx] Tx %s confirmed in block %s (gasUsed=%d, inner=%d)",
+		receipt.TxHash.Hex(), receiptBlock(receipt), receipt.GasUsed, len(calldata))
 	if benchEnabled {
 		log.Printf("[bench] eth multicall labels=%s gasUsed=%d submit=%s wait=%s total=%s tx=%s",
 			labelStr, receipt.GasUsed, submitDur, waitDur, time.Since(benchStart), receipt.TxHash.Hex())
@@ -970,6 +1021,18 @@ func (h *Handler) SendEthTxBatch(stdCtx context.Context, endpoint services.EVMEn
 	}
 
 	return nil
+}
+
+// receiptBlock formats the block a receipt was mined in.
+//
+// blockNumber is optional in a receipt as go-ethereum decodes it, so a node may
+// leave it out. Formatting it with BlockNumber.Uint64() then dereferenced nil and
+// panicked AFTER the transaction had already succeeded (#575 L12).
+func receiptBlock(receipt *types.Receipt) string {
+	if receipt == nil || receipt.BlockNumber == nil {
+		return "unknown"
+	}
+	return receipt.BlockNumber.String()
 }
 
 func isNonceTooLowError(err error) bool {
@@ -1066,8 +1129,33 @@ func replacementFees(stdCtx context.Context, endpoint services.EVMEndpoint, tx *
 	return gasPrice, tipCap, feeCap
 }
 
+// cappedReplacementFees is replacementFees held at the operator's caps. It says
+// so when a cap binds: from then on a stuck transaction cannot be outbid, and the
+// log line is what tells the operator why it is not moving.
+func cappedReplacementFees(stdCtx context.Context, endpoint services.EVMEndpoint, tx *types.Transaction, caps evmFeeCaps) (gasPrice, tipCap, feeCap *big.Int) {
+	wantPrice, wantTip, wantFee := replacementFees(stdCtx, endpoint, tx)
+	gasPrice = caps.clampGasPrice(wantPrice)
+	if wantTip == nil || wantFee == nil {
+		if gasPrice.Cmp(wantPrice) != 0 {
+			log.Printf("WARN [SendEthTx] fee cap reached: replacement for %s held at gasPrice=%s wei (wanted %s); the node may refuse it",
+				tx.Hash().Hex(), gasPrice, wantPrice)
+		}
+		return gasPrice, nil, nil
+	}
+	tipCap, feeCap = caps.clampDynamic(wantTip, wantFee)
+	if tipCap.Cmp(wantTip) != 0 || feeCap.Cmp(wantFee) != 0 {
+		log.Printf("WARN [SendEthTx] fee cap reached: replacement for %s held at feeCap=%s tip=%s wei (wanted feeCap=%s tip=%s); the node may refuse it",
+			tx.Hash().Hex(), feeCap, tipCap, wantFee, wantTip)
+	}
+	return gasPrice, tipCap, feeCap
+}
+
 func (h *Handler) bumpGasAndResubmit(stdCtx context.Context, endpoint services.EVMEndpoint, tx *types.Transaction, auth *bind.TransactOpts, attempt int) (*types.Transaction, error) {
-	bumpedGasPrice, bumpedTipCap, bumpedFeeCap := replacementFees(stdCtx, endpoint, tx)
+	caps, err := loadEVMFeeCaps()
+	if err != nil {
+		return nil, err
+	}
+	bumpedGasPrice, bumpedTipCap, bumpedFeeCap := cappedReplacementFees(stdCtx, endpoint, tx, caps)
 
 	var newTx *types.Transaction
 	if tx.Type() == types.DynamicFeeTxType {
@@ -1152,7 +1240,11 @@ func (h *Handler) cancelAbandonedTx(
 	from common.Address,
 	chainID *big.Int,
 ) (cancelOutcome, error) {
-	gasPrice, tipCap, feeCap := replacementFees(stdCtx, endpoint, tx)
+	caps, err := loadEVMFeeCaps()
+	if err != nil {
+		return cancelUnresolved, err
+	}
+	gasPrice, tipCap, feeCap := cappedReplacementFees(stdCtx, endpoint, tx, caps)
 
 	// Two shapes, not three: the cancellation carries no calldata, so an
 	// access-list original is replaced by a legacy transaction. Nodes compare
@@ -1178,6 +1270,9 @@ func (h *Handler) cancelAbandonedTx(
 		})
 	}
 
+	if err := caps.check(cancelTx); err != nil {
+		return cancelUnresolved, fmt.Errorf("cancellation for nonce %d: %w", tx.Nonce(), err)
+	}
 	signedCancel, err := types.SignTx(cancelTx, types.LatestSignerForChainID(chainID), privateKey)
 	if err != nil {
 		return cancelUnresolved, fmt.Errorf("sign cancellation for nonce %d: %w", tx.Nonce(), err)
@@ -1348,6 +1443,10 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 	if gasCeiling > 0 && gasLimit > gasCeiling {
 		gasLimit = gasCeiling
 	}
+	caps, err := loadEVMFeeCaps()
+	if err != nil {
+		return nil, 0, 0, err
+	}
 	publicKey, err := keys.PublicKey(privateKey)
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("failed to derive public key: %w", err)
@@ -1356,6 +1455,12 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 	chainIdInt, err := endpoint.EthClient().ChainID(stdCtx)
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("invalid chain id: %v", err)
+	}
+	// The id decides which chain the signature is valid on, so it is not taken
+	// from the RPC unchecked on every send.
+	if err := h.checkEVMChainID(endpoint.EthClient(), chainIdInt); err != nil {
+		log.Printf("ERROR [SendEthTx][ATTENTION] %s not sent: %v", knob.subject(), err)
+		return nil, 0, 0, err
 	}
 
 	auth, err := bind.NewKeyedTransactorWithChainID(privateKey, chainIdInt)
@@ -1369,9 +1474,13 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 	var tx *types.Transaction
 	var signedTx *types.Transaction
 
-	// Capture the signed transaction
+	// Capture the signed transaction. Every signature this function produces,
+	// the first send and each replacement, passes the fee caps here first.
 	originalSigner := auth.Signer
 	auth.Signer = func(address common.Address, txToSign *types.Transaction) (*types.Transaction, error) {
+		if err := caps.check(txToSign); err != nil {
+			return nil, err
+		}
 		sTx, err := originalSigner(address, txToSign)
 		if err == nil {
 			signedTx = sTx
@@ -1398,6 +1507,15 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 			baseFee = big.NewInt(1000000000) // fallback 1 Gwei
 		}
 	}
+	// Priced before the nonce is taken, so a refusal leaves the nonce cache alone.
+	var firstTipCap, firstFeeCap *big.Int
+	if isEIP1559 {
+		firstTipCap, firstFeeCap, err = caps.dynamicFees(baseFee, suggestedTip)
+		if err != nil {
+			log.Printf("ERROR [SendEthTx][ATTENTION] %s not sent: %v", knob.subject(), err)
+			return nil, 0, 0, err
+		}
+	}
 
 	for nonceAttempt := 1; nonceAttempt <= maxNonceRetries; nonceAttempt++ {
 		h.mu.Lock()
@@ -1414,8 +1532,7 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 		currentNonce := state.nonce
 
 		if isEIP1559 {
-			gasTipCap := suggestedTip
-			gasFeeCap := new(big.Int).Add(new(big.Int).Mul(baseFee, big.NewInt(2)), gasTipCap)
+			gasTipCap, gasFeeCap := firstTipCap, firstFeeCap
 
 			// Enforce minimum floor if this nonce matches the last attempted nonce (e.g. replacing a stuck tx)
 			if currentNonce == state.lastNonce {
@@ -1434,6 +1551,8 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 					}
 				}
 			}
+			// The floor is 15% over the last attempt and may pass a cap.
+			gasTipCap, gasFeeCap = caps.clampDynamic(gasTipCap, gasFeeCap)
 
 			auth.GasTipCap = gasTipCap
 			auth.GasFeeCap = gasFeeCap
@@ -1446,6 +1565,12 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 				return nil, 0, 0, fmt.Errorf("failed to suggest gas price: %w", err)
 			}
 
+			// Clear the current base fee: the suggestion was read a moment ago and a
+			// rising base fee makes it stale, which the node rejects outright rather
+			// than queueing.
+			marketPrice := gasPriceWithBaseFeeHeadroom(stdCtx, endpoint, gasPrice)
+			gasPrice = marketPrice
+
 			// Enforce minimum floor if this nonce matches the last attempted nonce (e.g. replacing a stuck tx)
 			if currentNonce == state.lastNonce {
 				if state.lastGasPrice != nil {
@@ -1457,10 +1582,13 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 				}
 			}
 
-			// Clear the current base fee: the suggestion was read a moment ago and a
-			// rising base fee makes it stale, which the node rejects outright rather
-			// than queueing.
-			gasPrice = gasPriceWithBaseFeeHeadroom(stdCtx, endpoint, gasPrice)
+			gasPrice, err = caps.legacyPrice(marketPrice, gasPrice)
+			if err != nil {
+				// Nothing was signed, so the cached nonce is still the next one.
+				h.mu.Unlock()
+				log.Printf("ERROR [SendEthTx][ATTENTION] %s not sent: %v", knob.subject(), err)
+				return nil, 0, 0, err
+			}
 
 			auth.GasPrice = gasPrice
 			auth.GasTipCap = nil
@@ -1559,6 +1687,7 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 
 		if waitErr == nil {
 			waitDur := time.Since(waitStart)
+			h.noteMinedBlock(endpoint.EthClient(), receipt.BlockNumber)
 			if receipt.Status == 0 {
 				callMsg := ethereum.CallMsg{
 					From:     fromAddress,

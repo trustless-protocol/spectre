@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"log"
 	"strings"
 	"testing"
@@ -127,6 +128,39 @@ func TestRegisterLogFlags_EverySubcommandAcceptsThem(t *testing.T) {
 	root.SetArgs([]string{"start", "--no-such-flag"})
 	if err := root.Execute(); err == nil {
 		t.Fatal("an unknown flag was accepted; registering the logging flags must not loosen cobra's own parse")
+	}
+}
+
+// A failed command's error must reach the operator only through the logger,
+// whose core redacts URLs. Printed by cobra first, it went to stderr raw, the API
+// key in the RPC URL included (#575).
+func TestRootCmd_LeavesFailedCommandErrorsToTheLogger(t *testing.T) {
+	const secret = "FAKESECRET123"
+	root := newRootCmd(zap.NewNop())
+	root.AddCommand(&cobra.Command{
+		Use: "fail",
+		RunE: func(*cobra.Command, []string) error {
+			return fmt.Errorf("read eth_chainId at http://127.0.0.1:1/v3/%s: connection refused", secret)
+		},
+	})
+	var printed bytes.Buffer
+	root.SetOut(&printed)
+	root.SetErr(&printed)
+	root.SetArgs([]string{"fail"})
+
+	err := root.Execute()
+	if err == nil || !strings.Contains(err.Error(), secret) {
+		t.Fatalf("Execute() = %v, want the command's error back for main to log", err)
+	}
+	if strings.Contains(printed.String(), secret) {
+		t.Fatalf("cobra printed the error raw, API key included:\n%s", printed.String())
+	}
+
+	// main logs it through the production core (at fatal; Error here, same core).
+	var logged bytes.Buffer
+	newLogger(logSettings{level: zapcore.InfoLevel, format: logFormatJSON}, zapcore.AddSync(&logged)).Sugar().Error(err)
+	if strings.Contains(logged.String(), secret) || !strings.Contains(logged.String(), "http://127.0.0.1:1") {
+		t.Fatalf("logged %s, want the URL cut to scheme and host", logged.String())
 	}
 }
 

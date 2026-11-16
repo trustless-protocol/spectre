@@ -1,13 +1,16 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	client "relayer/client"
+	"strings"
 	"testing"
 	"time"
 
@@ -655,7 +658,7 @@ func TestScanForEVMTimeouts(t *testing.T) {
 		// Make the packet due again with a saturated shared-outage history.
 		past := time.Now().Add(-time.Hour)
 		for i := 0; i < 6; i++ {
-			tracker.deferTimeoutRetryForTest(packet.SourceClient, packet.Sequence, past)
+			tracker.deferSharedTimeoutRetryForTest(packet.SourceClient, packet.Sequence, past)
 		}
 
 		svc := New(nil, nil, DefaultConfig())
@@ -676,6 +679,67 @@ func TestScanForEVMTimeouts(t *testing.T) {
 		got := tracker.GetAll()
 		if len(got) != 1 || got[0].Deferrals != 1 {
 			t.Fatalf("deferrals after recovered shared prerequisite = %#v, want a fresh single deferral", got)
+		}
+	})
+
+	// #575 L3: the shared client update succeeded every cycle and cleared the
+	// count, so a packet whose own timeout kept failing restarted at the first
+	// backoff rung each time: one paid Groth16 update a minute, forever, and never
+	// a STUCK line.
+	t.Run("a packet that keeps failing after each paid update backs off", func(t *testing.T) {
+		tracker := NewPendingPacketTracker()
+		packet := channeltypesv2.Packet{
+			SourceClient: "eth-client-0", Sequence: 1,
+			TimeoutTimestamp: uint64(time.Now().Add(-time.Minute).Unix()),
+		}
+		tracker.Add(packet, 123)
+
+		var logs bytes.Buffer
+		prevOut, prevFlags := log.Writer(), log.Flags()
+		log.SetOutput(&logs)
+		log.SetFlags(0)
+		t.Cleanup(func() { log.SetOutput(prevOut); log.SetFlags(prevFlags) })
+
+		prepareCalls := 0
+		svc := New(nil, nil, DefaultConfig())
+		var holds []time.Duration
+		for cycle := 1; cycle <= deferralAlertThreshold; cycle++ {
+			tracker.makeDueForTest() // the backoff has elapsed
+			before := time.Now()
+			svc.scanForEVMTimeouts(context.Background(), evmTimeoutDeps{}, evmTimeoutScanOptions{
+				tag:     "Eth",
+				tracker: tracker,
+				prepareTimeouts: func(context.Context, evmTimeoutDeps) (*client.LightBlock, bool) {
+					prepareCalls++ // the paid client update
+					return &client.LightBlock{}, true
+				},
+				hasPendingCommitment: func(context.Context, evmTimeoutDeps, channeltypesv2.Packet) (bool, error) {
+					return true, nil
+				},
+				timeoutSend: func(context.Context, evmTimeoutDeps, EthPacket, *client.LightBlock) timeoutSendOutcome {
+					return timeoutDeferred // this packet's own step fails every time
+				},
+			})
+			got := tracker.GetAll()
+			if len(got) != 1 || got[0].Deferrals != cycle || got[0].SharedDeferrals != 0 {
+				t.Fatalf("cycle %d: retry state = %#v, want %d deferrals and no shared ones", cycle, got, cycle)
+			}
+			holds = append(holds, got[0].NotBefore.Sub(before))
+		}
+
+		for i := 1; i < len(holds); i++ {
+			if holds[i].Round(time.Second) < holds[i-1].Round(time.Second) {
+				t.Fatalf("backoff shrank between cycles: %v", holds)
+			}
+		}
+		if last := holds[len(holds)-1]; last < timeoutRetryBackoffMax-time.Minute {
+			t.Fatalf("hold after %d cycles = %s, want the %s cap: the backoff never grew", len(holds), last, timeoutRetryBackoffMax)
+		}
+		if prepareCalls != deferralAlertThreshold {
+			t.Fatalf("prepare calls = %d, want one per cycle", prepareCalls)
+		}
+		if !strings.Contains(logs.String(), "STUCK") {
+			t.Fatalf("no STUCK line after %d deferrals:\n%s", deferralAlertThreshold, logs.String())
 		}
 	})
 }

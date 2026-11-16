@@ -309,6 +309,20 @@ type SettlementChecker interface {
 	PacketSettled(ctx context.Context, e Event) (bool, error)
 }
 
+// CommitmentChecker is an OPTIONAL Source capability: report whether this source
+// still holds the commitment of a packet it sent.
+//
+// The source deletes a send's commitment when the send is acknowledged or timed
+// out, so its absence means nothing is left to relay. The drop ledger asks this
+// about a dropped send: an expired send is refunded by the timeout scanner and
+// never gets a receipt on the destination, so the receipt question alone never
+// clears its entry (#575 M2).
+//
+// A non-nil error means "do not know"; callers must not read it as either answer.
+type CommitmentChecker interface {
+	HasPacketCommitment(ctx context.Context, packet []byte) (bool, error)
+}
+
 // ClientStatusChecker is an OPTIONAL Destination capability: report whether the
 // destination's light-client-of-source accepts messages at all.
 //

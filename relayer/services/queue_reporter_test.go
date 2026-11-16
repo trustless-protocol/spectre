@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 )
 
 // newQueueReporterTestServices builds the same Services shape the other
@@ -241,5 +243,28 @@ func TestClientUpdateAges_UseTrustedChainTimestamps(t *testing.T) {
 	cosmosAge, _, _ = svc.clientUpdateAges(now)
 	if cosmosAge != 2*time.Minute {
 		t.Fatalf("older observation regressed cosmos-on-evm age to %s", cosmosAge)
+	}
+}
+
+// #575: the relay queue is unbounded by decision, so its depth is what the
+// reporter watches instead.
+func TestQueueReporter_WarnsOnADeepRelayQueue(t *testing.T) {
+	restore := relayQueueWarnDepth
+	relayQueueWarnDepth = 3
+	t.Cleanup(func() { relayQueueWarnDepth = restore })
+
+	svc := New(nil, nil, DefaultConfig())
+	for sequence := uint64(1); sequence <= 3; sequence++ {
+		svc.BatchBuilder.AddCosmos(CosmosPacket{Type: CosmosSend, Packet: &channeltypesv2.Packet{Sequence: sequence}})
+	}
+	var quiet uint64
+	if out := captureLog(t, func() { svc.reportQueueState(time.Now(), nil, &quiet) }); strings.Contains(out, "relay queue holds") {
+		t.Fatalf("warned at the threshold, not past it:\n%s", out)
+	}
+
+	svc.BatchBuilder.AddCosmos(CosmosPacket{Type: CosmosSend, Packet: &channeltypesv2.Packet{Sequence: 4}})
+	out := captureLog(t, func() { svc.reportQueueState(time.Now(), nil, &quiet) })
+	if !strings.Contains(out, "WARN [QueueState] relay queue holds cosmos=4 eth=0") {
+		t.Fatalf("no warning for a queue past the threshold:\n%s", out)
 	}
 }

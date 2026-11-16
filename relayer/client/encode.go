@@ -299,6 +299,9 @@ func ParseCommitmentProof(proof *ics23.CommitmentProof) (*spectreContract.IMembe
 	var parsedProof *spectreContract.IMembershipMsgsCommitmentProof
 	switch p := proof.Proof.(type) {
 	case *ics23.CommitmentProof_Exist:
+		if p.Exist == nil {
+			return nil, fmt.Errorf("existence proof is empty")
+		}
 		parsedProof = &spectreContract.IMembershipMsgsCommitmentProof{
 			ProofType: ProofType_EXIST,
 			ExistenceProof: spectreContract.IMembershipMsgsExistenceProof{
@@ -314,6 +317,9 @@ func ParseCommitmentProof(proof *ics23.CommitmentProof) (*spectreContract.IMembe
 			parsedProof.ExistenceProof.Path = append(parsedProof.ExistenceProof.Path, ParseInnerOp(innerOp))
 		}
 	case *ics23.CommitmentProof_Nonexist:
+		if p.Nonexist == nil {
+			return nil, fmt.Errorf("non-existence proof is empty")
+		}
 		if p.Nonexist.Left == nil && p.Nonexist.Right == nil {
 			return nil, fmt.Errorf("non-existence proof must at least left or right existence proofs")
 		}
@@ -416,7 +422,19 @@ func ParseCommitmentProof(proof *ics23.CommitmentProof) (*spectreContract.IMembe
 				}
 			}
 		}
+		// An entry that is neither kind left parsedProof nil, and the function
+		// returned (nil, nil): a nil proof with no error, dereferenced by the
+		// caller (#575 L10).
+		if parsedProof == nil {
+			return nil, fmt.Errorf("batch proof entry is neither an existence nor a non-existence proof")
+		}
 	case *ics23.CommitmentProof_Compressed:
+		// ics23.Decompress indexes the lookup table with whatever the proof
+		// says and dereferences entries without checking them, so a malformed
+		// proof panics inside it. Check the shape it assumes first.
+		if err := validateCompressedProof(p.Compressed); err != nil {
+			return nil, err
+		}
 		decompressedProof := ics23.Decompress(proof)
 		return ParseCommitmentProof(decompressedProof)
 	default:
@@ -424,6 +442,46 @@ func ParseCommitmentProof(proof *ics23.CommitmentProof) (*spectreContract.IMembe
 	}
 
 	return parsedProof, nil
+}
+
+// validateCompressedProof checks everything ics23.Decompress assumes: every entry
+// is an existence or a non-existence proof, and every path step indexes the
+// lookup table.
+func validateCompressedProof(comp *ics23.CompressedBatchProof) error {
+	if comp == nil {
+		return fmt.Errorf("compressed proof is empty")
+	}
+	lookups := len(comp.LookupInners)
+	checkPath := func(exist *ics23.CompressedExistenceProof) error {
+		if exist == nil {
+			return nil
+		}
+		for _, step := range exist.Path {
+			if step < 0 || int(step) >= lookups {
+				return fmt.Errorf("compressed proof path step %d is outside its %d-entry lookup table", step, lookups)
+			}
+		}
+		return nil
+	}
+	for i, entry := range comp.Entries {
+		if exist := entry.GetExist(); exist != nil {
+			if err := checkPath(exist); err != nil {
+				return err
+			}
+			continue
+		}
+		non := entry.GetNonexist()
+		if non == nil {
+			return fmt.Errorf("compressed proof entry %d is neither an existence nor a non-existence proof", i)
+		}
+		if err := checkPath(non.Left); err != nil {
+			return err
+		}
+		if err := checkPath(non.Right); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func ParseLeafOp(leafOp *ics23.LeafOp) spectreContract.IMembershipMsgsLeafOp {

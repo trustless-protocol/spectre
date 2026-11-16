@@ -16,7 +16,7 @@ import (
 // allowedIndices) and it needs cometbft + the RPC client; the prover only
 // consumes the resulting witness.ValidatorSignature slice.
 //
-// ExtractValidatorSignatures collects non-absent, locally-verified commit
+// ExtractValidatorSignatures collects locally-verified COMMIT precommit
 // signatures until their cumulative voting power exceeds 2/3 of
 // TotalVotingPower. Candidates are sorted by power for selection, while the
 // selected proof slots are returned in validator-index order.
@@ -52,7 +52,12 @@ func ExtractValidatorSignatures(
 
 	candidates := make([]witness.ValidatorSignature, 0, len(commit.Signatures))
 	for i, sig := range commit.Signatures {
-		if sig.BlockIDFlag == types.BlockIDFlagAbsent {
+		// Only a COMMIT precommit is a proof signer. A NIL precommit verifies over
+		// an empty BlockID, so it commits to no block: the witness hash, the
+		// circuit and SpectreClient all reject it, and a top-power validator
+		// voting nil would be selected first and fail every proof. Any other flag
+		// makes VoteSignBytes panic, so this also runs before sign bytes are built.
+		if sig.BlockIDFlag != types.BlockIDFlagCommit {
 			continue
 		}
 		if allowedIndices != nil && !allowedIndices[uint32(i)] {
@@ -83,7 +88,7 @@ func ExtractValidatorSignatures(
 		})
 	}
 	if len(candidates) == 0 {
-		return nil, fmt.Errorf("no valid non-absent signatures found in commit")
+		return nil, fmt.Errorf("no valid COMMIT precommit signatures found in commit")
 	}
 
 	// Greedy by voting power so the smallest prefix hits quorum and the

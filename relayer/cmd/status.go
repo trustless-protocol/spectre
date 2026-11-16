@@ -175,11 +175,21 @@ func renderStatus(w io.Writer, snap status.Snapshot) error {
 
 		if len(path.Waiting) == 0 {
 			fmt.Fprintf(out, "  waiting\tnothing\n")
-			continue
+		} else {
+			fmt.Fprintf(out, "  waiting\t%d packet(s), oldest first\n", len(path.Waiting))
+			for _, p := range path.Waiting {
+				fmt.Fprintf(out, "    %s seq=%d\th=%d\tfor %s\n", p.Type, p.Sequence, p.Height, p.AgeText)
+			}
 		}
-		fmt.Fprintf(out, "  waiting\t%d packet(s), oldest first\n", len(path.Waiting))
-		for _, p := range path.Waiting {
-			fmt.Fprintf(out, "    %s seq=%d\th=%d\tfor %s\n", p.Type, p.Sequence, p.Height, p.AgeText)
+
+		// Held after a permanent failure. Printed only when there is one: unlike
+		// "waiting", an empty list is the normal state and says nothing.
+		if len(path.Dropped) > 0 {
+			fmt.Fprintf(out, "  ATTENTION\t%d packet(s) dropped after a permanent failure, oldest first\n", len(path.Dropped))
+			for _, p := range path.Dropped {
+				fmt.Fprintf(out, "    %s seq=%d\tsince %s\t%d drop(s)\tnext retry %s\t%s\n",
+					p.Type, p.Sequence, p.Since.UTC().Format(time.RFC3339), p.Drops, p.NextRetry.UTC().Format(time.RFC3339), p.Reason)
+			}
 		}
 	}
 

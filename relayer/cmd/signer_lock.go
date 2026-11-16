@@ -1,9 +1,12 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // signerLockDirName identifies the shared per-user lock directory. It must not
@@ -35,4 +38,53 @@ var signerLockDir = func() (string, error) {
 		return filepath.Join(cache, signerLockDirName), nil
 	}
 	return filepath.Join(signerLockRoot, fmt.Sprintf("%s-%d", signerLockDirName, uid)), nil
+}
+
+// signerLockOwner is the uid the lock directory must belong to. A seam only so a
+// test can stand in for a directory another user owns.
+var signerLockOwner = os.Getuid
+
+// ensureSignerLockDir creates the lock directory if it is missing and refuses
+// one this user cannot trust.
+//
+// The directory sits in /tmp, which every local user can write. Trusted as found,
+// another user could create it first: owned by them it makes start fail with a
+// bare permission error; world-writable, or a symlink to a directory they
+// control, it lets them remove a held lock file so two relayers on one key both
+// start (#575 L6). It must be a real directory, owned by this user, that no one
+// else can write.
+func ensureSignerLockDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("signer lock: create %q: %w", dir, err)
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("signer lock: inspect %q: %w", dir, err)
+	}
+	switch {
+	case info.Mode()&fs.ModeSymlink != 0:
+		return fmt.Errorf("signer lock: %q is a symlink; refusing to place locks where it points. Remove it", dir)
+	case !info.IsDir():
+		return fmt.Errorf("signer lock: %q is not a directory. Remove it", dir)
+	case info.Mode().Perm()&0o022 != 0:
+		return fmt.Errorf("signer lock: %q has mode %04o; other users can write it and replace a held lock. "+
+			"Run chmod 700 on it, or remove it", dir, info.Mode().Perm())
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		if owner, want := int(stat.Uid), signerLockOwner(); owner != want {
+			return fmt.Errorf("signer lock: %q is owned by uid %d, not this user (uid %d); "+
+				"another account created it. Remove it as that user or root", dir, owner, want)
+		}
+	}
+	return nil
+}
+
+// openSignerLockFile opens (creating) one lock file without following a symlink
+// in its place.
+func openSignerLockFile(path string) (*os.File, error) {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+	if errors.Is(err, syscall.ELOOP) {
+		return nil, fmt.Errorf("%q is a symlink; refusing to lock through it: %w", path, err)
+	}
+	return file, err
 }

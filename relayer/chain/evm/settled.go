@@ -8,6 +8,7 @@ import (
 	"relayer/services"
 
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
+	ethcommon "github.com/ethereum/go-ethereum/common"
 )
 
 // PacketSettled implements chain.SettlementChecker for the ETH router.
@@ -35,3 +36,20 @@ func (d *Destination) PacketSettled(ctx context.Context, e chain.Event) (bool, e
 }
 
 var _ chain.SettlementChecker = (*Destination)(nil)
+
+// HasPacketCommitment implements chain.CommitmentChecker: whether the router
+// still holds the commitment of a packet it sent (ETH->Cosmos).
+func (s *Source) HasPacketCommitment(ctx context.Context, packet []byte) (bool, error) {
+	// An empty slot reads as "gone", so a missing router address must not be
+	// asked: every answer would be "gone".
+	if s.evm.EthClient() == nil || s.evm.Contracts.Router == (ethcommon.Address{}) {
+		return false, fmt.Errorf("eth source: no ETH client or router address to query the commitment on")
+	}
+	var pkt channeltypesv2.Packet
+	if err := pkt.Unmarshal(packet); err != nil {
+		return false, fmt.Errorf("eth source: decode packet: %w", err)
+	}
+	return services.HasPendingEthPacketCommitment(ctx, s.evm, pkt)
+}
+
+var _ chain.CommitmentChecker = (*Source)(nil)

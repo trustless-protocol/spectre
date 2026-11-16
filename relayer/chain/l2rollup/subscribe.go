@@ -267,6 +267,10 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 		// cover blocks produced while this process was watching, where a query
 		// would only confirm what the scan just saw.
 		rescan = true
+		// rescanThrough is the head read when the cursor was seeded: the resume
+		// window ends there. A bounded tick may need several scans to cover it,
+		// and every one of them is historical.
+		rescanThrough uint64
 		// lastReconcile paces the re-check of the pending buffer; the zero time
 		// makes the first tick with anything pending reconcile immediately.
 		lastReconcile time.Time
@@ -295,6 +299,7 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 				from = head - lookback
 			}
 			from = s.resumeCursor(from, head)
+			rescanThrough = head
 			seeded = true
 			log.Printf("[l2->cosmos Subscribe] polling ICS26Router %s from block %d (%d block lookback, client_id=%s)",
 				s.router.Hex(), from, lookback, s.l2ClientID)
@@ -313,15 +318,24 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 		var fresh []chain.Event
 		var settled map[settledKey]struct{}
 		if head >= from {
-			fresh, settled, err = s.scanPacketLogs(ctx, filterer, from, head, &span)
+			// One tick scans a bounded window, not everything up to whatever the
+			// endpoint calls its head. See scanWindowEnd.
+			to := scanWindowEnd(from, head, span.Chunk)
+			if to < head {
+				log.Printf("[l2->cosmos Subscribe] head %d is %d blocks past the cursor; scanning [%d,%d] this tick",
+					head, head-from+1, from, to)
+			}
+			fresh, settled, err = s.scanPacketLogs(ctx, filterer, from, to, &span)
 			if err != nil {
-				log.Printf("WARN [l2->cosmos Subscribe] scan [%d,%d]: %v", from, head, err)
+				log.Printf("WARN [l2->cosmos Subscribe] scan [%d,%d]: %v", from, to, err)
 				continue // do NOT advance the cursor on failure (re-scan next tick)
 			}
-			from = head + 1 // range consumed; fresh events are now carried in the batch
+			from = to + 1 // range consumed; fresh events are now carried in the batch
+			// Everything up to the head read at seeding is the resume window, even
+			// when it takes several ticks to cover.
 			if rescan {
 				fresh = s.dropAlreadyHandled(ctx, fresh, "startup rescan")
-				rescan = false
+				rescan = to < rescanThrough
 			}
 		}
 
@@ -407,6 +421,14 @@ func (s *Source) persistCursor(next uint64, batches ...[]chain.Event) {
 // loses an event silently) and never exceed the chunk (the provider rejects it) —
 // and because a test of an inline loop can only re-implement it, which proves
 // nothing about the loop that runs.
+//
+// Every step is checked against `to` before it is taken, so no addition can wrap.
+// The earlier loop advanced with start += chunk and compared afterwards: near the
+// top of the uint64 range that wrapped to a small number and never ended
+// (#575 L14).
+//
+// It allocates one entry per span and does not bound the range. Its caller does:
+// see scanWindowEnd.
 func chunkSpans(from, to, chunk uint64) [][2]uint64 {
 	if to < from {
 		return nil
@@ -415,14 +437,47 @@ func chunkSpans(from, to, chunk uint64) [][2]uint64 {
 		return [][2]uint64{{from, to}}
 	}
 	var out [][2]uint64
-	for start := from; start <= to; start += chunk {
-		end := start + chunk - 1
-		if end > to {
-			end = to
+	for start := from; ; {
+		end := to
+		if to-start >= chunk {
+			end = start + chunk - 1 // at most to-1: cannot wrap
 		}
 		out = append(out, [2]uint64{start, end})
+		if end == to {
+			return out
+		}
+		start = end + 1 // end < to: cannot wrap
 	}
-	return out
+}
+
+const (
+	// maxScanBlocksPerTick is the most blocks one tick scans. A tick is
+	// l2SubscribeInterval (4 s), so this is 25,000 blocks a second: faster than
+	// any rollup produces them, so a backlog still drains.
+	maxScanBlocksPerTick uint64 = 100_000
+	// maxLogSpansPerTick is the most log requests one tick is cut into.
+	maxLogSpansPerTick uint64 = 1024
+)
+
+// scanWindowEnd is the last block one tick scans from `from`, at most head.
+//
+// The head is whatever the endpoint reports. Scanning straight to it let one
+// implausible answer size the whole scan: one span per chunk of a range with no
+// upper bound, allocated up front (#575 L14). Bounding the window bounds that
+// allocation, and it also bounds how far one answer can move the cursor: a head
+// that is wrong for a tick advances it by this window, not to the reported value.
+func scanWindowEnd(from, head, chunk uint64) uint64 {
+	if head < from {
+		return head
+	}
+	window := maxScanBlocksPerTick
+	if chunk > 0 && chunk < maxScanBlocksPerTick/maxLogSpansPerTick {
+		window = chunk * maxLogSpansPerTick
+	}
+	if head-from < window {
+		return head
+	}
+	return from + window - 1 // below head: cannot wrap
 }
 
 // scanNarrowing runs scan over [from,to] in span-sized pieces, halving the span

@@ -104,7 +104,9 @@ func TestEngineErrors(t *testing.T) {
 		}
 		body := string(src)
 
-		engineCall := regexp.MustCompile(`err := (run\w*Engine)\(`)
+		// Each engine runs inside workers.Recover, so its call is the closure's
+		// return value (#575: a panic in an engine is its error, not a crash).
+		engineCall := regexp.MustCompile(`(?:err := |return )(run\w*Engine)\(`)
 		calls := engineCall.FindAllStringSubmatchIndex(body, -1)
 		if len(calls) == 0 {
 			t.Fatal("start.go runs no engines; this test no longer describes it")
@@ -112,6 +114,10 @@ func TestEngineErrors(t *testing.T) {
 
 		for _, c := range calls {
 			name := body[c[2]:c[3]]
+			if head := body[max(0, c[0]-160):c[0]]; !strings.Contains(head, "workers.Recover(") {
+				t.Errorf("%s does not run inside workers.Recover; a panic in it would end the process "+
+					"with no error recorded", name)
+			}
 			// The goroutine body ends at the closing of the `go func(...) {...}(...)`
 			// it lives in; the next `}(` is a tight enough bound and does not depend
 			// on brace counting.

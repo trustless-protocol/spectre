@@ -83,17 +83,6 @@ func (s *Services) CosmosPendingSettled(packet channeltypesv2.Packet) bool {
 	return s.BatchBuilder.PendingTracker.IsSettled(packet)
 }
 
-// MarkCosmosPendingSettled records a terminal Cosmos event and removes its
-// matching pending entry atomically. False means persistence failed; callers
-// should log the failure, but must not relay a packet already known settled.
-func (s *Services) MarkCosmosPendingSettled(packet channeltypesv2.Packet) bool {
-	if err := s.BatchBuilder.PendingTracker.MarkSettled(packet); err != nil {
-		log.Printf("ERROR [PendingTracker][ATTENTION] failed to persist terminal Cosmos settlement seq=%d: %v", packet.Sequence, err)
-		return false
-	}
-	return true
-}
-
 // UntrackCosmosPending removes a Cosmos-origin packet from the pending tracker
 // once it has been successfully received on ETH — it can no longer time out, so
 // the timeout scanner need not keep querying its receipt. If persistence fails,
@@ -111,10 +100,31 @@ func (s *Services) TrackL2Pending(packet channeltypesv2.Packet, blockNumber uint
 	return s.BatchBuilder.L2PendingTracker.Add(packet, blockNumber)
 }
 
-// UntrackL2Pending removes an L2-origin packet once the L2->Cosmos receive relay
-// succeeds; after a Cosmos receipt exists, a timeout refund must not be attempted.
-// If persistence fails, the packet remains tracked and the failure is logged for
-// operator attention.
+// SettleDeliveredL2Pending closes an L2-origin packet this process delivered to
+// Cosmos, with a tombstone (#575). Cosmos is final, so a delivered receive cannot
+// be undone, and the tombstone stops the L2 flush backstop from tracking the send
+// again when it expires before its acknowledgement returns -- a resurrected
+// record cost the timeout scanner a paid client update before it found the
+// receipt.
+func (s *Services) SettleDeliveredL2Pending(packet channeltypesv2.Packet) {
+	if err := s.BatchBuilder.L2PendingTracker.MarkSettled(packet); err != nil {
+		log.Printf("ERROR [PendingTracker][ATTENTION] failed to persist delivery of L2 packet seq=%d: %v", packet.Sequence, err)
+	}
+}
+
+// SettleDeliveredEthPending is SettleDeliveredL2Pending for an ETH-origin packet
+// this process delivered to Cosmos.
+func (s *Services) SettleDeliveredEthPending(packet channeltypesv2.Packet) {
+	if err := s.BatchBuilder.EthPendingTracker.MarkSettled(packet); err != nil {
+		log.Printf("ERROR [PendingTracker][ATTENTION] failed to persist delivery of ETH packet seq=%d: %v", packet.Sequence, err)
+	}
+}
+
+// UntrackL2Pending removes an L2-origin packet on a terminal L2 event (its
+// acknowledgement or timeout landed on the L2). It writes no tombstone: the L2
+// event is read at the configured head kind, which may not be final, and a
+// tombstone would outlive a reorg that removed it (see #575 L1). If persistence
+// fails, the packet remains tracked and the failure is logged.
 func (s *Services) UntrackL2Pending(packet channeltypesv2.Packet) {
 	if err := s.BatchBuilder.L2PendingTracker.RemovePacketIfCurrent(packet); err != nil {
 		log.Printf("ERROR [PendingTracker][ATTENTION] failed to persist removal of settled L2 packet seq=%d: %v", packet.Sequence, err)
@@ -217,10 +227,18 @@ func (s *Services) PinnedSetRotationDueIn(stdCtx context.Context, cosmos CosmosE
 
 // rotationDueIn is the time left until anchor+interval, clamped to zero so an
 // overdue rotation fires immediately.
+//
+// The result is clamped to [0, interval] (#575). The anchor comes from the chain
+// and the RPC: an anchor in the future (clock skew, a wrong timestamp) used to push
+// the first rotation past one interval, which is the cadence that keeps the pinned
+// set from decaying.
 func rotationDueIn(anchor time.Time, interval time.Duration, now time.Time) time.Duration {
 	due := anchor.Add(interval).Sub(now)
-	if due < 0 {
+	switch {
+	case due < 0:
 		return 0
+	case due > interval:
+		return interval
 	}
 	return due
 }

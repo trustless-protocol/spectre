@@ -100,7 +100,10 @@ func classifyEthRevert(
 	case revertDataPresent(probeErr):
 		return revertLogical
 	case isExecutionOutOfGas(probeErr):
-		return revertOutOfGas
+		// The probe had gasProbeMultiplier times the gas (or the whole block),
+		// more than any ladder rung, and still ran out. Climbing would only mine
+		// more reverts, so this is not a gas problem the ladder can fix.
+		return revertLogical
 	case isGasAllowanceRejection(probeErr), isProbeTransportError(probeErr):
 		if outOfGasByUtilization(gasUsed, gasLimit) {
 			return revertOutOfGas
@@ -167,6 +170,24 @@ func isProbeTransportError(err error) bool {
 }
 
 type gasLimitKnob string
+
+// subject names the send a knob belongs to, for a log line about that send.
+func (k gasLimitKnob) subject() string {
+	switch k {
+	case knobEthGasLimit:
+		return "EVM transaction"
+	case knobMulticallGasLimit:
+		return "EVM multicall"
+	case knobMisbehaviour:
+		return "misbehaviour submission"
+	case knobDeployEstimate:
+		return "SpectreClient deploy"
+	case knobFixedClientLimit:
+		return "EVM client registration"
+	default:
+		return "EVM transaction"
+	}
+}
 
 const (
 	knobEthGasLimit       gasLimitKnob = "ETH_GAS_LIMIT"

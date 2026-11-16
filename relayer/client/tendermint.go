@@ -330,6 +330,23 @@ func fetchAllValidators(ctx context.Context, client validatorsPager, height int6
 	return collected, nil
 }
 
+// newValidatorSet builds a validator set from an RPC answer without trusting its
+// shape.
+//
+// CometBFT's NewValidatorSet panics on a list it cannot accept: a duplicate
+// address, a zero or negative power, a nil entry, a total power over its limit.
+// It runs BEFORE the hash check that rejects a wrong list, so a malformed
+// /validators answer took the process down instead of being refused (#575 L9).
+// The panic is turned into the error the hash check would have been.
+func newValidatorSet(validators []*commettypes.Validator) (set *commettypes.ValidatorSet, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			set, err = nil, fmt.Errorf("the RPC returned a list that is not a valid validator set: %v", r)
+		}
+	}()
+	return commettypes.NewValidatorSet(validators), nil
+}
+
 // GetLightBlock fetches a complete light block, propagating cancellation
 // through every CometBFT request.
 func GetLightBlock(ctx context.Context, client *rpchttp.HTTP, height int64) (*LightBlock, error) {
@@ -345,6 +362,10 @@ func GetLightBlock(ctx context.Context, client *rpchttp.HTTP, height int64) (*Li
 	}
 
 	signedHeader := commitResp.SignedHeader
+	// Every use of a light block below and in its callers dereferences both.
+	if signedHeader.Header == nil || signedHeader.Commit == nil {
+		return nil, fmt.Errorf("commit response at height %d carries no header or no commit", height)
+	}
 	proposerAddr := signedHeader.Header.ProposerAddress
 	var proposer *commettypes.Validator
 	validators, err := fetchAllValidators(ctx, client, height)
@@ -361,7 +382,10 @@ func GetLightBlock(ctx context.Context, client *rpchttp.HTTP, height int64) (*Li
 		}
 	}
 
-	valSet := commettypes.NewValidatorSet(validators)
+	valSet, err := newValidatorSet(validators)
+	if err != nil {
+		return nil, fmt.Errorf("validators at height %d: %w", height, err)
+	}
 	valSet.Proposer = proposer
 	// Guard against a truncated/incomplete fetch: the assembled set must hash to
 	// the value committed in the header, otherwise the on-chain validator-set
@@ -387,7 +411,10 @@ func GetLightBlock(ctx context.Context, client *rpchttp.HTTP, height int64) (*Li
 		}
 	}
 
-	nextValSet := commettypes.NewValidatorSet(nextValidators)
+	nextValSet, err := newValidatorSet(nextValidators)
+	if err != nil {
+		return nil, fmt.Errorf("validators at height %d: %w", nextHeight, err)
+	}
 	nextValSet.Proposer = proposer
 	if !bytes.Equal(nextValSet.Hash(), signedHeader.Header.NextValidatorsHash) {
 		return nil, fmt.Errorf(
@@ -491,6 +518,10 @@ func GetEthereumClientState(ctx context.Context, cosmosClient *rpchttp.HTTP, cli
 		return nil, fmt.Errorf("failed to unmarshal query response: %w", err)
 	}
 
+	// A successful answer may still carry no client state (#575 L11).
+	if queryResp.ClientState == nil {
+		return nil, fmt.Errorf("client-state query for %s returned no client state", clientID)
+	}
 	var wasmClientState ibcwasmtypes.ClientState
 	if err := proto.Unmarshal(queryResp.ClientState.Value, &wasmClientState); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal wasm client state: %w", err)
@@ -499,6 +530,9 @@ func GetEthereumClientState(ctx context.Context, cosmosClient *rpchttp.HTTP, cli
 	var ethClientState EthereumClientState
 	if err := json.Unmarshal(wasmClientState.Data, &ethClientState); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal ethereum client state: %w", err)
+	}
+	if err := ethClientState.Validate(); err != nil {
+		return nil, fmt.Errorf("client %s: %w", clientID, err)
 	}
 
 	return &ethClientState, nil
@@ -525,11 +559,42 @@ func GetWasmClientLatestHeight(ctx context.Context, cosmosClient *rpchttp.HTTP, 
 	if err := proto.Unmarshal(result.Response.Value, &queryResp); err != nil {
 		return clienttypes.Height{}, fmt.Errorf("unmarshal client-state response: %w", err)
 	}
+	if queryResp.ClientState == nil {
+		return clienttypes.Height{}, fmt.Errorf("client-state query for %s returned no client state", clientID)
+	}
 	var wasmClientState ibcwasmtypes.ClientState
 	if err := proto.Unmarshal(queryResp.ClientState.Value, &wasmClientState); err != nil {
 		return clienttypes.Height{}, fmt.Errorf("unmarshal wasm client state: %w", err)
 	}
 	return wasmClientState.LatestHeight, nil
+}
+
+// GetWasmClientStateData returns the client-specific Data of an 08-wasm client
+// state on Cosmos: the JSON the wasm contract stores for itself.
+func GetWasmClientStateData(ctx context.Context, cosmosClient *rpchttp.HTTP, clientID string) ([]byte, error) {
+	reqBytes, err := proto.Marshal(&clienttypes.QueryClientStateRequest{ClientId: clientID})
+	if err != nil {
+		return nil, fmt.Errorf("marshal client-state query: %w", err)
+	}
+	result, err := cosmosClient.ABCIQuery(ctx, "/ibc.core.client.v1.Query/ClientState", reqBytes)
+	if err != nil {
+		return nil, fmt.Errorf("query client state %s: %w", clientID, err)
+	}
+	if result.Response.Code != 0 {
+		return nil, fmt.Errorf("client-state query %s failed with code %d: %s", clientID, result.Response.Code, result.Response.Log)
+	}
+	var queryResp clienttypes.QueryClientStateResponse
+	if err := proto.Unmarshal(result.Response.Value, &queryResp); err != nil {
+		return nil, fmt.Errorf("unmarshal client-state response: %w", err)
+	}
+	if queryResp.ClientState == nil {
+		return nil, fmt.Errorf("client-state query for %s returned no client state", clientID)
+	}
+	var wasmClientState ibcwasmtypes.ClientState
+	if err := proto.Unmarshal(queryResp.ClientState.Value, &wasmClientState); err != nil {
+		return nil, fmt.Errorf("unmarshal wasm client state: %w", err)
+	}
+	return wasmClientState.Data, nil
 }
 
 // GetClientStatus asks ibc-go for a client's status ("Active", "Frozen",

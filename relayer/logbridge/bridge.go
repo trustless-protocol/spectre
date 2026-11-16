@@ -85,7 +85,7 @@ func split(msg string) (zapcore.Level, string) {
 type writer struct{ logger *zap.Logger }
 
 func (w writer) Write(p []byte) (int, error) {
-	level, msg := split(strings.TrimSuffix(string(p), "\n"))
+	level, msg := split(redactedLine(strings.TrimSuffix(string(p), "\n")))
 	switch level {
 	case zapcore.DebugLevel:
 		w.logger.Debug(msg)

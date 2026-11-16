@@ -1,11 +1,13 @@
 package services
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	relayerclient "relayer/client"
+	"relayer/rpcmock"
 	"strconv"
 	"strings"
 	"sync"
@@ -250,7 +252,7 @@ func TestCloneEthereumClientState(t *testing.T) {
 	// value type. Add one slice, map or pointer -- a list of forks, say -- and the
 	// "clone" starts sharing it, so a mutation through the copy reaches the original.
 	//
-	// The callers rely on independence: ethProofStateFromFinalityUpdate clones the
+	// The callers rely on independence: ethProofStateFromHeader clones the
 	// on-chain client state and then rewrites slots on the copy to build a proof
 	// state, while the original stays the trusted one.
 	//
@@ -486,4 +488,55 @@ func TestActiveCommitteeFor(t *testing.T) {
 			t.Fatalf("signature-slot period must resolve to Next, got %+v err=%v", bySignature, err)
 		}
 	})
+}
+
+// L8: both periods derive from slots the RPCs supplied, and their difference
+// sized a slice. A finalized slot far in the future made makeslice panic.
+func TestLightClientUpdateCount(t *testing.T) {
+	cases := []struct {
+		name            string
+		trusted, target uint64
+		want            uint64
+		refused         bool
+	}{
+		{name: "same period", trusted: 7, target: 7, want: 1},
+		{name: "next period", trusted: 7, target: 8, want: 2},
+		{name: "the most one request serves", trusted: 0, target: 127, want: 128},
+		{name: "one more than a request serves", trusted: 0, target: 128, refused: true},
+		{name: "an implausible finalized slot", trusted: 1200, target: 1 << 62, refused: true},
+		{name: "the whole uint64 range", trusted: 0, target: ^uint64(0), refused: true},
+		{name: "target behind the client", trusted: 9, target: 8, refused: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := lightClientUpdateCount(tc.trusted, tc.target)
+			if tc.refused {
+				if err == nil {
+					t.Fatalf("count = %d, want the gap refused", got)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("count = %d err = %v, want %d", got, err, tc.want)
+			}
+		})
+	}
+}
+
+// The same case through the builder: it must refuse before it asks the beacon
+// node for anything, and it must not panic sizing the result.
+func TestBuildEthClientUpdateHeaders_RefusesAnImplausiblePeriodGap(t *testing.T) {
+	node := rpcmock.NewBeaconNode(t)
+	// One update is enough for the pre-fix code to reach its make([][]byte, 0, count).
+	node.Respond("/eth/v1/beacon/light_client/updates", `[{"data":{"finalized_header":{"beacon":{"slot":"1"}}}}]`)
+
+	state := &relayerclient.EthereumClientState{SlotsPerEpoch: 32, EpochsPerSyncCommitteePeriod: 256, SecondsPerSlot: 12}
+	_, err := (&Worker{}).buildEthClientUpdateHeadersWithPeriodCrossing(
+		context.Background(), node.URL(), nil, state, 0, 0, 1<<60, &relayerclient.LightClientFinalityUpdate{}, 1<<62)
+	if err == nil {
+		t.Fatal("built headers across an implausible sync-committee gap")
+	}
+	if requests := node.Requests(); len(requests) != 0 {
+		t.Fatalf("asked the beacon node %v before refusing the gap", requests)
+	}
 }

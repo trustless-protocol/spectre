@@ -156,6 +156,22 @@ func SubmitMisbehaviour(logger *zap.Logger) *cobra.Command {
 				return err
 			}
 
+			// start's nonce-domain lock, on the incident key (#575): refused while
+			// another process signs this chain with it. A dry run signs nothing.
+			txHandler := &transaction.Handler{}
+			if !dryRun {
+				signer, err := transaction.MisbehaviourSignerAddress()
+				if err != nil {
+					return err
+				}
+				releaseSignerLock, err := acquireOneShotEVMSignerLock(cmd.Context(), oneShotEVMEndpointLabel(cfg),
+					cfg.CosmosToEthConfig.EthRpcUrl, signer, txHandler)
+				if err != nil {
+					return err
+				}
+				defer releaseSignerLock()
+			}
+
 			binDir := envOrDefault("PROVER_BIN_DIR", "./bin")
 			proverEngine, err := buildProverService(cmd, binDir)
 			if err != nil {
@@ -163,7 +179,6 @@ func SubmitMisbehaviour(logger *zap.Logger) *cobra.Command {
 			}
 			defer proverEngine.Stop()
 
-			txHandler := &transaction.Handler{}
 			svc, evidenceDeps, cleanup, err := buildCosmosToEthSource(
 				logger,
 				cfg.CosmosToEthConfig,

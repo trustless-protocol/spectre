@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"os"
 	"relayer/services"
+	workergroup "relayer/workers"
 	"strings"
 	"testing"
+	"time"
 
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 )
@@ -88,5 +92,24 @@ func TestRunAdapterEngine_EveryModuleObservesItsClientUpdates(t *testing.T) {
 	}
 	if seen < 4 {
 		t.Fatalf("found %d relay.NewModule call(s) in cmd, expected the four relay paths", seen)
+	}
+}
+
+// The reporter names stuck packets, so it must not die unnoticed (#575). Its
+// panic cancels the engine and comes back as the engine's error.
+func TestStartQueueReporter_APanicCancelsTheEngineAndIsReported(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// A nil Services panics on the reporter's first report.
+	panicked := startQueueReporter(ctx, cancel, nil)
+
+	select {
+	case <-ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the reporter panicked and the engine was not cancelled")
+	}
+	if err := panicked(); !errors.Is(err, workergroup.ErrWorkerPanicked) || !strings.Contains(err.Error(), "queue-reporter") {
+		t.Fatalf("err = %v, want the reporter's panic", err)
 	}
 }
