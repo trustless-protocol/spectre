@@ -99,6 +99,25 @@ func TestClassifyEthRevert_ClampsProbeToBlockGas(t *testing.T) {
 	}
 }
 
+// The probe runs with gasProbeMultiplier (8x) the gas, clamped to the block limit.
+// The ladder never goes past 3x, so a transaction that still runs out of gas at
+// the probe runs out of gas on every rung: climbing would mine up to four reverts
+// for nothing (#575, out-of-gas ladder).
+func TestClassifyEthRevert_OutOfGasAtTheProbeIsNotAGasProblemTheLadderCanFix(t *testing.T) {
+	const gasLimit = uint64(16_000_000)
+	client := revertProbeClient(t, 300_000_000, "out of gas", nil)
+	endpoint := services.EVMEndpoint{Client: client}
+	got := classifyEthRevert(context.Background(), endpoint, ethereum.CallMsg{}, big.NewInt(1), nil, gasLimit, gasLimit)
+	if got != revertLogical {
+		t.Fatalf("out of gas at the %dx probe classified as %v, want logical (permanent)", gasProbeMultiplier, got)
+	}
+	// The ladder's top rung must stay below the probe for that to hold.
+	top := evmGasHeadroomBasisPoints[len(evmGasHeadroomBasisPoints)-1]
+	if top >= gasProbeMultiplier*10_000 {
+		t.Fatalf("ladder top rung %d bp reaches the probe multiplier %dx; out of gas at the probe no longer rules the ladder out", top, gasProbeMultiplier)
+	}
+}
+
 // Classifying an INCLUDED Cosmos out-of-gas as transient is only safe if the
 // retry differs from the attempt that failed. It does not by itself: a transient
 // failure charges no retry budget (chargesRetryBudget requires permanent), is

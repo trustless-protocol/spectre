@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"time"
 
@@ -650,6 +651,10 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 	if len(sdkMsgs) == 0 {
 		return sequence, 0, nil
 	}
+	caps, err := loadCosmosSpendCaps()
+	if err != nil {
+		return sequence, 0, err
+	}
 
 	// Get block gas limit
 	var maxBlockGas uint64 = 0
@@ -657,6 +662,26 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 		if params.ConsensusParams.Block.MaxGas > 0 {
 			maxBlockGas = uint64(params.ConsensusParams.Block.MaxGas)
 		}
+	}
+	// gasCeiling is what one transaction may carry: the block's limit and the
+	// operator's COSMOS_MAX_GAS, whichever is tighter. The block limit comes from
+	// the RPC and is absent when the chain reports -1 or the query fails; the
+	// operator's cap does not depend on either.
+	gasCeiling := caps.gasCeiling(maxBlockGas)
+
+	// splitHalves sends the batch as two transactions, the second continuing the
+	// sequence the first leaves. The success count stays a prefix.
+	splitHalves := func() (uint64, int, error) {
+		mid := len(sdkMsgs) / 2
+		nextSeq, succ1, err := h.sendCosmosTxBatchWithSplitting(stdCtx, svcCtx, sdkMsgs[:mid], accountNumber, sequence, true)
+		if err != nil {
+			return sequence, succ1, err
+		}
+		nextSeq, succ2, err := h.sendCosmosTxBatchWithSplitting(stdCtx, svcCtx, sdkMsgs[mid:], accountNumber, nextSeq, true)
+		if err != nil {
+			return nextSeq, succ1 + succ2, err
+		}
+		return nextSeq, succ1 + succ2, nil
 	}
 
 	shouldSplit := false
@@ -692,17 +717,30 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 			// Apply the current finite gas-headroom factor.
 			unscaledGasLimit = simulatedGas
 			adjustedGas := applyCosmosGasHeadroom(simulatedGas, headroomStep)
-			if maxBlockGas > 0 && adjustedGas >= maxBlockGas {
-				log.Printf("WARN [SendCosmosTx] Adjusted gas %d exceeds max block gas %d for batch of size %d", adjustedGas, maxBlockGas, len(sdkMsgs))
-				if len(sdkMsgs) > 1 {
-					if !allowSplit {
-						return sequence, 0, fmt.Errorf("[SendCosmosTx] adjusted gas %d exceeds max block gas %d; refusing to split atomic batch", adjustedGas, maxBlockGas)
-					}
+			if gasCeiling > 0 && adjustedGas >= gasCeiling {
+				log.Printf("WARN [SendCosmosTx] Adjusted gas %d exceeds the gas ceiling %d (block max %d, %s %d) for batch of size %d",
+					adjustedGas, gasCeiling, maxBlockGas, EnvCosmosMaxGas, caps.maxGas, len(sdkMsgs))
+				if allowSplit && len(sdkMsgs) > 1 {
 					log.Printf("[SendCosmosTx] Splitting batch...")
 					shouldSplit = true
 				} else {
-					// Single message exceeds block limit; clamp it to max block gas.
-					finalGasLimit = maxBlockGas
+					// One transaction that cannot split: one message, or an atomic
+					// batch (a client update and the packets proven against it). It
+					// is refused only when the node says it needs more than
+					// COSMOS_MAX_GAS, since at the cap it would only run out of gas.
+					// Refusing an atomic batch on its headroom refused one that fits
+					// (#575 M4).
+					if capErr := caps.gasAboveCap(simulatedGas); capErr != nil {
+						return sequence, 0, refusedByCap(len(sdkMsgs), capErr)
+					}
+					// Within the cap but over the block's limit: no block can hold
+					// the batch. A single message keeps its old clamp.
+					if len(sdkMsgs) > 1 && simulatedGas > gasCeiling {
+						return sequence, 0, fmt.Errorf("[SendCosmosTx] simulated gas %d exceeds max block gas %d; refusing to split atomic batch",
+							simulatedGas, gasCeiling)
+					}
+					// The ceiling still covers the simulated gas; send it there.
+					finalGasLimit = gasCeiling
 				}
 			} else {
 				finalGasLimit = adjustedGas
@@ -711,16 +749,7 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 	}
 
 	if shouldSplit {
-		mid := len(sdkMsgs) / 2
-		nextSeq, succ1, err := h.sendCosmosTxBatchWithSplitting(stdCtx, svcCtx, sdkMsgs[:mid], accountNumber, sequence, true)
-		if err != nil {
-			return sequence, succ1, err
-		}
-		nextSeq, succ2, err := h.sendCosmosTxBatchWithSplitting(stdCtx, svcCtx, sdkMsgs[mid:], accountNumber, nextSeq, true)
-		if err != nil {
-			return nextSeq, succ1 + succ2, err
-		}
-		return nextSeq, succ1 + succ2, nil
+		return splitHalves()
 	}
 
 	// If simulation wasn't run or failed, calculate the fallback gas limit
@@ -749,9 +778,17 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 		finalGasLimit = applyCosmosGasHeadroom(finalGasLimit, headroomStep)
 	}
 
-	// Clamp to block gas limit and guard against zero limit
-	if maxBlockGas > 0 && finalGasLimit > maxBlockGas {
-		finalGasLimit = maxBlockGas
+	// Clamp to the gas ceiling and guard against zero limit
+	if gasCeiling > 0 && finalGasLimit > gasCeiling {
+		finalGasLimit = gasCeiling
+	}
+	// The default fee is the gas limit as an int64 coin amount. A gas limit that
+	// does not fit would become a negative amount, and sdk.NewCoin panics on one.
+	// Only an absurd Simulate answer on a chain with no ceiling gets here.
+	if finalGasLimit > math.MaxInt64 {
+		return sequence, 0, fmt.Errorf(
+			"[SendCosmosTx] gas limit %d does not fit a fee amount (simulated gas %d); not signed. Set %s to bound it",
+			finalGasLimit, unscaledGasLimit, EnvCosmosMaxGas)
 	}
 
 	feeDenom := os.Getenv("COSMOS_FEE_DENOM")
@@ -786,6 +823,17 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 	// Clamp feeAmount if gasLimit was clamped to block limit
 	if maxBlockGas > 0 && feeAmount > int64(maxBlockGas) {
 		feeAmount = int64(maxBlockGas)
+	}
+	// The operator's fee cap is a refusal, not a clamp: a fee lowered below what
+	// the chain asks is rejected at CheckTx or sits unconfirmed in the mempool.
+	// Halving a splittable batch halves its fee; one transaction cannot shrink.
+	if capErr := caps.feeAboveCap(feeAmount, feeDenom); capErr != nil {
+		if allowSplit && len(sdkMsgs) > 1 {
+			log.Printf("[SendCosmosTx] fee %d%s for a batch of %d is above %s=%d; splitting",
+				feeAmount, feeDenom, len(sdkMsgs), EnvCosmosMaxFee, caps.maxFee)
+			return splitHalves()
+		}
+		return sequence, 0, refusedByCap(len(sdkMsgs), capErr)
 	}
 
 	// Build, sign, and broadcast through the signer seam.
@@ -900,7 +948,7 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 				Data:      syncResult.Data,
 				Err:       services.ErrPermanentRelayFailure,
 			}
-			plan, at := planCosmosOutOfGas(cause, len(sdkMsgs), headroomStep, unscaledGasLimit, maxBlockGas, allowSplit)
+			plan, at := planCosmosOutOfGas(cause, len(sdkMsgs), headroomStep, unscaledGasLimit, gasCeiling, allowSplit)
 			next, bottom, ok := chain.Climb(plan, at)
 			if !ok {
 				log.Printf("ERROR [SendCosmosTx] CheckTx out-of-gas batch cannot receive more gas; reporting permanent")
@@ -967,7 +1015,7 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 				Data:      txResult.TxResult.Data,
 				Err:       services.ErrPermanentRelayFailure,
 			}
-			plan, at := planCosmosOutOfGas(cause, len(sdkMsgs), headroomStep, unscaledGasLimit, maxBlockGas, allowSplit)
+			plan, at := planCosmosOutOfGas(cause, len(sdkMsgs), headroomStep, unscaledGasLimit, gasCeiling, allowSplit)
 			next, bottom, ok := chain.Climb(plan, at)
 			if !ok {
 				log.Printf("ERROR [SendCosmosTx] out-of-gas batch cannot receive more gas; reporting permanent")

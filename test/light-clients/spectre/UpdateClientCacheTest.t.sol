@@ -657,7 +657,7 @@ contract UpdateClientCacheTest is Test {
         returns (ISpectreClientMsgs.BatchProof memory proof_)
     {
         proof_.proof = [uint256(0), 0, 0, 0, 0, 0, 0, 0];
-        proof_.commitments = [uint256(0), 0];
+        proof_.commitments = [uint256(0), 0, 0, 0];
         proof_.commitmentPok = [uint256(0), 0];
         proof_.bucket = BUCKET;
         proof_.signerIndices = new uint32[](BUCKET);

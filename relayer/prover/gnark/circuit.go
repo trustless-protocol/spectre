@@ -219,9 +219,12 @@ func (c *BatchCircuit[Base, Scalars]) Define(api frontend.API) error {
 	// dummy keypair. Both verify under the same primitive, and the batch does
 	// NOT gate inactive slots: every slot contributes to the ECIP aggregate and
 	// every slot's signature must verify. Nothing needs gating, because each
-	// (R, A) is distinct and each signature stands on its own; what distinguishes
-	// a real signer from padding is the committed Active byte plus the on-chain
-	// quorum check, which is where padding is excluded.
+	// signature stands on its own. Points need not be distinct either: a batch
+	// proves when an active signer repeats a padding slot's A or R (#579 item 4,
+	// TestBatchCircuit_SolvesWhenASignerCollidesWithADummy) and when a slot has
+	// R = ±A (TestBatchCircuit_AcceptsRIsPlusMinusA). What distinguishes a real
+	// signer from padding is the committed Active byte plus the on-chain quorum
+	// check, which is where padding is excluded.
 	//
 	// MinMsgLen is the floor over ALL slots, so it is the dummy length. The
 	// stricter per-slot bound that real votes need is asserted above, masked by

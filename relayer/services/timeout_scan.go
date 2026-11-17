@@ -108,7 +108,7 @@ func (s *Services) handleCosmosTimeoutBatchFailure(stdCtx context.Context, cosmo
 	remainingInfos := processed
 	remainingMsgs := timeoutMsgs
 	if updateMsgsFailed(sendErr, len(updateMsgs)) {
-		deferTimeoutRetries(tracker, remainingInfos, time.Now(), "CosmosTimeout")
+		deferSharedTimeoutRetries(tracker, remainingInfos, time.Now(), "CosmosTimeout")
 		return
 	}
 	var partialErr *BatchPartialError
@@ -167,7 +167,7 @@ func (s *Services) resolveCosmosTimeoutProofState(
 	updateResult, err := buildUpdate()
 	if err != nil {
 		log.Printf("WARN [CosmosTimeoutScan] Failed to build ETH client update headers: %v; deferring %d timeout(s) without charging", err, len(expired))
-		deferTimeoutRetries(tracker, expired, time.Now(), "CosmosTimeout")
+		deferSharedTimeoutRetries(tracker, expired, time.Now(), "CosmosTimeout")
 		return nil, nil, false
 	}
 
@@ -176,7 +176,7 @@ func (s *Services) resolveCosmosTimeoutProofState(
 		ethClientState, err = fetchClientState()
 		if err != nil {
 			log.Printf("WARN [CosmosTimeoutScan] Failed to get ETH client state: %v; deferring %d timeout(s) without charging", err, len(expired))
-			deferTimeoutRetries(tracker, expired, time.Now(), "CosmosTimeout")
+			deferSharedTimeoutRetries(tracker, expired, time.Now(), "CosmosTimeout")
 			return nil, nil, false
 		}
 	}
@@ -212,7 +212,7 @@ func (s *Services) scanForCosmosTimeouts(stdCtx context.Context, cosmos CosmosEn
 	cancelHeader()
 	if err != nil {
 		log.Printf("WARN [CosmosTimeoutScan] Failed to get ETH block header: %v", err)
-		deferTimeoutRetries(tracker, pending, time.Now(), "CosmosTimeout")
+		deferSharedTimeoutRetries(tracker, pending, time.Now(), "CosmosTimeout")
 		return
 	}
 	expired := pendingPacketsTimedOutAtTimestamp(pending, ethHeader.Time)
@@ -268,7 +268,7 @@ func (s *Services) scanForCosmosTimeouts(stdCtx context.Context, cosmos CosmosEn
 	if len(expired) == 0 {
 		// The shared proof/update path succeeded; a packet merely is not due at
 		// this proof timestamp, so stale outage deferrals must not keep it stuck.
-		if err := tracker.ClearDeferralsIfCurrentBatch(pending); err != nil {
+		if err := tracker.ClearSharedDeferralsIfCurrentBatch(pending); err != nil {
 			log.Printf("ERROR [CosmosTimeoutScan][ATTENTION] failed to persist not-due state: %v", err)
 		}
 		return
@@ -299,7 +299,7 @@ func (s *Services) scanForCosmosTimeouts(stdCtx context.Context, cosmos CosmosEn
 	if len(timeoutMsgs) == 0 {
 		return
 	}
-	if err := tracker.ClearDeferralsIfCurrentBatch(processed); err != nil {
+	if err := tracker.ClearSharedDeferralsIfCurrentBatch(processed); err != nil {
 		log.Printf("ERROR [CosmosTimeoutScan][ATTENTION] failed to persist recovered prerequisite state: %v", err)
 		return
 	}
@@ -309,7 +309,7 @@ func (s *Services) scanForCosmosTimeouts(stdCtx context.Context, cosmos CosmosEn
 		msg, err := wasmclient.BuildUpdateClient("", ethClientID, header)
 		if err != nil {
 			log.Printf("WARN [CosmosTimeoutScan] Failed to wrap ETH update header %d: %v", i, err)
-			deferTimeoutRetries(tracker, processed, time.Now(), "CosmosTimeout")
+			deferSharedTimeoutRetries(tracker, processed, time.Now(), "CosmosTimeout")
 			return
 		}
 		updateMsgs = append(updateMsgs, msg)
@@ -317,7 +317,7 @@ func (s *Services) scanForCosmosTimeouts(stdCtx context.Context, cosmos CosmosEn
 	if len(updateMsgs) > 0 {
 		if err := s.worker.WaitForCosmosCatchUp(stdCtx, cosmos, ethClientState, updateResult.SigSlot); err != nil {
 			log.Printf("WARN [CosmosTimeoutScan] target chain did not catch up: %v", err)
-			deferTimeoutRetries(tracker, processed, time.Now(), "CosmosTimeout")
+			deferSharedTimeoutRetries(tracker, processed, time.Now(), "CosmosTimeout")
 			return
 		}
 	}
@@ -399,17 +399,19 @@ func (s *Services) scanForEVMTimeouts(stdCtx context.Context, deps evmTimeoutDep
 	// trigger N expensive update/proof attempts when that prerequisite is down.
 	latestLightBlock, ok := opts.prepareTimeouts(stdCtx, deps)
 	if !ok {
-		deferTimeoutRetries(opts.tracker, candidates, time.Now(), opts.tag+"Timeout")
+		deferSharedTimeoutRetries(opts.tracker, candidates, time.Now(), opts.tag+"Timeout")
 		return
 	}
-	if err := opts.tracker.ClearDeferralsIfCurrentBatch(candidates); err != nil {
+	// Clears only what the shared outage caused. A packet whose own timeout
+	// keeps failing after this paid update keeps its count and backs off.
+	if err := opts.tracker.ClearSharedDeferralsIfCurrentBatch(candidates); err != nil {
 		log.Printf("ERROR [%sTimeoutScan][ATTENTION] failed to persist recovered prerequisite state: %v", opts.tag, err)
 		return
 	}
 	for _, info := range candidates {
-		// The shared client update just succeeded. Any prior shared-outage
-		// deferrals no longer describe this packet, so let a subsequent packet-
-		// specific not-due or transient result start at the one-minute backoff.
+		// The shared client update just succeeded, so the shared-outage part of
+		// each count is gone. A not-due or transient result here is this
+		// packet's own and adds to what is left (#575 L3).
 		packet := info.Packet
 		outcome := opts.timeoutSend(stdCtx, deps, EthPacket{Type: EthSend, Packet: &packet, BlockNumber: info.BlockNumber}, latestLightBlock)
 		if !applyTimeoutOutcome(opts.tracker, info, outcome, time.Now(), opts.tag+"Timeout") {

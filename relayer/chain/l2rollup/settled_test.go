@@ -15,6 +15,7 @@ import (
 	cmtjson "github.com/cometbft/cometbft/libs/json"
 	coretypes "github.com/cometbft/cometbft/rpc/core/types"
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
+	ethcommon "github.com/ethereum/go-ethereum/common"
 )
 
 func TestPacketSettled_AsksPerEventType(t *testing.T) {
@@ -56,5 +57,32 @@ func TestPacketSettled_AsksPerEventType(t *testing.T) {
 	delete(present, string(utils.IBCCommitmentPath(fromCosmos, []byte{1})[1]))
 	if settled, err := d.PacketSettled(context.Background(), chain.Event{Type: chain.AckPacket, Raw: rawFrom}); err != nil || !settled {
 		t.Fatalf("ack after the commitment is deleted: settled=%v err=%v, want settled", settled, err)
+	}
+}
+
+// The source half: a send's commitment on the L2 router, under the packet's own
+// source client.
+func TestHasPacketCommitment_ReadsTheSendCommitment(t *testing.T) {
+	node := rpcmock.NewEVMNode(t)
+	router := ethcommon.HexToAddress("0x000000000000000000000000000000000000c26e")
+	s := &Source{eth: node.Client(t), router: router}
+
+	sent := channeltypesv2.Packet{Sequence: 5, SourceClient: "client-0", DestinationClient: "08-wasm-3"}
+	raw, _ := sent.Marshal()
+	slot := services.EthIBCStorageKey(services.EthPath("client-0", 5, services.EthPathCommitment))
+
+	node.SetStorage(router, slot, ethcommon.HexToHash("0x02"))
+	if committed, err := s.HasPacketCommitment(context.Background(), raw); err != nil || !committed {
+		t.Fatalf("commitment stored: committed=%v err=%v, want committed", committed, err)
+	}
+	node.SetStorage(router, slot, ethcommon.Hash{})
+	if committed, err := s.HasPacketCommitment(context.Background(), raw); err != nil || committed {
+		t.Fatalf("commitment deleted: committed=%v err=%v, want gone", committed, err)
+	}
+
+	// Every slot of an unset address is empty: "gone" would be the answer for all.
+	unset := &Source{eth: node.Client(t)}
+	if committed, err := unset.HasPacketCommitment(context.Background(), raw); err == nil || committed {
+		t.Fatalf("no router: committed=%v err=%v, want an error", committed, err)
 	}
 }

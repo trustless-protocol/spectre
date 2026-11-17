@@ -101,6 +101,25 @@ func markEthEventSeen(seenEvents map[ethEventKey]struct{}, key ethEventKey) bool
 	return true
 }
 
+// removedByReorg reports a live log the node re-sent with removed=true: a reorg
+// took its block off the canonical chain (#575). Acting on it would track a send
+// that no longer exists, or remove a pending record on the strength of an
+// acknowledgement or timeout that did not happen. The log from the new canonical
+// block, if any, arrives as an event of its own; whatever the original's handling
+// already did is caught by gap recovery and the flush backstop.
+func removedByReorg(logger *log.Logger, kind string, sequence *big.Int, raw gethtypes.Log) bool {
+	if !raw.Removed {
+		return false
+	}
+	seq := "?"
+	if sequence != nil {
+		seq = sequence.String()
+	}
+	logger.Printf("WARN [eth->cosmos Subscribe] %s seq=%s at block %d (tx %s) was removed by a reorg; ignored",
+		kind, seq, raw.BlockNumber, raw.TxHash.Hex())
+	return true
+}
+
 func pruneEthSeenEvents(seenEvents map[ethEventKey]struct{}, currentBlock uint64) {
 	if currentBlock <= ethSeenEventRetentionBlocks {
 		return
@@ -664,6 +683,9 @@ func (s *Subscriber) subscribeEthOnce(
 			if !ok || ev == nil {
 				return fmt.Errorf("SendPacket event channel closed")
 			}
+			if removedByReorg(ctx.Logger, "SendPacket", ev.Sequence, ev.Raw) {
+				continue
+			}
 			ctx.Logger.Printf("SendPacket event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
 			if _, err := enqueueEthSendPacket(batchBuilder, ev, seenEvents); err != nil {
 				if ev.Raw.BlockNumber < *nextSendRecoveryStartBlock {
@@ -677,6 +699,9 @@ func (s *Subscriber) subscribeEthOnce(
 			if !ok || ev == nil {
 				return fmt.Errorf("WriteAcknowledgement event channel closed")
 			}
+			if removedByReorg(ctx.Logger, "WriteAcknowledgement", ev.Sequence, ev.Raw) {
+				continue
+			}
 			ctx.Logger.Printf("WriteAcknowledgement event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
 			enqueueEthWriteAcknowledgement(batchBuilder, ev, seenEvents)
 			cosmosPacket := EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
@@ -689,6 +714,9 @@ func (s *Subscriber) subscribeEthOnce(
 			if !ok || ev == nil {
 				return fmt.Errorf("AckPacket event channel closed")
 			}
+			if removedByReorg(ctx.Logger, "AckPacket", ev.Sequence, ev.Raw) {
+				continue
+			}
 			ctx.Logger.Printf("AckPacket event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
 			enqueueEthTerminal(batchBuilder, ctx.Logger, services.EthAck, ev.Packet, ev.Sequence,
 				[][]byte{ev.Acknowledgement}, ev.Raw.BlockNumber)
@@ -696,6 +724,9 @@ func (s *Subscriber) subscribeEthOnce(
 		case ev, ok := <-timeoutPacketCh:
 			if !ok || ev == nil {
 				return fmt.Errorf("TimeoutPacket event channel closed")
+			}
+			if removedByReorg(ctx.Logger, "TimeoutPacket", ev.Sequence, ev.Raw) {
+				continue
 			}
 			ctx.Logger.Printf("TimeoutPacket event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
 			enqueueEthTerminal(batchBuilder, ctx.Logger, services.EthTimeout, ev.Packet, ev.Sequence,

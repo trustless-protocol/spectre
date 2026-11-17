@@ -8,6 +8,8 @@ package relay
 import (
 	"context"
 	"time"
+
+	"relayer/services"
 )
 
 // ScanFunc runs one timeout-recovery sweep for this path: it detects packets that
@@ -34,11 +36,6 @@ type UntrackFunc func(packet []byte)
 // from chain.Destination settlement checks: this closes the local handoff race,
 // where a terminal event and the batch handler run concurrently.
 type PendingSettledFunc func(packet []byte) bool
-
-// MarkPendingSettledFunc persists a settlement learned from a destination check.
-// It returns false only when durable persistence failed; callers still skip the
-// known-settled packet and log the degraded persistence separately.
-type MarkPendingSettledFunc func(packet []byte) bool
 
 // ClientUpdateObserver records the source-chain timestamp trusted by a client
 // after an update is submitted or the builder confirms it is current.
@@ -82,14 +79,14 @@ func WithPacketTracker(track TrackFunc, untrack UntrackFunc) Option {
 	}
 }
 
-// WithPendingSettlementGuard wires the durable terminal-tombstone operations for
-// a packet tracker. It is paired with WithPacketTracker on paths whose source can
+// WithPendingSettlementGuard wires the durable terminal-tombstone check for a
+// packet tracker. It is paired with WithPacketTracker on paths whose source can
 // emit a terminal event while a packet is already handed to handleBatch.
-func WithPendingSettlementGuard(isSettled PendingSettledFunc, markSettled MarkPendingSettledFunc) Option {
-	return func(m *Module) {
-		m.pendingSettled = isSettled
-		m.markPendingSettled = markSettled
-	}
+//
+// It only reads the tombstone. The tombstone is written by the terminal source
+// event, never from a destination read (see handleBatchLocked, #575 L1).
+func WithPendingSettlementGuard(isSettled PendingSettledFunc) Option {
+	return func(m *Module) { m.pendingSettled = isSettled }
 }
 
 // WithClientUpdateObserver exposes successful client progress to observability
@@ -115,6 +112,11 @@ func WithPeriodicUpdate(interval, initialDelay time.Duration, periodicUpdate Per
 		}
 		if initialDelay < 0 {
 			initialDelay = 0
+		}
+		// The first update is never later than one interval, whatever the caller
+		// derived it from (#575).
+		if initialDelay > interval {
+			initialDelay = interval
 		}
 		m.periodicUpdate = periodicUpdate
 		m.periodicUpdateInterval = interval
@@ -162,6 +164,14 @@ func WithAckWatch(interval, threshold time.Duration, due AckDueFunc, settled Ack
 		m.ackWatchInterval = interval
 		m.ackOverdueAfter = threshold
 	}
+}
+
+// WithDropLedger makes a permanent failure last: a dropped packet is held out of
+// the relay path until its backoff expires, instead of being re-proven and
+// re-submitted on every flush pass (#575 M2). A nil ledger leaves the path as it
+// was.
+func WithDropLedger(ledger *services.DropLedger) Option {
+	return func(m *Module) { m.dropped = ledger }
 }
 
 // WithPacketFlush periodically asks the source to ENUMERATE its outstanding

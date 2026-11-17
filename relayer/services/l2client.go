@@ -10,6 +10,7 @@ import (
 	"attestor/types/attestation"
 	relayerclient "relayer/client"
 
+	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	ibcwasmtypes "github.com/cosmos/ibc-go/modules/light-clients/08-wasm/v10/types"
 	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
 	ibcexported "github.com/cosmos/ibc-go/v10/modules/core/exported"
@@ -155,4 +156,20 @@ func (w *Worker) CreateL2Client(stdCtx context.Context, endpoint CosmosEndpoint,
 		return "", err
 	}
 	return w.TxHandler.CreateWasmClient(stdCtx, endpoint, clientState, consensusState, p.CounterpartyClientID)
+}
+
+// L2ClientAttestors reads the attestor set the L2 wasm client on Cosmos trusts:
+// the one it was created with, or the one a rotation installed since.
+func L2ClientAttestors(ctx context.Context, cosmosClient *rpchttp.HTTP, clientID string) (attestation.AttestorConfig, error) {
+	data, err := relayerclient.GetWasmClientStateData(ctx, cosmosClient, clientID)
+	if err != nil {
+		return attestation.AttestorConfig{}, err
+	}
+	var state struct {
+		Attestors attestation.AttestorConfig `json:"attestors"`
+	}
+	if err := json.Unmarshal(data, &state); err != nil {
+		return attestation.AttestorConfig{}, fmt.Errorf("decode L2 client state %s: %w", clientID, err)
+	}
+	return state.Attestors, nil
 }

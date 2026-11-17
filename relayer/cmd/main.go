@@ -274,9 +274,20 @@ func main() {
 
 	logger := zLogger.Sugar()
 
+	if err := newRootCmd(zLogger).Execute(); err != nil {
+		logger.Fatal(err)
+	}
+}
+
+// newRootCmd builds the command tree. A failed command's error is left to main,
+// which logs it at fatal through the URL-redacting core: printed by cobra, it
+// would reach stderr raw, and an RPC URL in it often carries the provider's API
+// key (#575).
+func newRootCmd(zLogger *zap.Logger) *cobra.Command {
 	rootCmd := &cobra.Command{
-		Use:   "relayer [command]",
-		Short: "Spectre relayer — relay IBC packets between Cosmos and Ethereum",
+		Use:           "relayer [command]",
+		Short:         "Spectre relayer — relay IBC packets between Cosmos and Ethereum",
+		SilenceErrors: true,
 		Run: func(cmd *cobra.Command, args []string) {
 			cmd.Help()
 		},
@@ -293,10 +304,7 @@ func main() {
 		Genesis(zLogger),
 		Status(zLogger),
 	)
-
-	if err := rootCmd.Execute(); err != nil {
-		logger.Fatal(err)
-	}
+	return rootCmd
 }
 
 // releaseOrHold closes one relay path's clients, unless that path just reported

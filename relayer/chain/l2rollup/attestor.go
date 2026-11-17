@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"time"
 
 	attestorpb "attestor/types/attestor"
 	"relayer/chain"
+	workergroup "relayer/workers"
 )
 
 type attestorFailure struct {
@@ -134,6 +136,18 @@ func NewQuorumAttestationFrontier(attestors []SigningAttestor, threshold uint16)
 	return &quorumAttestationFrontier{attestors: configured, threshold: int(threshold)}, nil
 }
 
+// frontierQuorumGrace is how long AttestedUpTo keeps listening once threshold
+// endpoints have answered, for the rest to answer too. A var only so tests can
+// shorten it.
+//
+// The quorum frontier is the threshold-th highest answer, and an answer that
+// arrives later can only raise it. Returning on the threshold-th answer let the
+// fastest endpoints decide alone: one fast endpoint reporting a low height pinned
+// RelayableHeight, and with it every L2 packet and timeout (#575 L2). Waiting for
+// every endpoint would let one hung endpoint stall each call until its deadline;
+// the grace bounds that cost.
+var frontierQuorumGrace = 500 * time.Millisecond
+
 func (q *quorumAttestationFrontier) AttestedUpTo(ctx context.Context, srcChain string, includeProvisional bool) (*attestorpb.AttestedRoot, bool, error) {
 	type result struct {
 		index uint16
@@ -147,43 +161,64 @@ func (q *quorumAttestationFrontier) AttestedUpTo(ctx context.Context, srcChain s
 	results := make(chan result, len(q.attestors))
 	for _, endpoint := range q.attestors {
 		go func(endpoint SigningAttestor) {
-			root, found, err := endpoint.Client.AttestedUpTo(queryCtx, srcChain, includeProvisional)
+			var (
+				root  *attestorpb.AttestedRoot
+				found bool
+			)
+			// A panic in one endpoint's client is that endpoint's failure, not the
+			// process's: the quorum below already tolerates failed endpoints.
+			err := workergroup.Recover(fmt.Sprintf("attestor %d frontier", endpoint.Index), func() error {
+				var err error
+				root, found, err = endpoint.Client.AttestedUpTo(queryCtx, srcChain, includeProvisional)
+				return err
+			})
 			results <- result{index: endpoint.Index, root: root, found: found, err: err}
 		}(endpoint)
 	}
 
-	frontiers := make([]*attestorpb.AttestedRoot, 0, q.threshold)
+	frontiers := make([]*attestorpb.AttestedRoot, 0, len(q.attestors))
 	failures := make([]attestorFailure, 0, len(q.attestors))
 	waiting := 0
-	for range q.attestors {
-		var one result
+	var grace *time.Timer
+	defer func() {
+		if grace != nil {
+			grace.Stop()
+		}
+	}()
+	graceC := func() <-chan time.Time {
+		if grace == nil {
+			return nil // a nil channel never fires: no grace before the quorum
+		}
+		return grace.C
+	}
+	for answered := 0; answered < len(q.attestors); {
 		select {
 		case <-ctx.Done():
+			if len(frontiers) >= q.threshold {
+				return quorumFrontier(frontiers, q.threshold), true, nil
+			}
 			return nil, false, chain.Transient(fmt.Errorf("attestor frontier quorum: %w", ctx.Err()))
-		case one = <-results:
+		case <-graceC():
+			return quorumFrontier(frontiers, q.threshold), true, nil
+		case one := <-results:
+			answered++
+			switch {
+			case one.err != nil:
+				failures = append(failures, newAttestorFailure("Frontier", one.index, one.err))
+			case !one.found:
+				waiting++
+			case one.root == nil:
+				failures = append(failures, newAttestorFailure("Frontier", one.index, errors.New("returned found=true with a nil frontier")))
+			default:
+				frontiers = append(frontiers, one.root)
+				if len(frontiers) == q.threshold {
+					grace = time.NewTimer(frontierQuorumGrace)
+				}
+			}
 		}
-		if one.err != nil {
-			failures = append(failures, newAttestorFailure("Frontier", one.index, one.err))
-			continue
-		}
-		if !one.found {
-			waiting++
-			continue
-		}
-		if one.root == nil {
-			failures = append(failures, newAttestorFailure("Frontier", one.index, errors.New("returned found=true with a nil frontier")))
-			continue
-		}
-		frontiers = append(frontiers, one.root)
-		if len(frontiers) == q.threshold {
-			// Every member of this quorum attests through its own reported height.
-			// The minimum is therefore the highest height supported by all members
-			// of the quorum that completed; a later poll may choose a fresher quorum.
-			sort.Slice(frontiers, func(i, j int) bool {
-				return frontiers[i].GetL2BlockNumber() < frontiers[j].GetL2BlockNumber()
-			})
-			return frontiers[0], true, nil
-		}
+	}
+	if len(frontiers) >= q.threshold {
+		return quorumFrontier(frontiers, q.threshold), true, nil
 	}
 	if len(frontiers)+waiting >= q.threshold {
 		// The reachable set has not produced a quorum yet. This is the normal
@@ -192,4 +227,16 @@ func (q *quorumAttestationFrontier) AttestedUpTo(ctx context.Context, srcChain s
 		return nil, false, nil
 	}
 	return nil, false, quorumFailure("Frontier", "attestor frontiers available", len(frontiers), waiting, q.threshold, failures)
+}
+
+// quorumFrontier is the threshold-th highest of the frontiers. Every endpoint
+// attests through its own reported height, so this is the highest height at
+// least threshold endpoints attest. The caller guarantees len(frontiers) >=
+// threshold.
+func quorumFrontier(frontiers []*attestorpb.AttestedRoot, threshold int) *attestorpb.AttestedRoot {
+	sorted := append([]*attestorpb.AttestedRoot(nil), frontiers...)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].GetL2BlockNumber() > sorted[j].GetL2BlockNumber()
+	})
+	return sorted[threshold-1]
 }

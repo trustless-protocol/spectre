@@ -21,6 +21,13 @@ var queueReportInterval = time.Minute
 // the number.
 const queueReportQuietHeartbeat = 10
 
+// relayQueueWarnDepth is the relay-queue depth past which the reporter warns,
+// once per tick (#575). The queue has no bound, by decision: a cap would have to
+// drop or refuse source events, and the recovery cursors and the flush backstop
+// assume every event they hand on is kept. Its depth is what an operator watches
+// instead. A var only so tests can lower it.
+var relayQueueWarnDepth = 10_000
+
 type clientUpdateTimes struct {
 	mu          sync.RWMutex
 	cosmosOnEVM time.Time
@@ -190,6 +197,11 @@ func (s *Services) logRoutineQueueLines(now time.Time, state queueState) {
 }
 
 func (s *Services) logQueueAttention(state queueState) {
+	if state.cosmosQueued > relayQueueWarnDepth || state.ethQueued > relayQueueWarnDepth {
+		log.Printf("WARN [QueueState] relay queue holds cosmos=%d eth=%d packet(s), over %d; it has no bound, so memory grows with it. "+
+			"Causes: a flood of sends, or a destination that is not accepting them (check the client hold and the RPCs).",
+			state.cosmosQueued, state.ethQueued, relayQueueWarnDepth)
+	}
 	if state.cosmosTimeoutDead > 0 || state.ethTimeoutDead > 0 || state.l2TimeoutDead > 0 {
 		log.Printf("ERROR [QueueState] ATTENTION: timeout submission gave up for cosmos=%d eth=%d l2=%d packet(s) (oldest: cosmos=%s eth=%s l2=%s); their escrowed funds require operator action.",
 			state.cosmosTimeoutDead, state.ethTimeoutDead, state.l2TimeoutDead,

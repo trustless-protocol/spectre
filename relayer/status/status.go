@@ -47,6 +47,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"relayer/relay"
@@ -229,10 +230,18 @@ func Serve(ctx context.Context, addr string, snap SnapshotFunc, ctl *Controls) e
 // kill. Splitting it is what makes "the listener died mid-run" reachable without
 // a real network failure.
 func serveOn(ctx context.Context, listener net.Listener, snap SnapshotFunc, ctl *Controls) error {
+	// Bounded on every side (#575): the endpoint may be reachable by more than
+	// its operator, and one that holds idle or slow connections open forever
+	// spends the process's file descriptors, which the relay needs for its RPCs.
 	srv := &http.Server{
 		Handler:           Handler(snap, ctl),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    16 << 10,
 	}
+	listener = limitListener(listener, maxStatusConnections)
 	// The waiter gets its own cancel so a serve failure can release it. Without
 	// that it only ever fires on the PARENT context, and a listener that dies
 	// after startup left Serve blocked on <-done until some unrelated shutdown
@@ -372,4 +381,52 @@ func Reactivate(ctx context.Context, addr string, sel DeadLetterSelector) error 
 		return fmt.Errorf("reactivate refused (%s): %s", resp.Status, strings.TrimSpace(string(text)))
 	}
 	return nil
+}
+
+// maxStatusConnections is how many connections the status endpoint serves at
+// once. A request beyond it waits in the kernel's accept queue.
+const maxStatusConnections = 32
+
+// limitListener caps the connections open at once on l. A connection's slot is
+// released when it is closed.
+func limitListener(l net.Listener, n int) net.Listener {
+	return &limitedListener{Listener: l, slots: make(chan struct{}, n), done: make(chan struct{})}
+}
+
+type limitedListener struct {
+	net.Listener
+	slots     chan struct{}
+	done      chan struct{}
+	closeOnce sync.Once
+}
+
+func (l *limitedListener) Accept() (net.Conn, error) {
+	select {
+	case l.slots <- struct{}{}:
+	case <-l.done:
+		return nil, net.ErrClosed
+	}
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		<-l.slots
+		return nil, err
+	}
+	return &limitedConn{Conn: conn, release: func() { <-l.slots }}, nil
+}
+
+func (l *limitedListener) Close() error {
+	l.closeOnce.Do(func() { close(l.done) })
+	return l.Listener.Close()
+}
+
+type limitedConn struct {
+	net.Conn
+	releaseOnce sync.Once
+	release     func()
+}
+
+func (c *limitedConn) Close() error {
+	err := c.Conn.Close()
+	c.releaseOnce.Do(c.release)
+	return err
 }

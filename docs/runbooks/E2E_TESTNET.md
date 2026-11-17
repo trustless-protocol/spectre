@@ -13,6 +13,7 @@ unchanged:
 - [Gaia binary](E2E_LOCAL.md#gaia-binary)
 - [Prover key and verifier must be a pair](E2E_LOCAL.md#prover-key-and-verifier-must-be-a-pair)
 - [Signing keys when several processes share a chain](E2E_LOCAL.md#signing-keys-when-several-processes-share-a-chain)
+- [Spending caps](E2E_LOCAL.md#spending-caps): `start` needs all four; set Sepolia-sized values
 - [Sending a test packet](E2E_LOCAL.md#sending-a-test-packet)
 - [Failure modes](E2E_LOCAL.md#failure-modes)
 

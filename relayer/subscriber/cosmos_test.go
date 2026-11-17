@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -203,6 +204,44 @@ func TestCosmosPacketMatchesConfiguredClient(t *testing.T) {
 				DestinationClient: "cosmoshub-1",
 			},
 			want: true,
+		},
+		{
+			name:           "a Cosmos send on the configured pair",
+			ethClientID:    "08-wasm-0",
+			routerClientID: "cosmoshub-1",
+			packet:         &channeltypesv2.Packet{SourceClient: "08-wasm-0", DestinationClient: "cosmoshub-1"},
+			want:           true,
+		},
+		{
+			name:           "an EVM send on the configured pair",
+			ethClientID:    "08-wasm-0",
+			routerClientID: "cosmoshub-1",
+			packet:         &channeltypesv2.Packet{SourceClient: "cosmoshub-1", DestinationClient: "08-wasm-0"},
+			want:           true,
+		},
+		// #575: with both ids configured, one matching end is not enough. A client
+		// anyone created on Cosmos, with a counterparty named like ours, must not
+		// get its packets relayed (each one cost a client update).
+		{
+			name:           "a foreign client sending to our counterparty id",
+			ethClientID:    "08-wasm-0",
+			routerClientID: "cosmoshub-1",
+			packet:         &channeltypesv2.Packet{SourceClient: "07-tendermint-9", DestinationClient: "cosmoshub-1"},
+			want:           false,
+		},
+		{
+			name:           "our client sending to a foreign counterparty",
+			ethClientID:    "08-wasm-0",
+			routerClientID: "cosmoshub-1",
+			packet:         &channeltypesv2.Packet{SourceClient: "08-wasm-0", DestinationClient: "attacker-client"},
+			want:           false,
+		},
+		{
+			name:           "a foreign client acknowledging into ours",
+			ethClientID:    "08-wasm-0",
+			routerClientID: "cosmoshub-1",
+			packet:         &channeltypesv2.Packet{SourceClient: "attacker-client", DestinationClient: "08-wasm-0"},
+			want:           false,
 		},
 		{
 			name:        "destination matches eth client",
@@ -914,7 +953,7 @@ func TestEnqueueCosmosPackets(t *testing.T) {
 		seen := map[cosmosEventKey]struct{}{}
 
 		stats, err := enqueueCosmosPackets(context.Background(), cosmosTestDeps(ethOnCosmos, cosmosOnEVM), bb,
-			[]services.CosmosPacket{cosmosTestPacket(1, "cosmos-client", cosmosOnEVM)}, seen, false)
+			[]services.CosmosPacket{cosmosTestPacket(1, ethOnCosmos, cosmosOnEVM)}, seen, false)
 		if err != nil {
 			t.Fatalf("enqueue: %v", err)
 		}
@@ -934,8 +973,8 @@ func TestEnqueueCosmosPackets(t *testing.T) {
 	// second time. The entry then stays pending for the life of the process.
 	t.Run("a send settled later in the same pass is removed from the queue too", func(t *testing.T) {
 		bb := services.NewBatchBuilder()
-		send := cosmosTestPacket(7, "cosmos-client", cosmosOnEVM)
-		settled := cosmosTestPacket(7, "cosmos-client", cosmosOnEVM)
+		send := cosmosTestPacket(7, ethOnCosmos, cosmosOnEVM)
+		settled := cosmosTestPacket(7, ethOnCosmos, cosmosOnEVM)
 		settled.Type = services.CosmosAcknowledged
 
 		if _, err := enqueueCosmosPackets(context.Background(), cosmosTestDeps(ethOnCosmos, cosmosOnEVM), bb,
@@ -964,7 +1003,7 @@ func TestEnqueueCosmosPackets(t *testing.T) {
 			settledOwed = append(settledOwed, p.Sequence)
 		})
 
-		packet := cosmosTestPacket(9, "cosmos-client", cosmosOnEVM)
+		packet := cosmosTestPacket(9, ethOnCosmos, cosmosOnEVM)
 		packet.Type = services.CosmosAcknowledged
 		bb.PendingTracker.Add(*packet.Packet, 40)
 
@@ -985,7 +1024,7 @@ func TestEnqueueCosmosPackets(t *testing.T) {
 	// with nothing left to do -- it would be proven, submitted, and rejected.
 	t.Run("a terminal acknowledge_packet settles the tracker and never reaches the batch", func(t *testing.T) {
 		bb := services.NewBatchBuilder()
-		packet := cosmosTestPacket(1, "cosmos-client", cosmosOnEVM)
+		packet := cosmosTestPacket(1, ethOnCosmos, cosmosOnEVM)
 		packet.Type = services.CosmosAcknowledged
 		bb.PendingTracker.Add(*packet.Packet, 40)
 		if bb.PendingTracker.Len() != 1 {
@@ -1027,10 +1066,28 @@ func TestEnqueueCosmosPackets(t *testing.T) {
 		}
 	})
 
-	t.Run("matches on either side of either configured client", func(t *testing.T) {
-		// The four ways a packet can belong to this relayer's path. Missing one
+	t.Run("matches both orientations of the configured pair", func(t *testing.T) {
+		// The two ways a packet belongs to this relayer's path. Missing one
 		// silently drops a whole direction -- an ack travels with the clients
 		// swapped relative to the send it answers.
+		for name, packet := range map[string]services.CosmosPacket{
+			"a Cosmos send (eth client -> router client)": cosmosTestPacket(1, ethOnCosmos, cosmosOnEVM),
+			"an EVM send (router client -> eth client)":   cosmosTestPacket(2, cosmosOnEVM, ethOnCosmos),
+		} {
+			t.Run(name, func(t *testing.T) {
+				bb := services.NewBatchBuilder()
+				stats, err := enqueueCosmosPackets(context.Background(), cosmosTestDeps(ethOnCosmos, cosmosOnEVM), bb,
+					[]services.CosmosPacket{packet}, map[cosmosEventKey]struct{}{}, false)
+				if err != nil || stats.recovered != 1 {
+					t.Fatalf("stats = %+v, err = %v; want recovered=1", stats, err)
+				}
+			})
+		}
+	})
+
+	// #575: one matching end used to be enough. A packet between this path's
+	// client and any other client is another pair's packet.
+	t.Run("skips a packet with only one end on the configured pair", func(t *testing.T) {
 		for name, packet := range map[string]services.CosmosPacket{
 			"source is the eth client":         cosmosTestPacket(1, ethOnCosmos, "x"),
 			"destination is the eth client":    cosmosTestPacket(2, "x", ethOnCosmos),
@@ -1041,8 +1098,11 @@ func TestEnqueueCosmosPackets(t *testing.T) {
 				bb := services.NewBatchBuilder()
 				stats, err := enqueueCosmosPackets(context.Background(), cosmosTestDeps(ethOnCosmos, cosmosOnEVM), bb,
 					[]services.CosmosPacket{packet}, map[cosmosEventKey]struct{}{}, false)
-				if err != nil || stats.recovered != 1 {
-					t.Fatalf("stats = %+v, err = %v; want recovered=1", stats, err)
+				if err != nil || stats.skipped != 1 || stats.recovered != 0 {
+					t.Fatalf("stats = %+v, err = %v; want skipped=1", stats, err)
+				}
+				if cosmos, _ := bb.QueueDepths(); cosmos != 0 {
+					t.Fatalf("queued %d packet(s) from another client pair", cosmos)
 				}
 			})
 		}
@@ -1066,7 +1126,7 @@ func TestEnqueueCosmosPackets(t *testing.T) {
 		// a submission the destination rejects.
 		bb := services.NewBatchBuilder()
 		seen := map[cosmosEventKey]struct{}{}
-		packet := cosmosTestPacket(1, "cosmos-client", cosmosOnEVM)
+		packet := cosmosTestPacket(1, ethOnCosmos, cosmosOnEVM)
 
 		for i := 0; i < 3; i++ {
 			if _, err := enqueueCosmosPackets(context.Background(), cosmosTestDeps(ethOnCosmos, cosmosOnEVM), bb,
@@ -1081,7 +1141,7 @@ func TestEnqueueCosmosPackets(t *testing.T) {
 
 	t.Run("an enqueued packet is recorded, which is what the dedupe above rests on", func(t *testing.T) {
 		seen := map[cosmosEventKey]struct{}{}
-		packet := cosmosTestPacket(1, "cosmos-client", cosmosOnEVM)
+		packet := cosmosTestPacket(1, ethOnCosmos, cosmosOnEVM)
 		bb := services.NewBatchBuilder()
 
 		if _, err := enqueueCosmosPackets(context.Background(), cosmosTestDeps(ethOnCosmos, cosmosOnEVM), bb,
@@ -1107,7 +1167,7 @@ func TestEnqueueCosmosPackets(t *testing.T) {
 		// here with no server standing in for the chain.
 		seen := map[cosmosEventKey]struct{}{}
 		bb := services.NewBatchBuilder()
-		packet := cosmosTestPacket(1, "cosmos-client", cosmosOnEVM)
+		packet := cosmosTestPacket(1, ethOnCosmos, cosmosOnEVM)
 		packet.Type = services.CosmosTimeout
 
 		stats, err := enqueueCosmosPackets(context.Background(), cosmosTestDeps(ethOnCosmos, cosmosOnEVM), bb,
@@ -1290,6 +1350,73 @@ func TestProcessLiveCosmosEvent(t *testing.T) {
 		}
 	})
 
+	// #575 L4: one live event reporting a height the chain has not reached moved
+	// the recovery cursor there, and gap recovery and the stale watchdog stayed
+	// off until the head caught up or the process restarted.
+	t.Run("a live height above the chain head does not move the cursor", func(t *testing.T) {
+		deps, queries := emptyTxSearchCosmosDeps(t, "08-wasm-0", "eth-router-0")
+		s := NewSubscriber()
+		cursor := uint64(100)
+		health := &cosmosLiveHealth{}
+
+		s.processLiveCosmosEvent(context.Background(), deps, services.NewBatchBuilder(), &cursor,
+			map[cosmosEventKey]struct{}{}, health, liveEventAtHeight(1_000_000_000_000))
+
+		if cursor != 100 {
+			t.Fatalf("cursor moved to %d on a height %d blocks above the chain head", cursor, 1_000_000_000_000-emptyTxSearchHead)
+		}
+		if asked := queries.all(); len(asked) != 0 {
+			t.Fatalf("scanned %v up to an implausible height", asked)
+		}
+		if health.events != 1 {
+			t.Fatalf("live health recorded %d events, want the event still counted", health.events)
+		}
+
+		// The same subscription still moves the cursor for an event the chain has
+		// reached.
+		s.processLiveCosmosEvent(context.Background(), deps, services.NewBatchBuilder(), &cursor,
+			map[cosmosEventKey]struct{}{}, health, liveEventAtHeight(150))
+		if cursor != 150 {
+			t.Fatalf("cursor = %d after an event at 150 under the head %d, want 150", cursor, emptyTxSearchHead)
+		}
+	})
+
+	// #575 L4: the seen set was still pruned at the event's own height. One event
+	// far above the head forgot every packet seen so far, and the next recovery
+	// pass queued them all again. It prunes at the highest head read instead.
+	t.Run("a live height above the chain head prunes only below the head", func(t *testing.T) {
+		deps, _ := emptyTxSearchCosmosDeps(t, "08-wasm-0", "eth-router-0")
+		s := NewSubscriber()
+		cursor := uint64(100)
+		const head = 5_000 // a recovery pass already read this head
+		recent := cosmosEventKey{Sequence: 2, Height: head - 500}
+		old := cosmosEventKey{Sequence: 1, Height: 1}
+		seen := map[cosmosEventKey]struct{}{recent: {}, old: {}}
+
+		s.processLiveCosmosEvent(context.Background(), deps, services.NewBatchBuilder(), &cursor,
+			seen, &cosmosLiveHealth{observedHead: head}, liveEventAtHeight(1_000_000_000_000))
+
+		if _, ok := seen[recent]; !ok {
+			t.Fatal("an event above the chain head pruned a packet seen 500 heights below the head")
+		}
+		if _, ok := seen[old]; ok {
+			t.Fatal("the seen set must still be pruned below the head's retention window")
+		}
+	})
+
+	// A head that cannot be read cannot confirm the height, so the cursor stays.
+	t.Run("an unreadable head does not move the cursor", func(t *testing.T) {
+		deps := failingCosmosDeps(t, "08-wasm-0", "eth-router-0")
+		s := NewSubscriber()
+		cursor := uint64(100)
+
+		s.processLiveCosmosEvent(context.Background(), deps, services.NewBatchBuilder(), &cursor,
+			map[cosmosEventKey]struct{}{}, &cosmosLiveHealth{}, liveEventAtHeight(150))
+		if cursor != 100 {
+			t.Fatalf("cursor moved to %d without a head read to confirm the height", cursor)
+		}
+	})
+
 	// An event with no height still has to be processed: the packets in it are real.
 	// What must not happen is a prune keyed on height zero, which would compute a
 	// retention floor from nothing.
@@ -1336,6 +1463,9 @@ func (r *recordedQueries) all() []string {
 // emptyTxSearchCosmosDeps answers tx_search with a valid, empty result -- what a
 // node returns for a range containing no IBC transactions, which is the ordinary
 // case for most heights. It records every query it was asked.
+// emptyTxSearchHead is the chain head the empty-tx_search stub reports.
+const emptyTxSearchHead = uint64(1000)
+
 func emptyTxSearchCosmosDeps(t *testing.T, ethOnCosmos, cosmosOnEVM string) (cosmosDeps, *recordedQueries) {
 	t.Helper()
 	seen := &recordedQueries{}
@@ -1349,6 +1479,12 @@ func emptyTxSearchCosmosDeps(t *testing.T, ethOnCosmos, cosmosOnEVM string) (cos
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		w.Header().Set("Content-Type", "application/json")
+		if req.Method == "status" {
+			// The live path reads the head before a live event moves the cursor.
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(req.ID) +
+				`,"result":{"sync_info":{"latest_block_height":"` + strconv.FormatUint(emptyTxSearchHead, 10) + `"}}}`))
+			return
+		}
 		if req.Method != "tx_search" {
 			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(req.ID) +
 				`,"error":{"code":-32601,"message":"unexpected method ` + req.Method + `"}}`))
@@ -1793,5 +1929,48 @@ func TestRecoverCosmosEventsForQuery_TxSearchHonorsCancellation(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("TxSearch ignored cancellation")
+	}
+}
+
+// #575: the recovery loop paged until it had read TotalCount results or got an
+// empty page, and the RPC decides both. A node that answered a full page with a
+// huge total every time kept the loop going for ever.
+func TestRecoverCosmosEventsForQuery_StopsAtThePageCap(t *testing.T) {
+	var pages atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID json.RawMessage `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		pages.Add(1)
+		// One unrelated transaction per page, and a total that never runs out.
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(req.ID) +
+			`,"result":{"txs":[{"hash":"00","height":"5","index":0,"tx_result":{"code":0,"events":[]},"tx":""}],"total_count":"1000000000"}}`))
+	}))
+	t.Cleanup(server.Close)
+	client, err := rpchttp.New(server.URL, "/websocket")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := cosmosTestDeps("08-wasm-0", "eth-router-0")
+	deps.Cosmos = services.CosmosEndpoint{Client: client}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := recoverCosmosEventsForQuery(context.Background(), deps, services.NewBatchBuilder(),
+			"send_packet.packet_source_client EXISTS", 1, 10, map[cosmosEventKey]struct{}{})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "pages") {
+			t.Fatalf("err = %v, want the page cap reported", err)
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatal("the recovery query kept paging")
+	}
+	if got := pages.Load(); got != maxCosmosTxSearchPages {
+		t.Fatalf("asked for %d pages, want the cap %d", got, maxCosmosTxSearchPages)
 	}
 }

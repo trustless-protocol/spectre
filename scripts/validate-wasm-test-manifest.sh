@@ -9,8 +9,6 @@ manifest="test/fixtures/wasm-contracts/test-manifest.txt"
 generated="$(mktemp)"
 trap 'rm -f "$generated"' EXIT
 go_cache="${GOCACHE:-/tmp/spectre-wasm-manifest-go-cache}"
-go_library_path="$root/.artifacts/native${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export CGO_LDFLAGS="-L$root/.artifacts/native${CGO_LDFLAGS:+ $CGO_LDFLAGS}"
 
 sha256_files() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -43,7 +41,7 @@ list_go_tests() {
   (
     cd "$module"
     while IFS= read -r package; do
-      env GOCACHE="$go_cache" LD_LIBRARY_PATH="$go_library_path" \
+      env GOCACHE="$go_cache" \
         go test "$package" -list . 2>/dev/null \
         | sed -n '/^Test/p' \
         | sort \

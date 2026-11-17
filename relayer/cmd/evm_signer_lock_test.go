@@ -190,3 +190,21 @@ func TestEvmSignerLockKeysWithChainID_CancelStopsRetrying(t *testing.T) {
 		t.Fatalf("eth_chainId was asked %d times after cancellation, want 1", calls)
 	}
 }
+
+// start hands these ids to the transaction handler as the only chains it may
+// sign for, so two endpoints on one chain must yield that chain once.
+func TestLockedChainIDs(t *testing.T) {
+	address := common.HexToAddress("0x1111111111111111111111111111111111111111")
+	other := common.HexToAddress("0x2222222222222222222222222222222222222222")
+	got := lockedChainIDs([]evmSignerLockKey{
+		{chainID: "1", address: address},
+		{chainID: "8453", address: address},
+		{chainID: "1", address: other},
+	})
+	if len(got) != 2 || got[0] != "1" || got[1] != "8453" {
+		t.Fatalf("lockedChainIDs = %v, want [1 8453]", got)
+	}
+	if got := lockedChainIDs(nil); len(got) != 0 {
+		t.Fatalf("lockedChainIDs(nil) = %v, want none", got)
+	}
+}

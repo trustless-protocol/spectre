@@ -62,6 +62,23 @@ type Fork struct {
 	Version string `json:"version"`
 }
 
+// Validate rejects a client state whose timing parameters cannot be divided by.
+// The state is read back from an RPC, and the three methods below divide by
+// these fields: a zero would panic with an integer divide by zero.
+func (cs *EthereumClientState) Validate() error {
+	switch {
+	case cs == nil:
+		return fmt.Errorf("ethereum client state is nil")
+	case cs.SlotsPerEpoch == 0:
+		return fmt.Errorf("ethereum client state has slots_per_epoch = 0")
+	case cs.EpochsPerSyncCommitteePeriod == 0:
+		return fmt.Errorf("ethereum client state has epochs_per_sync_committee_period = 0")
+	case cs.SecondsPerSlot == 0:
+		return fmt.Errorf("ethereum client state has seconds_per_slot = 0")
+	}
+	return nil
+}
+
 func (cs *EthereumClientState) ComputeSyncCommitteePeriodAtSlot(slot uint64) uint64 {
 	epoch := slot / cs.SlotsPerEpoch
 	return epoch / cs.EpochsPerSyncCommitteePeriod
@@ -561,6 +578,16 @@ var beaconHttpClient = &http.Client{
 	Timeout: 30 * time.Second,
 }
 
+// maxBeaconResponseBytes bounds one beacon API response body (#575). The largest
+// answer the relayer asks for -- light_client/updates over the most periods one
+// update crosses, or a full beacon block -- is a few megabytes; without a bound a
+// node streaming an endless body for the 30 s timeout grows memory with it. A var
+// only so tests can shrink it.
+var maxBeaconResponseBytes int64 = 32 << 20
+
+// maxBeaconErrorBodyBytes is how much of a non-200 body an error quotes.
+const maxBeaconErrorBodyBytes = 512
+
 func httpGet[T any](ctx context.Context, url string) (T, error) {
 	var result T
 
@@ -576,12 +603,18 @@ func httpGet[T any](ctx context.Context, url string) (T, error) {
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBeaconResponseBytes+1))
 	if err != nil {
 		return result, err
 	}
+	if int64(len(body)) > maxBeaconResponseBytes {
+		return result, fmt.Errorf("beacon response is larger than %d bytes; not read further", maxBeaconResponseBytes)
+	}
 
 	if resp.StatusCode != 200 {
+		if len(body) > maxBeaconErrorBodyBytes {
+			body = append(body[:maxBeaconErrorBodyBytes:maxBeaconErrorBodyBytes], "..."...)
+		}
 		return result, fmt.Errorf("request failed with status %d: %s", resp.StatusCode, body)
 	}
 

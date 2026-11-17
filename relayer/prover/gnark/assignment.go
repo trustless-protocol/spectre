@@ -117,7 +117,17 @@ func buildBatchAssignment(sigs []witness.ValidatorSignature, hash [32]byte) (*Ba
 	return a, nil
 }
 
-func ProofToBigInts(gnarkProof groth16.Proof) ([8]*big.Int, [2]*big.Int, [2]*big.Int, error) {
+// commitmentCount is how many BSB22 commitments the circuit produces: one for the ECIP
+// challenge and one for gnark's emulated arithmetic. ProofToBigInts refuses any other
+// count, so a circuit change cannot silently drop a commitment the on-chain verifier
+// checks.
+const commitmentCount = 2
+
+// ProofToBigInts flattens a BN254 Groth16 proof into the words the on-chain verifier
+// reads: Ar, Bs, Krs (8 words), the commitment points C0 then C1 as (x, y) pairs (4
+// words) and the single folded proof of knowledge (2 words). Together they are the 448
+// bytes MarshalSolidity lays out.
+func ProofToBigInts(gnarkProof groth16.Proof) ([8]*big.Int, [2 * commitmentCount]*big.Int, [2]*big.Int, error) {
 	var out [8]*big.Int
 	for i := range out {
 		out[i] = new(big.Int)
@@ -126,14 +136,17 @@ func ProofToBigInts(gnarkProof groth16.Proof) ([8]*big.Int, [2]*big.Int, [2]*big
 	for i := range commitmentPoks {
 		commitmentPoks[i] = new(big.Int)
 	}
-	var commitments [2]*big.Int
+	var commitments [2 * commitmentCount]*big.Int
 	for i := range commitments {
 		commitments[i] = new(big.Int)
 	}
 
 	p, ok := gnarkProof.(*groth16_bn254.Proof)
 	if !ok {
-		return out, commitmentPoks, commitments, fmt.Errorf("expected BN254 proof")
+		return out, commitments, commitmentPoks, fmt.Errorf("expected BN254 proof")
+	}
+	if len(p.Commitments) != commitmentCount {
+		return out, commitments, commitmentPoks, fmt.Errorf("proof carries %d commitments, want %d", len(p.Commitments), commitmentCount)
 	}
 
 	p.Ar.X.BigInt(out[0])
@@ -150,7 +163,9 @@ func ProofToBigInts(gnarkProof groth16.Proof) ([8]*big.Int, [2]*big.Int, [2]*big
 	p.CommitmentPok.X.BigInt(commitmentPoks[0])
 	p.CommitmentPok.Y.BigInt(commitmentPoks[1])
 
-	p.Commitments[0].X.BigInt(commitments[0])
-	p.Commitments[0].Y.BigInt(commitments[1])
+	for i, c := range p.Commitments {
+		c.X.BigInt(commitments[2*i])
+		c.Y.BigInt(commitments[2*i+1])
+	}
 	return out, commitments, commitmentPoks, nil
 }

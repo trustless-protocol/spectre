@@ -49,9 +49,28 @@ func makeSignedCommit(t *testing.T, chainID string, powers []int64, signs []bool
 	if len(powers) != len(signs) {
 		t.Fatal("powers/signs length mismatch")
 	}
+	flags := make([]types.BlockIDFlag, len(signs))
+	for i, signed := range signs {
+		flags[i] = types.BlockIDFlagAbsent
+		if signed {
+			flags[i] = types.BlockIDFlagCommit
+		}
+	}
+	return makeCommitWithFlags(t, chainID, powers, flags)
+}
+
+// makeCommitWithFlags builds a LightBlock whose validator i (by `powers` order)
+// casts the precommit named by flags[i]. COMMIT and NIL votes carry a signature
+// CometBFT accepts for that vote; any other flag carries 64 filler bytes, since
+// CometBFT cannot even compute sign bytes for it.
+func makeCommitWithFlags(t *testing.T, chainID string, powers []int64, flags []types.BlockIDFlag) *relayerclient.LightBlock {
+	t.Helper()
+	if len(powers) != len(flags) {
+		t.Fatal("powers/flags length mismatch")
+	}
 	vals := make([]*types.Validator, len(powers))
 	privByAddr := make(map[string]cmted25519.PrivKey, len(powers))
-	signByAddr := make(map[string]bool, len(powers))
+	flagByAddr := make(map[string]types.BlockIDFlag, len(powers))
 	for i := range powers {
 		priv := cmted25519.GenPrivKey()
 		addr := priv.PubKey().Address()
@@ -61,7 +80,7 @@ func makeSignedCommit(t *testing.T, chainID string, powers []int64, signs []bool
 			VotingPower: powers[i],
 		}
 		privByAddr[addr.String()] = priv
-		signByAddr[addr.String()] = signs[i]
+		flagByAddr[addr.String()] = flags[i]
 	}
 	// NewValidatorSet sorts validators (power desc, then address). CometBFT
 	// requires commit.Signatures[i] to be index-aligned with
@@ -89,12 +108,18 @@ func makeSignedCommit(t *testing.T, chainID string, powers []int64, signs []bool
 		}
 	}
 	for i, v := range valSet.Validators {
-		if !signByAddr[v.Address.String()] {
+		flag := flagByAddr[v.Address.String()]
+		if flag == types.BlockIDFlagAbsent {
 			continue
 		}
 		cs := commit.Signatures[i]
-		cs.BlockIDFlag = types.BlockIDFlagCommit
+		cs.BlockIDFlag = flag
 		commit.Signatures[i] = cs
+		if flag != types.BlockIDFlagCommit && flag != types.BlockIDFlagNil {
+			cs.Signature = make([]byte, ed25519.SignatureSize)
+			commit.Signatures[i] = cs
+			continue
+		}
 		sig, err := privByAddr[v.Address.String()].Sign(commit.VoteSignBytes(chainID, int32(i)))
 		if err != nil {
 			t.Fatalf("sign[%d]: %v", i, err)
@@ -206,5 +231,62 @@ func TestExtractValidatorSignatures_SortsSelectedSignersByIndex(t *testing.T) {
 	sortSelectedSignaturesByIndex(sigs)
 	if sigs[0].Index != 0 || sigs[1].Index != 1 || sigs[2].Index != 2 {
 		t.Fatalf("expected sorted indices [0 1 2], got [%d %d %d]", sigs[0].Index, sigs[1].Index, sigs[2].Index)
+	}
+}
+
+// A nil precommit is protocol-legal and its signature verifies, but it commits to
+// no block: the circuit and SpectreClient both reject it. The top-power validator
+// is always first in the greedy selection, so selecting its nil vote would fail
+// every proof for as long as it keeps voting nil (#575 M1).
+func TestExtractValidatorSignatures_SkipsNilPrecommit(t *testing.T) {
+	chainID := "test-chain"
+	commit, nilVote := types.BlockIDFlagCommit, types.BlockIDFlagNil
+	// Distinct powers, so validator set index 0 is the 30-power nil voter.
+	lb := makeCommitWithFlags(t, chainID, []int64{30, 25, 25, 20},
+		[]types.BlockIDFlag{nilVote, commit, commit, commit})
+
+	got, err := ExtractValidatorSignatures(lb, chainID, 4)
+	if err != nil {
+		t.Fatalf("quorum is reachable without the nil voter, got: %v", err)
+	}
+	for _, list := range [][]witness.ValidatorSignature{got.Signatures, got.Candidates} {
+		for _, sig := range list {
+			if flag := lb.SignedHeader.Commit.Signatures[sig.Index].BlockIDFlag; flag != commit {
+				t.Fatalf("validator index %d with BlockIDFlag %d was offered as a proof signer", sig.Index, flag)
+			}
+		}
+	}
+	if len(got.Signatures) != 3 {
+		t.Fatalf("expected the 3 COMMIT voters, got %d signers", len(got.Signatures))
+	}
+}
+
+// Without the nil voter the COMMIT power is 60 of 100: no quorum, and the
+// extractor must say so instead of counting the nil vote toward it.
+func TestExtractValidatorSignatures_NilPrecommitDoesNotCountTowardQuorum(t *testing.T) {
+	chainID := "test-chain"
+	commit, nilVote := types.BlockIDFlagCommit, types.BlockIDFlagNil
+	lb := makeCommitWithFlags(t, chainID, []int64{40, 20, 20, 20},
+		[]types.BlockIDFlag{nilVote, commit, commit, commit})
+
+	if _, err := ExtractValidatorSignatures(lb, chainID, 4); err == nil {
+		t.Fatal("expected insufficient voting power: a nil precommit is not a proof signer")
+	}
+}
+
+// A flag CometBFT does not define makes Commit.VoteSignBytes panic. An RPC can
+// send one, so the entry must be skipped before sign bytes are computed.
+func TestExtractValidatorSignatures_SkipsUnknownBlockIDFlag(t *testing.T) {
+	chainID := "test-chain"
+	commit := types.BlockIDFlagCommit
+	lb := makeCommitWithFlags(t, chainID, []int64{30, 25, 25, 20},
+		[]types.BlockIDFlag{types.BlockIDFlag(0), commit, commit, commit})
+
+	got, err := ExtractValidatorSignatures(lb, chainID, 4)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got.Signatures) != 3 {
+		t.Fatalf("expected the 3 COMMIT voters, got %d signers", len(got.Signatures))
 	}
 }

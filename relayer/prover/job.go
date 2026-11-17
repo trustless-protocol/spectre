@@ -97,7 +97,7 @@ type ProofResult struct {
 	Bucket        int
 	PaddedSigs    []witness.ValidatorSignature
 	Proof         [8]*big.Int
-	Commitments   [2]*big.Int
+	Commitments   [4]*big.Int // C0 then C1, each an (x, y) pair
 	CommitmentPok [2]*big.Int
 }
 

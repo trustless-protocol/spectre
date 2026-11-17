@@ -364,7 +364,7 @@ contract UpdateClientGasTest is Test {
         msg_.proposedHeader = header;
         msg_.time = header.signedHeader.header.time;
         msg_.proof.proof = [uint256(0), 0, 0, 0, 0, 0, 0, 0];
-        msg_.proof.commitments = [uint256(0), 0];
+        msg_.proof.commitments = [uint256(0), 0, 0, 0];
         msg_.proof.commitmentPok = [uint256(0), 0];
         msg_.proof.bucket = bucket;
         msg_.proof.signerIndices = idx;

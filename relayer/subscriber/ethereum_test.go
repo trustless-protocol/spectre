@@ -1,6 +1,7 @@
 package subscriber
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -875,5 +876,28 @@ func TestSubscribeEth_WatchHonorsCancellation(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("Ethereum watch ignored cancellation")
+	}
+}
+
+// #575: the live ETH loop acted on logs a reorg removed.
+func TestRemovedByReorg(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+
+	if removedByReorg(logger, "SendPacket", big.NewInt(7), gethtypes.Log{BlockNumber: 100}) {
+		t.Fatal("a canonical log was treated as removed")
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("a canonical log produced output: %q", buf.String())
+	}
+
+	if !removedByReorg(logger, "AckPacket", big.NewInt(7), gethtypes.Log{BlockNumber: 100, Removed: true}) {
+		t.Fatal("a removed log was acted on")
+	}
+	if got := buf.String(); !strings.Contains(got, "WARN ") || !strings.Contains(got, "AckPacket seq=7 at block 100") {
+		t.Fatalf("log = %q, want a warning naming the event", got)
+	}
+	if !removedByReorg(logger, "TimeoutPacket", nil, gethtypes.Log{Removed: true}) {
+		t.Fatal("a removed log without a sequence was acted on")
 	}
 }
