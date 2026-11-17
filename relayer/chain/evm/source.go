@@ -116,6 +116,10 @@ const ethDrainInterval = 500 * time.Millisecond
 // a recv event and each EthWriteAck as an ack event. EthTimeout is skipped —
 // ETH-origin timeouts are handled by the async scanner, not this path.
 func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []chain.Event) []int) (err error) {
+	// Returning stops the inner workers: besides the caller's cancellation this
+	// function now also returns when one of them panics, and the other must not
+	// be left running for the drain below to wait on.
+	ctx, stop := context.WithCancel(ctx)
 	sub := subscriber.NewSubscriber(s.recovery)
 	// Named for the same reason as the Cosmos mirror: a stuck shutdown must name
 	// which of the two goroutines did not return, not just that "subscribe" did not.
@@ -144,6 +148,8 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 		// rather than choosing between two things the operator needs.
 		err = errors.Join(err, stuck)
 	}()
+	// Registered after the drain so it runs before it.
+	defer stop()
 
 	// Use the configured batch window so CheckEth returns multi-packet batches the
 	// handler can fold into one multicall (BatchSize=1 would defeat that).
@@ -167,6 +173,10 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case err := <-workers.Failed():
+			// An inner worker panicked. Without it this source reads no events, or
+			// hands none on, so it ends here with the cause.
+			return err
 		case batch := <-ch:
 			events, orig := eventsWithOrigins(batch.Packets, s.bb.EthPendingTracker.RemovePacketIfCurrent, s.bb.SettleOwedAck)
 			// Re-queue un-relayed packets with a waiting backoff so a packet not yet

@@ -3,6 +3,7 @@ package transaction
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 	cmtjson "github.com/cometbft/cometbft/libs/json"
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	coretypes "github.com/cometbft/cometbft/rpc/core/types"
+	cmttypes "github.com/cometbft/cometbft/types"
 	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	sdkbech32 "github.com/cosmos/cosmos-sdk/types/bech32"
@@ -94,10 +96,16 @@ type cosmosOOGRPC struct {
 	// simulation, when set, is the Simulate query's response; nil keeps the
 	// generic "simulation unavailable" failure the OOG tests rely on.
 	simulation *abci.ResponseQuery
-	broadcasts int
-	txQueries  int
-	gasLimits  []uint64
-	feeAmounts []int64
+	// simulateGasPerMsg, when non-zero, answers Simulate with this much gas for
+	// every message in the simulated transaction, so halving a batch halves it.
+	simulateGasPerMsg uint64
+	// blockMaxGas, when non-zero, is the block gas limit consensus_params reports;
+	// zero keeps the failing query, which reads as no block limit.
+	blockMaxGas int64
+	broadcasts  int
+	txQueries   int
+	gasLimits   []uint64
+	feeAmounts  []int64
 }
 
 type cosmosRPCRequest struct {
@@ -124,8 +132,20 @@ func (m *cosmosOOGRPC) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch req.Method {
 	case "consensus_params":
+		if m.blockMaxGas != 0 {
+			m.writeResult(w, req.ID, &coretypes.ResultConsensusParams{
+				BlockHeight:     1,
+				ConsensusParams: cmttypes.ConsensusParams{Block: cmttypes.BlockParams{MaxBytes: 22020096, MaxGas: m.blockMaxGas}},
+			})
+			return
+		}
 		m.writeError(w, req.ID, -32603, "block max unavailable")
 	case "abci_query":
+		if m.simulateGasPerMsg != 0 {
+			gas := m.simulateGasPerMsg * uint64(m.simulatedMsgCount(req.Params))
+			m.writeResult(w, req.ID, &coretypes.ResultABCIQuery{Response: *simulatedGasResponse(m.t, gas)})
+			return
+		}
 		if m.simulation != nil {
 			m.writeResult(w, req.ID, &coretypes.ResultABCIQuery{Response: *m.simulation})
 			return
@@ -163,6 +183,45 @@ func (m *cosmosOOGRPC) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		m.writeError(w, req.ID, -32601, "method not found")
 	}
+}
+
+// simulatedGasResponse is a successful Simulate answer reporting gasUsed.
+func simulatedGasResponse(t *testing.T, gasUsed uint64) *abci.ResponseQuery {
+	t.Helper()
+	value, err := proto.Marshal(&txservice.SimulateResponse{GasInfo: &sdk.GasInfo{GasUsed: gasUsed}})
+	if err != nil {
+		t.Fatalf("marshal simulate response: %v", err)
+	}
+	return &abci.ResponseQuery{Value: value}
+}
+
+// simulatedMsgCount counts the messages in the transaction a Simulate query carries.
+func (m *cosmosOOGRPC) simulatedMsgCount(params json.RawMessage) int {
+	var named map[string]json.RawMessage
+	if err := json.Unmarshal(params, &named); err != nil {
+		m.t.Fatalf("decode abci_query params: %v", err)
+	}
+	var dataHex string
+	if err := json.Unmarshal(named["data"], &dataHex); err != nil {
+		m.t.Fatalf("decode abci_query data: %v", err)
+	}
+	data, err := hex.DecodeString(dataHex)
+	if err != nil {
+		m.t.Fatalf("decode abci_query data hex: %v", err)
+	}
+	var simReq txservice.SimulateRequest
+	if err := proto.Unmarshal(data, &simReq); err != nil {
+		m.t.Fatalf("decode SimulateRequest: %v", err)
+	}
+	var raw txservice.TxRaw
+	if err := proto.Unmarshal(simReq.TxBytes, &raw); err != nil {
+		m.t.Fatalf("decode simulated TxRaw: %v", err)
+	}
+	var body txservice.TxBody
+	if err := proto.Unmarshal(raw.BodyBytes, &body); err != nil {
+		m.t.Fatalf("decode simulated TxBody: %v", err)
+	}
+	return len(body.Messages)
 }
 
 func testCosmosTxHash(n int) []byte {

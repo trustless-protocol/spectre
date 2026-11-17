@@ -1870,6 +1870,13 @@ type mockJSONRPC struct {
 	nonces       map[common.Address]uint64
 	nonceCalls   map[common.Address]int
 	gasPrice     *big.Int
+	// tipPrice and baseFee, when set, replace gasPrice for
+	// eth_maxPriorityFeePerGas and the header's baseFeePerGas. noTipCap makes the
+	// node refuse eth_maxPriorityFeePerGas, which is how a sender detects a
+	// legacy-priced chain.
+	tipPrice     *big.Int
+	baseFee      *big.Int
+	noTipCap     bool
 	blockGas     uint64
 	blockGases   map[string]uint64
 	callSucceeds bool
@@ -1930,7 +1937,14 @@ func (m *mockJSONRPC) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "eth_gasPrice":
 		result = fmt.Sprintf("0x%x", m.gasPrice)
 	case "eth_maxPriorityFeePerGas":
-		result = fmt.Sprintf("0x%x", m.gasPrice)
+		switch {
+		case m.noTipCap:
+			rpcErr = &jsonrpcError{Code: -32601, Message: "method not found"}
+		case m.tipPrice != nil:
+			result = fmt.Sprintf("0x%x", m.tipPrice)
+		default:
+			result = fmt.Sprintf("0x%x", m.gasPrice)
+		}
 	case "eth_getTransactionCount":
 		var address common.Address
 		if len(req.Params) > 0 {
@@ -2020,6 +2034,9 @@ func (m *mockJSONRPC) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"mixHash":          "0x0000000000000000000000000000000000000000000000000000000000000000",
 			"nonce":            "0x0000000000000000",
 			"baseFeePerGas":    fmt.Sprintf("0x%x", m.gasPrice),
+		}
+		if m.baseFee != nil {
+			result.(map[string]interface{})["baseFeePerGas"] = fmt.Sprintf("0x%x", m.baseFee)
 		}
 	case "eth_call":
 		if m.callSucceeds {

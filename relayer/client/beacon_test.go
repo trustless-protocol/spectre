@@ -676,3 +676,37 @@ func TestHttpGet_RejectsANonJSONBody(t *testing.T) {
 		t.Fatal("an HTML body decoded as a beacon genesis")
 	}
 }
+
+// #575: the beacon body was read with io.ReadAll and no bound, for as long as the
+// 30 s client timeout allowed.
+func TestHTTPGet_BoundsTheResponseBody(t *testing.T) {
+	restore := maxBeaconResponseBytes
+	maxBeaconResponseBytes = 1 << 10
+	t.Cleanup(func() { maxBeaconResponseBytes = restore })
+
+	node := rpcmock.NewBeaconNode(t)
+	node.Respond("/eth/v1/beacon/light_client/finality_update", `{"data":{"pad":"`+strings.Repeat("x", 4<<10)+`"}}`)
+	if _, err := GetFinalityUpdate(context.Background(), node.URL()); err == nil || !strings.Contains(err.Error(), "larger than") {
+		t.Fatalf("err = %v, want an oversized body refused", err)
+	}
+
+	// At the bound it is read as before.
+	node.Respond("/eth/v1/beacon/light_client/finality_update", `{"data":{"signature_slot":"42"}}`)
+	got, err := GetFinalityUpdate(context.Background(), node.URL())
+	if err != nil || got.SignatureSlot != "42" {
+		t.Fatalf("got = %+v, err = %v; want the small body decoded", got, err)
+	}
+}
+
+// An error quotes the node's message, not all of it.
+func TestHTTPGet_ErrorQuotesAShortBody(t *testing.T) {
+	node := rpcmock.NewBeaconNode(t)
+	node.Fail("/eth/v1/beacon/light_client/finality_update", http.StatusInternalServerError, strings.Repeat("e", 10<<10))
+	_, err := GetFinalityUpdate(context.Background(), node.URL())
+	if err == nil {
+		t.Fatal("a 500 was not reported")
+	}
+	if len(err.Error()) > 2*maxBeaconErrorBodyBytes {
+		t.Fatalf("error is %d bytes long; it quotes the whole body", len(err.Error()))
+	}
+}

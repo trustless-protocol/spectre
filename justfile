@@ -1,8 +1,5 @@
 set dotenv-load
 
-# cgo link path for libgaraga_rs (decentrio/ecip-gnark's Rust FFI); build it with scripts/build-garaga-ffi.sh.
-export CGO_LDFLAGS := "-L" + justfile_directory() + "/.artifacts/native " + env_var_or_default("CGO_LDFLAGS", "")
-
 # Default task lists all available tasks
 default:
   just --list

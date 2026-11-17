@@ -1,13 +1,18 @@
 package services
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	client "relayer/client"
 	relayerclient "relayer/client"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -248,7 +253,7 @@ func TestPendingPacketTracker(t *testing.T) {
 		pt.RemovePacketIfCurrent(old)
 		pt.DeferTimeoutRetryIfCurrent(stale, time.Now())
 		pt.RecordTimeoutFailureIfCurrent(stale, time.Now())
-		pt.ClearDeferralsIfCurrent(stale)
+		pt.ClearSharedDeferralsIfCurrent(stale)
 		pt.RemoveIfCurrent(stale)
 
 		got := pt.GetAll()
@@ -442,13 +447,13 @@ func TestPendingPacketTracker(t *testing.T) {
 		tracker, pkt := trackerWith(t, 23)
 		now := time.Now()
 		for i := 0; i < deferralAlertThreshold; i++ {
-			tracker.deferTimeoutRetryForTest(pkt.SourceClient, pkt.Sequence, now)
+			tracker.deferSharedTimeoutRetryForTest(pkt.SourceClient, pkt.Sequence, now)
 		}
 		if count, worst := tracker.StuckTimeouts(); count != 1 || worst != deferralAlertThreshold {
 			t.Fatalf("StuckTimeouts() = (%d, %d), want (1, %d)", count, worst, deferralAlertThreshold)
 		}
 
-		tracker.clearDeferralsForTest(pkt.SourceClient, pkt.Sequence)
+		tracker.clearSharedDeferralsForTest(pkt.SourceClient, pkt.Sequence)
 
 		if count, worst := tracker.StuckTimeouts(); count != 0 || worst != 0 {
 			t.Fatalf("StuckTimeouts() = (%d, %d) after recovery, want (0, 0)", count, worst)
@@ -820,9 +825,20 @@ func (t *PendingPacketTracker) deferTimeoutRetryForTest(sourceClient string, seq
 	return 0
 }
 
-func (t *PendingPacketTracker) clearDeferralsForTest(sourceClient string, sequence uint64) {
+func (t *PendingPacketTracker) deferSharedTimeoutRetryForTest(sourceClient string, sequence uint64, now time.Time) int {
 	if info, ok := t.currentPacketForTest(sourceClient, sequence); ok {
-		t.ClearDeferralsIfCurrent(info)
+		counts, err := t.DeferSharedTimeoutRetriesIfCurrent([]pendingPacketInfo{info}, now)
+		if err != nil || len(counts) == 0 {
+			return 0
+		}
+		return counts[0]
+	}
+	return 0
+}
+
+func (t *PendingPacketTracker) clearSharedDeferralsForTest(sourceClient string, sequence uint64) {
+	if info, ok := t.currentPacketForTest(sourceClient, sequence); ok {
+		t.ClearSharedDeferralsIfCurrent(info)
 	}
 }
 
@@ -1014,4 +1030,201 @@ func TestRecordTimeoutFailureIfCurrent(t *testing.T) {
 			t.Fatal("unknown packet must not be added to any set")
 		}
 	})
+}
+
+// makeDueForTest ends every backoff, as if its time had passed.
+func (t *PendingPacketTracker) makeDueForTest() {
+	t.mtx.Lock()
+	defer t.mtx.Unlock()
+	for key, info := range t.packets {
+		info.NotBefore = time.Time{}
+		t.packets[key] = info
+	}
+}
+
+// A recovered shared prerequisite clears what the outage caused and nothing
+// else (#575 L3).
+func TestClearSharedDeferrals_KeepsThePacketsOwnDeferrals(t *testing.T) {
+	tracker, pkt := trackerWith(t, 31)
+	now := time.Now()
+	for i := 0; i < 3; i++ {
+		tracker.deferSharedTimeoutRetryForTest(pkt.SourceClient, pkt.Sequence, now)
+	}
+	for i := 0; i < 2; i++ {
+		tracker.deferTimeoutRetryForTest(pkt.SourceClient, pkt.Sequence, now)
+	}
+	got := tracker.GetAll()[0]
+	if got.Deferrals != 5 || got.SharedDeferrals != 3 {
+		t.Fatalf("before recovery: deferrals=%d shared=%d, want 5 and 3", got.Deferrals, got.SharedDeferrals)
+	}
+
+	tracker.clearSharedDeferralsForTest(pkt.SourceClient, pkt.Sequence)
+	got = tracker.GetAll()[0]
+	if got.Deferrals != 2 || got.SharedDeferrals != 0 {
+		t.Fatalf("after recovery: deferrals=%d shared=%d, want the packet's own 2 and 0", got.Deferrals, got.SharedDeferrals)
+	}
+
+	// The next deferral continues from what is left.
+	if count := tracker.deferTimeoutRetryForTest(pkt.SourceClient, pkt.Sequence, now); count != 3 {
+		t.Fatalf("next deferral count = %d, want 3", count)
+	}
+}
+
+// A dead letter that returns after deadLetterRetention starts with no deferrals
+// of either kind. Its shared count used to survive the return, and the first
+// recovered prerequisite subtracted it from the deferrals the packet took after
+// coming back: its backoff restarted at the first rung (#575 L3).
+func TestDeadLetterReturn_ClearsSharedDeferrals(t *testing.T) {
+	tracker, pkt := trackerWith(t, 32)
+	now := time.Now()
+	for i := 0; i < 3; i++ {
+		tracker.deferSharedTimeoutRetryForTest(pkt.SourceClient, pkt.Sequence, now)
+	}
+	for i := 0; i <= maxTimeoutAttempts; i++ {
+		tracker.recordTimeoutFailureForTest(pkt.SourceClient, pkt.Sequence, now)
+	}
+	if got := tracker.DeadLetteredTimeouts(); got != 1 {
+		t.Fatalf("dead-lettered = %d, want 1", got)
+	}
+	tracker.mtx.Lock()
+	tracker.deadLettered[0].DeadLetteredAt = now.Add(-deadLetterRetention)
+	tracker.mtx.Unlock()
+	if err := tracker.PurgeStaleWithoutTimeout(time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := tracker.currentPacketForTest(pkt.SourceClient, pkt.Sequence)
+	if !ok || got.Deferrals != 0 || got.SharedDeferrals != 0 {
+		t.Fatalf("returned packet: tracked=%v deferrals=%d shared=%d, want 0 and 0", ok, got.Deferrals, got.SharedDeferrals)
+	}
+
+	// Its own deferrals after the return survive the next recovered prerequisite.
+	for i := 0; i < 2; i++ {
+		tracker.deferTimeoutRetryForTest(pkt.SourceClient, pkt.Sequence, now)
+	}
+	tracker.clearSharedDeferralsForTest(pkt.SourceClient, pkt.Sequence)
+	if got, _ := tracker.currentPacketForTest(pkt.SourceClient, pkt.Sequence); got.Deferrals != 2 {
+		t.Fatalf("deferrals after a recovered prerequisite = %d, want the packet's own 2", got.Deferrals)
+	}
+}
+
+func settledTestPacket(sequence uint64, payload []byte) channeltypesv2.Packet {
+	return channeltypesv2.Packet{
+		SourceClient: "08-wasm-0", DestinationClient: "cosmoshub-1", Sequence: sequence, TimeoutTimestamp: 1_900_000_000,
+		Payloads: []channeltypesv2.Payload{{SourcePort: "transfer", DestinationPort: "transfer", Version: "ics20-1", Encoding: "application/x-solidity-abi", Value: payload}},
+	}
+}
+
+// #575 L5: the whole state file is rewritten on every mutation, and each
+// tombstone carried its full packet. A tombstone is now its identity.
+func TestSettledTombstonesStoreIdentitiesNotPayloads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pending.json")
+	tracker, err := NewPersistentPendingPacketTracker(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := []byte("PAYLOAD-MARKER-" + strings.Repeat("x", 1000))
+	const settledCount = 200
+	for sequence := uint64(1); sequence <= settledCount; sequence++ {
+		if err := tracker.MarkSettled(settledTestPacket(sequence, marker)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedMarker := base64.StdEncoding.EncodeToString(marker)[:40]
+	if bytes.Contains(data, marker[:40]) || bytes.Contains(data, []byte(encodedMarker)) {
+		t.Fatal("the state file carries tombstone payloads")
+	}
+	if perEntry := len(data) / settledCount; perEntry > 400 {
+		t.Fatalf("state file is %d bytes for %d tombstones (%d each), want an identity-sized entry", len(data), settledCount, perEntry)
+	}
+
+	reloaded, err := NewPersistentPendingPacketTracker(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.IsSettled(settledTestPacket(7, marker)) {
+		t.Fatal("a reloaded tombstone no longer matches its packet")
+	}
+	// The identity covers the payload: a different payload is a different packet.
+	if reloaded.IsSettled(settledTestPacket(7, []byte("other"))) {
+		t.Fatal("a tombstone matched a packet with a different payload")
+	}
+	if !reloaded.Add(settledTestPacket(7, marker), 10) || reloaded.Len() != 0 {
+		t.Fatal("a reloaded tombstone did not stop the settled packet from being tracked again")
+	}
+}
+
+func TestSettledTombstonesAreCapped(t *testing.T) {
+	tracker := NewPendingPacketTracker()
+	for sequence := uint64(1); sequence <= settledPacketMaxEntries+10; sequence++ {
+		if err := tracker.MarkSettled(settledTestPacket(sequence, []byte("v"))); err != nil {
+			t.Fatal(err)
+		}
+		// Distinct SettledAt values, so "oldest" is well defined.
+		tracker.mtx.Lock()
+		identity := identifyPacket(settledTestPacket(sequence, []byte("v")))
+		tracker.settled[identity] = settledPacketInfo{SettledAt: time.Unix(int64(sequence), 0)}
+		tracker.mtx.Unlock()
+	}
+	tracker.mtx.Lock()
+	held := len(tracker.settled)
+	tracker.mtx.Unlock()
+	if held != settledPacketMaxEntries {
+		t.Fatalf("tracker holds %d tombstones, want the cap %d", held, settledPacketMaxEntries)
+	}
+	if tracker.IsSettled(settledTestPacket(1, []byte("v"))) {
+		t.Fatal("the oldest tombstone was kept past the cap")
+	}
+	if !tracker.IsSettled(settledTestPacket(settledPacketMaxEntries+10, []byte("v"))) {
+		t.Fatal("the newest tombstone was evicted")
+	}
+}
+
+// A state file written by an earlier build stored each tombstone as a whole
+// packet. It must still load, and is rewritten without the payloads.
+func TestLegacySettledTombstonesStillLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pending.json")
+	legacy := struct {
+		Version      int                   `json:"version"`
+		Packets      []pendingPacketInfo   `json:"packets"`
+		DeadLettered []pendingPacketInfo   `json:"dead_lettered"`
+		Settled      []legacySettledRecord `json:"settled"`
+	}{
+		Version: 2,
+		Settled: []legacySettledRecord{{Packet: settledTestPacket(42, []byte("legacy-payload")), SettledAt: time.Now()}},
+	}
+	data, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tracker, err := NewPersistentPendingPacketTracker(path)
+	if err != nil {
+		t.Fatalf("version 2 state did not load: %v", err)
+	}
+	if !tracker.IsSettled(settledTestPacket(42, []byte("legacy-payload"))) {
+		t.Fatal("a version 2 tombstone was lost on load")
+	}
+	rewritten, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(rewritten, []byte(base64.StdEncoding.EncodeToString([]byte("legacy-payload")))) {
+		t.Fatal("the rewritten state file still carries the legacy payload")
+	}
+	if !bytes.Contains(rewritten, []byte(`"version": 3`)) {
+		t.Fatalf("the state file was not rewritten as version 3:\n%s", rewritten)
+	}
+}
+
+func TestSettledRecordRejectsACorruptDigest(t *testing.T) {
+	if _, err := (settledRecord{SourceClient: "a", Sequence: 1, PayloadsDigest: "zz"}).identity(); err == nil {
+		t.Fatal("a corrupt digest was accepted")
+	}
 }

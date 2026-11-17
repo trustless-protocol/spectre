@@ -102,8 +102,12 @@ type Module struct {
 	track               TrackFunc
 	untrack             UntrackFunc
 	pendingSettled      PendingSettledFunc
-	markPendingSettled  MarkPendingSettledFunc
 	observeClientUpdate ClientUpdateObserver
+	// dropped holds packets out of the relay path after a permanent failure
+	// (nil: a drop lasts only until the next flush pass). See dropped.go.
+	dropped *services.DropLedger
+	// clock replaces time.Now for the drop ledger in tests.
+	clock func() time.Time
 
 	// Optional fixed-cadence forced update (nil when the destination client's
 	// freshness is fully captured by ClientExpiresAt, e.g. the beacon client).
@@ -143,6 +147,13 @@ type Module struct {
 	// chain.Permanent means for every adapter rather than about this cost.
 	sourceProbeAt time.Time
 	sourceBackoff time.Duration
+
+	// spendProbeAt is when the destination may be sent to again after an operator
+	// spending cap refused a transaction, and spendBackoff is the interval that
+	// produced it. Both zero while the caps allow sending. Guarded by batchMu. See
+	// spend_hold.go.
+	spendProbeAt time.Time
+	spendBackoff time.Duration
 
 	// clientInactive is set while the destination's light client refuses every
 	// message (frozen, or on Cosmos otherwise not Active); clientProbeAt and
@@ -236,11 +247,36 @@ func (m *Module) Run(ctx context.Context) error {
 		runErr = ctx.Err()
 	case err := <-subscribeErr:
 		runErr = err
+	case err := <-workers.Failed():
+		// A worker panicked and has stopped. Stop the rest rather than run on
+		// without it: a path with no flush loop or no refresh loop looks alive.
+		runErr = err
 	}
 	cancel()
 
-	if running := workers.Drain(workergroup.ShutdownDrainTimeout); len(running) > 0 {
-		return fmt.Errorf("relay %s: shutdown drain timed out after %s; workers still running: %v", m.name, workergroup.ShutdownDrainTimeout, running)
+	running := workers.Drain(workergroup.ShutdownDrainTimeout)
+	// A panic may also arrive while the others are stopping, so it is read again
+	// after the drain, once every worker that will report has.
+	var panicked error
+	if errors.Is(runErr, workergroup.ErrWorkerPanicked) {
+		panicked = runErr
+	} else {
+		select {
+		case panicked = <-workers.Failed():
+		default:
+		}
+	}
+	if len(running) > 0 {
+		stuck := fmt.Errorf("relay %s: shutdown drain timed out after %s; workers still running: %v", m.name, workergroup.ShutdownDrainTimeout, running)
+		// A panic is the usual reason a worker cannot stop: it left a mutex
+		// locked. Report the cause together with the symptom.
+		if panicked != nil {
+			return errors.Join(fmt.Errorf("relay %s: %w", m.name, panicked), stuck)
+		}
+		return stuck
+	}
+	if panicked != nil {
+		return fmt.Errorf("relay %s: %w", m.name, panicked)
 	}
 
 	// On SIGTERM the select above takes ctx.Done() and never reads subscribeErr,
@@ -328,6 +364,10 @@ func (m *Module) flushLoop(ctx context.Context, lister chain.PacketLister) {
 // next pass, so keeping a second pending buffer beside the subscriber's would
 // duplicate state and give a packet two independent retry clocks.
 func (m *Module) flushOnce(ctx context.Context, lister chain.PacketLister) {
+	// Before the enumeration and whatever it returns: a dropped packet that
+	// settled is no longer listed, so no later step would see it again.
+	m.reconcileDropped(ctx)
+
 	candidates, err := lister.UnrelayedPackets(ctx)
 	if err != nil {
 		log.Printf("WARN [%s Relay] packet flush: %v", m.name, err)
@@ -363,6 +403,14 @@ func (m *Module) flushOnce(ctx context.Context, lister chain.PacketLister) {
 	unsettled = m.dropSettled(ctx, unsettled)
 	if len(unsettled) == 0 {
 		m.beats.record(workerPacketFlush, strconv.Itoa(len(candidates))+" outstanding, settled while this pass ran")
+		return
+	}
+	// A packet dropped after a permanent failure is still outstanding, so the
+	// enumeration returns it on every pass. Leave it out until its backoff
+	// expires, or this pass re-proves and re-submits what already failed.
+	unsettled, held := m.dropHeld(unsettled)
+	if len(unsettled) == 0 {
+		m.beats.record(workerPacketFlush, strconv.Itoa(len(candidates))+" outstanding, "+strconv.Itoa(held)+" held after a permanent failure")
 		return
 	}
 	// Worth a line every time. A flush that finds work means the block scan
@@ -405,7 +453,9 @@ func (m *Module) dropSettled(ctx context.Context, candidates []chain.Event) []ch
 		}
 		if !settled {
 			unsettled = append(unsettled, e)
+			continue
 		}
+		m.clearDrop(e.Type, e.Raw)
 	}
 	return unsettled
 }
@@ -545,6 +595,7 @@ func (m *Module) periodicUpdateLoop(ctx context.Context) {
 func (m *Module) settleDelivered(packets []chain.RelayPacket) {
 	for _, p := range packets {
 		m.waits.clearPacket(p)
+		m.clearDrop(p.Type, p.Packet)
 		// A delivered receive is the moment the acknowledgement becomes owed, and
 		// a relayed acknowledgement is the moment the debt closes. Recording it
 		// here rather than where the event was observed is deliberate: an ack is

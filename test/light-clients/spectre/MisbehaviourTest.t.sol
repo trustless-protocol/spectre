@@ -27,7 +27,7 @@ contract MockVerifierForMisbehaviour is ISignatureVerifier {
     function verifyBatchProof(
         uint16,
         uint256[8] calldata,
-        uint256[2] calldata,
+        uint256[4] calldata,
         uint256[2] calldata,
         bytes32[] calldata,
         bool[] calldata,

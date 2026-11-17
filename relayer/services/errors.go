@@ -49,6 +49,15 @@ var ErrPermanentRelayFailure = errors.New("permanent relay failure (on-chain rev
 // event or are refunded by the timeout scanner.
 var ErrUnresolvedEVMNonce = errors.New("the outcome of an abandoned EVM nonce is unresolved; the payload must not be resubmitted")
 
+// ErrSpendCapExceeded marks a transaction that was NOT signed because an operator
+// spending cap does not allow it: an EVM fee above ETH_MAX_FEE_PER_GAS, or a
+// Cosmos gas limit or fee above COSMOS_MAX_GAS / COSMOS_MAX_FEE.
+//
+// It is not ErrPermanentRelayFailure. Nothing reached a chain, and the same send
+// succeeds once fees fall or the operator raises the cap, so the packets are
+// re-queued, never dropped.
+var ErrSpendCapExceeded = errors.New("operator spending cap exceeded")
+
 // ErrValidatorCacheRace marks an updateClient revert caused by the validator
 // cache changing after the relayer built a cached/delta update. Rebuilding the
 // update from fresh on-chain state, or retrying with the full validator set, can

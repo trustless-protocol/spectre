@@ -24,10 +24,10 @@ type HeaderBuilder interface {
 	Name() string
 	// BuildHeader builds the client message header for request and returns the L2
 	// block the header COMMITS. The caller advances client state by that height, not
-	// the requested one. Today they are always equal — the header is the canonical
-	// block at the requested height — but the contract is kept because a settlement
-	// builder committed whatever block its newest proven game covered, which could be
-	// far lower, and re-introducing one must not silently overstate the client height.
+	// the requested one. They differ when threshold attestors cannot sign the
+	// requested block and the builder steps down to a lower attestor frontier
+	// (attestedHeaderBuilder.BuildHeader); reporting the requested height then would
+	// overstate the client height.
 	// A transient RPC error is fine: the module re-queues via chain.Retryable in Build.
 	BuildHeader(ctx context.Context, request HeaderRequest) (msg ClientMessage, committedHeight uint64, err error)
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -173,6 +174,20 @@ func validateStartupKeys() error {
 	return (&transaction.Handler{}).ValidateKeys()
 }
 
+// validateSpendingCaps refuses to start a relay loop without the operator's
+// spending caps. The loop signs transactions for as long as it runs, at fees and
+// gas limits read from the RPC, so "no cap" has to be a decision the operator
+// wrote down (0), not the result of a variable nobody set (#575 M3, M4).
+//
+// Both chains are checked before either is reported, so one run names every
+// missing variable.
+//
+// One-shot commands do not call this: they honour a cap that is set and run
+// without one that is not.
+func validateSpendingCaps() error {
+	return errors.Join(transaction.RequireEVMFeeCaps(), transaction.RequireCosmosSpendCaps())
+}
+
 // requireRelayPath is `start`'s half of the one-path rule: loadConfig has already
 // refused a file with more than one path (rejectExtraRelayPaths), so what is left
 // to check is that there is one at all. `start` with nothing to relay is a config
@@ -231,6 +246,7 @@ func validateStartupConfig(stdCtx context.Context, cfg *appConfig, stateDir stri
 	findings = append(findings, validateCosmosChainID(stdCtx, cfg)...)
 	findings = append(findings, validateEVMDeployments(stdCtx, cfg)...)
 	findings = append(findings, validateAttestorHeads(stdCtx, cfg)...)
+	findings = append(findings, validateL2AttestorSet(stdCtx, cfg)...)
 
 	if len(findings) == 0 {
 		log.Printf("[start] config validated")

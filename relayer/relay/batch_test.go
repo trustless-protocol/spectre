@@ -401,9 +401,6 @@ func TestHandleBatch(t *testing.T) {
 			WithPendingSettlementGuard(func(raw []byte) bool {
 				var tracked channeltypesv2.Packet
 				return tracked.Unmarshal(raw) == nil && bb.PendingTracker.IsSettled(tracked)
-			}, func(raw []byte) bool {
-				var tracked channeltypesv2.Packet
-				return tracked.Unmarshal(raw) == nil && bb.PendingTracker.MarkSettled(tracked) == nil
 			}),
 		)
 
@@ -421,7 +418,10 @@ func TestHandleBatch(t *testing.T) {
 		bb.ReleaseCosmosInFlight(batch)
 	})
 
-	t.Run("destination receipt skips before tracking and leaves a tombstone", func(t *testing.T) {
+	// A destination read is not final (an EVM or L2 read at latest): it skips the
+	// pass and writes no tombstone, so a receipt a reorg removes does not cost the
+	// send its timeout refund (#575 L1).
+	t.Run("destination receipt skips before tracking and writes no tombstone", func(t *testing.T) {
 		tracker := services.NewPendingPacketTracker()
 		packet := channeltypesv2.Packet{
 			SourceClient: "cosmos-client", DestinationClient: "eth-client", Sequence: 42,
@@ -443,9 +443,6 @@ func TestHandleBatch(t *testing.T) {
 			WithPendingSettlementGuard(func(raw []byte) bool {
 				var tracked channeltypesv2.Packet
 				return tracked.Unmarshal(raw) == nil && tracker.IsSettled(tracked)
-			}, func(raw []byte) bool {
-				var tracked channeltypesv2.Packet
-				return tracked.Unmarshal(raw) == nil && tracker.MarkSettled(tracked) == nil
 			}),
 		)
 
@@ -457,8 +454,40 @@ func TestHandleBatch(t *testing.T) {
 		if trackCalls != 0 || src.membershipCalls != 0 || dst.relayCalls != 0 {
 			t.Fatalf("received packet track=%d proof=%d relay=%d, want none", trackCalls, src.membershipCalls, dst.relayCalls)
 		}
-		if !tracker.IsSettled(packet) {
-			t.Fatal("destination receipt did not persist a terminal tombstone")
+		if tracker.IsSettled(packet) {
+			t.Fatal("a destination read wrote the terminal tombstone; only the terminal Cosmos event may")
+		}
+	})
+
+	// The send was tracked on an earlier pass. A receipt seen at latest must not
+	// remove that record: if a reorg takes the receipt away, the record is what
+	// lets the timeout scanner refund the send.
+	t.Run("destination receipt keeps an existing pending record", func(t *testing.T) {
+		tracker := services.NewPendingPacketTracker()
+		packet := channeltypesv2.Packet{
+			SourceClient: "cosmos-client", DestinationClient: "eth-client", Sequence: 43,
+			TimeoutTimestamp: 1000, Payloads: []channeltypesv2.Payload{{Value: []byte("tracked")}},
+		}
+		raw, err := packet.Marshal()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !tracker.Add(packet, 7) {
+			t.Fatal("add pending record")
+		}
+		m := NewModule("cosmos->eth", "client-0", &mockSource{latest: 100}, &mockDest{hasReceipt: true}, &mockBuilder{},
+			WithPendingSettlementGuard(func(raw []byte) bool {
+				var tracked channeltypesv2.Packet
+				return tracked.Unmarshal(raw) == nil && tracker.IsSettled(tracked)
+			}),
+		)
+
+		m.handleBatch(context.Background(), []chain.Event{{Type: chain.SendPacket, Sequence: packet.Sequence, Height: 7, Raw: raw}})
+		if got := tracker.Len(); got != 1 {
+			t.Fatalf("pending records = %d, want the send still tracked", got)
+		}
+		if tracker.IsSettled(packet) {
+			t.Fatal("a destination read wrote the terminal tombstone")
 		}
 	})
 
@@ -496,9 +525,6 @@ func TestHandleBatch(t *testing.T) {
 			WithPendingSettlementGuard(func(raw []byte) bool {
 				var tracked channeltypesv2.Packet
 				return tracked.Unmarshal(raw) == nil && tracker.IsSettled(tracked)
-			}, func(raw []byte) bool {
-				var tracked channeltypesv2.Packet
-				return tracked.Unmarshal(raw) == nil && tracker.MarkSettled(tracked) == nil
 			}),
 		)
 
@@ -527,11 +553,8 @@ func TestHandleBatch(t *testing.T) {
 				t.Fatalf("duplicate packet seq=%d reached the destination", pkt2.Sequence)
 			}
 		}
-		if !tracker.IsSettled(pkt2) {
-			t.Fatal("duplicate packet did not persist a terminal tombstone")
-		}
-		if tracker.IsSettled(pkt1) || tracker.IsSettled(pkt3) {
-			t.Fatal("a sibling packet was wrongly marked settled")
+		if tracker.IsSettled(pkt1) || tracker.IsSettled(pkt2) || tracker.IsSettled(pkt3) {
+			t.Fatal("a destination read wrote a terminal tombstone; only the terminal Cosmos event may")
 		}
 	})
 
@@ -584,9 +607,6 @@ func TestHandleBatch(t *testing.T) {
 			WithPendingSettlementGuard(func(raw []byte) bool {
 				var tracked channeltypesv2.Packet
 				return tracked.Unmarshal(raw) == nil && tracker.IsSettled(tracked)
-			}, func(raw []byte) bool {
-				var tracked channeltypesv2.Packet
-				return tracked.Unmarshal(raw) == nil && tracker.MarkSettled(tracked) == nil
 			}),
 		)
 
@@ -1087,7 +1107,7 @@ func TestHandleBatch(t *testing.T) {
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					m := NewModule("l2->cosmos", "client-0", tc.source, &mockDest{}, &mockBuilder{},
-						WithPendingSettlementGuard(func([]byte) bool { return true }, nil))
+						WithPendingSettlementGuard(func([]byte) bool { return true }))
 					if tc.setHeldOff {
 						m.sourceProbeAt = time.Now().Add(time.Minute)
 					}

@@ -69,6 +69,13 @@ func newUpdateEthClientCommand(logger *zap.Logger, txHandler services.Transactio
 			// execution RPC: neither participates in building or submitting an
 			// 08-wasm beacon update, and requiring either weakens the recovery tool.
 			cosmosEndpoint := services.CosmosEndpoint{Client: cosmosClient}
+			// start's Cosmos signer lock (#575): refused, naming the lock file,
+			// while another process signs with COSMOS_PRIVATE_KEY.
+			releaseSignerLock, err := acquireCosmosSignerLock()
+			if err != nil {
+				return err
+			}
+			defer releaseSignerLock()
 			worker := services.NewOneShotWorker(txHandler, nil)
 			result, err := worker.BuildEthClientUpdateHeaders(
 				cmd.Context(),

@@ -42,7 +42,9 @@ contract SignatureVerifier is ISignatureVerifier {
     ///                 BN254 Solidity verifier signature from
     ///                 `verifyProof(uint256[8],uint256[2],uint256[2],uint256[N])`
     ///                 to `verifyProof(bytes,uint256[N])` where the bytes blob
-    ///                 packs (proof || commitments || commitmentPok) = 384 bytes.
+    ///                 packs (proof || commitments || commitmentPok) = 256 + 2 * 64 + 64 = 448 bytes:
+    ///                 the circuit has two BSB22 commitments, one for the ECIP challenge and one for
+    ///                 gnark's emulated arithmetic, and a single folded proof of knowledge.
     ///                 `N` now equals 2 because the SHA-256 digest is exposed
     ///                 as two 128-bit public field elements.
     struct BucketVerifier {
@@ -82,7 +84,7 @@ contract SignatureVerifier is ISignatureVerifier {
     function verifyBatchProof(
         uint16 bucket,
         uint256[8] calldata proof,
-        uint256[2] calldata commitments,
+        uint256[4] calldata commitments,
         uint256[2] calldata commitmentPok,
         bytes32[] calldata pubkeys,
         bool[] calldata active,

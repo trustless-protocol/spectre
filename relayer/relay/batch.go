@@ -57,7 +57,17 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 	// race this handoff, so first consult the durable terminal tombstone and the
 	// destination, then check the tombstone again after Add. Only SendPacket opens
 	// a receive that can time out; Add is idempotent.
+	//
+	// The destination answer only skips this pass. On an EVM or L2 destination it
+	// is a read at `latest`, which a reorg can undo, so it must not write the
+	// terminal tombstone: that removed the pending record, and a receipt that then
+	// disappeared left the send with no timeout refund from this relayer for the
+	// tombstone's 30 days (#575 L1). Only the terminal Cosmos event, which is
+	// final, writes it (SubscribeCosmos). A send skipped here is offered again by
+	// the flush backstop for as long as its Cosmos commitment is outstanding.
 	trackFailed := make([]bool, len(events))
+	// skippedSettled marks an event this pass neither relays nor re-queues: it
+	// is settled, or the drop ledger holds it after a permanent failure.
 	skippedSettled := make([]bool, len(events))
 	var requeue []int
 	for i, e := range events {
@@ -74,11 +84,8 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 			log.Printf("WARN [%s Relay] settlement check for %s seq=%d: %v; relaying anyway",
 				m.name, e.Type, e.Sequence, err)
 		} else if settled {
-			if e.Type == chain.SendPacket && m.markPendingSettled != nil && !m.markPendingSettled(e.Raw) {
-				log.Printf("ERROR [%s Relay][ATTENTION] packet %s seq=%d is settled but its terminal tombstone was not persisted",
-					m.name, e.Type, e.Sequence)
-			}
 			log.Printf("[%s Relay] skipping settled packet %s seq=%d before proof", m.name, e.Type, e.Sequence)
+			m.clearDrop(e.Type, e.Raw)
 			skippedSettled[i] = true
 			continue
 		}
@@ -97,6 +104,15 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 				skippedSettled[i] = true
 			}
 		}
+		// A packet dropped after a permanent failure is held until its backoff
+		// expires. Checked after tracking, so a held send still gets its timeout
+		// refund, and before the client update below, so a batch of held packets
+		// costs no update and no proof. It is not re-queued: the flush backstop
+		// offers it again, and a held packet left in a source's pending buffer
+		// would pin that source's recovery cursor.
+		if !skippedSettled[i] && m.heldAfterDrop(e.Type, e.Raw) {
+			skippedSettled[i] = true
+		}
 	}
 
 	// Cheap precondition: the highest source height provable right now. A packet
@@ -110,12 +126,17 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 	// refund -- the hold skips the RPC and the proof, never the durable record.
 	//
 	// The destination-client hold works the same way: a frozen client rejects
-	// everything, so nothing is proven or submitted until it is active again.
+	// everything, so nothing is proven or submitted until it is active again. So
+	// does the spending-cap hold (spend_hold.go).
 	if m.clientHeldOff(ctx, time.Now()) {
 		m.lastWait = waitLogState{}
 		return nonSettledIndices(skippedSettled)
 	}
 	if m.sourceHeldOff(time.Now()) {
+		m.lastWait = waitLogState{}
+		return nonSettledIndices(skippedSettled)
+	}
+	if m.spendHeldOff(time.Now()) {
 		m.lastWait = waitLogState{}
 		return nonSettledIndices(skippedSettled)
 	}
@@ -193,6 +214,9 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 	// tx completes, preventing a refresh update from racing the planned height.
 	foldPlan, proofHeight, err := m.prepareBatchUpdate(ctx, relayable)
 	if err != nil {
+		if m.holdIfSpendCapped(err, fmt.Sprintf("update client to height %d", relayable)) {
+			return append(requeue, provableIdx...)
+		}
 		if m.holdIfClientInactive(ctx, err) {
 			return append(requeue, provableIdx...)
 		}
@@ -257,7 +281,8 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 				// Dead for good — forget any recorded wait so the entry does not sit in
 				// the tracker until its TTL.
 				m.waits.clear(e)
-				log.Printf(dropToken(e.Type)+"[%s Relay] DROP packet (%s seq=%d height=%d): %v", m.name, e.Type, e.Sequence, e.Height, err)
+				log.Printf(dropToken(e.Type)+"[%s Relay] DROP packet (%s seq=%d height=%d): %v%s",
+					m.name, e.Type, e.Sequence, e.Height, err, m.recordDrop(e.Type, e.Sequence, e.Raw, err))
 				continue
 			}
 			// Every proof failure here re-queues, so logging one line per flush
@@ -376,12 +401,21 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 			m.lastHeight = foldPlan.update.Height // foldPlan still holds m.mu
 			m.recordClientUpdate(foldPlan.update)
 			foldPlan.release()
+		} else if errors.Is(err, services.ErrSpendCapExceeded) {
+			if !m.sendUpdateApart(ctx, foldPlan, len(packets)) {
+				return append(requeue, relayedIdx...)
+			}
+			// The client now covers the height the proofs were built at, so what
+			// follows is an ordinary packets-only send.
+			foldPlan = nil
+			committed, err = m.dst.RelayPackets(ctx, packets)
 		}
 	} else {
 		committed, err = m.dst.RelayPackets(ctx, packets)
 	}
 	if err == nil {
 		m.noteClientActive("")
+		m.noteSpendAllowed()
 		m.settleDelivered(packets)
 		return requeue
 	}
@@ -410,6 +444,15 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 		}
 	}
 
+	// A spending cap refused to sign: nothing reached the chain, and a plain
+	// re-queue rebuilds the update and the proofs every flush for as long as the
+	// cap stays binding.
+	if m.holdIfSpendCapped(err, fmt.Sprintf("relay %d packet(s) at height %d", len(packets), proofHeight)) {
+		if foldPlan != nil {
+			foldPlan.release()
+		}
+		return append(requeue, relayedIdx...)
+	}
 	// The client refused, not the packets: hold the direction and keep them all.
 	// Checked before the permanent/transient split, because neither ending is
 	// right -- a drop loses the packets, and a plain re-queue retries every flush
@@ -492,6 +535,9 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 			// any packet, so nothing may be dropped: hold them all and let the
 			// next flush rebuild against whatever the client then trusts.
 			foldPlan.release()
+			if m.holdIfSpendCapped(updateErr, fmt.Sprintf("client update at height %d, sent alone", foldPlan.update.Height)) {
+				return append(requeue, relayedIdx...)
+			}
 			if m.holdIfClientInactive(ctx, updateErr) {
 				return append(requeue, relayedIdx...)
 			}
@@ -528,8 +574,9 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 	// per-packet txs are acceptable to avoid losing valid packets.
 	if len(packets) == 1 {
 		m.waits.clearPacket(packets[0]) // dead for good — stop reporting a wait for it
-		log.Printf(dropToken(packets[0].Type)+"[%s Relay] DROP packet (%s seq=%d) at height %d (permanent): %v",
-			m.name, packets[0].Type, packets[0].Sequence, proofHeight, err)
+		log.Printf(dropToken(packets[0].Type)+"[%s Relay] DROP packet (%s seq=%d) at height %d (permanent): %v%s",
+			m.name, packets[0].Type, packets[0].Sequence, proofHeight, err,
+			m.recordDrop(packets[0].Type, packets[0].Sequence, packets[0].Packet, err))
 		return requeue
 	}
 	log.Printf("WARN [%s Relay] permanent batch failure at height %d (%v); isolating %d packet(s) individually", m.name, proofHeight, err, len(packets))
@@ -560,6 +607,9 @@ func (m *Module) submitFoldedUpdateAlone(ctx context.Context, foldPlan *foldedUp
 	// Destination.UpdateClient, not the folding path: RelayWithUpdate is
 	// specified to carry packets, and there are none.
 	if err := m.dst.UpdateClient(ctx, m.clientID, foldPlan.update); err != nil {
+		if m.holdIfSpendCapped(err, fmt.Sprintf("client update (no relayable packets) to height %d", foldPlan.update.Height)) {
+			return
+		}
 		if m.holdIfClientInactive(ctx, err) {
 			return
 		}
@@ -567,11 +617,41 @@ func (m *Module) submitFoldedUpdateAlone(ctx context.Context, foldPlan *foldedUp
 			m.name, foldPlan.update.Height, err)
 		return
 	}
+	m.noteSpendAllowed()
 	m.lastHeight = foldPlan.update.Height // foldPlan still holds m.mu
 	m.recordClientUpdate(foldPlan.update)
 	foldPlan.release()
 	log.Printf("[%s Relay] advanced client to height %d with no packets to relay",
 		m.name, foldPlan.update.Height)
+}
+
+// sendUpdateApart submits a folded update on its own after a spending cap
+// refused the folded transaction, and reports whether it landed. When it did
+// not, the caller re-queues the packets; a refusal by the cap or by an inactive
+// client has already armed its hold.
+//
+// A Cosmos cap bounds one transaction, and one carrying the update and every
+// packet can be over it while each part is not. Holding instead retried the
+// same folded batch, each time with an update to a newer height, and an
+// L2->Cosmos path, whose client nothing else updates, stopped (#575 M4). The
+// packets then go out on the path that splits. An EVM cap prices gas, so there
+// the update alone is refused too, before a nonce is taken.
+func (m *Module) sendUpdateApart(ctx context.Context, foldPlan *foldedUpdatePlan, packets int) bool {
+	err := m.dst.UpdateClient(ctx, m.clientID, foldPlan.update)
+	if err != nil {
+		foldPlan.release()
+		what := fmt.Sprintf("client update at height %d, sent apart from %d packet(s)", foldPlan.update.Height, packets)
+		if !m.holdIfSpendCapped(err, what) && !m.holdIfClientInactive(ctx, err) {
+			log.Printf("WARN [%s Relay] %s: %v; re-queued", m.name, what, err)
+		}
+		return false
+	}
+	m.lastHeight = foldPlan.update.Height // foldPlan still holds m.mu
+	m.recordClientUpdate(foldPlan.update)
+	foldPlan.release()
+	log.Printf("[%s Relay] the spending cap refused update + %d packet(s) as one transaction; the update landed alone at height %d, sending the packets",
+		m.name, packets, foldPlan.update.Height)
+	return true
 }
 
 type foldedUpdatePlan struct {
@@ -708,6 +788,11 @@ func (m *Module) relayIsolated(ctx context.Context, packets []chain.RelayPacket,
 				requeue = append(requeue, relayedIdx[j:]...)
 				break
 			}
+			// The cap refuses every singleton after this one too.
+			if m.holdIfSpendCapped(err, fmt.Sprintf("isolated relay (%s seq=%d height=%d)", p.Type, p.Sequence, p.Height)) {
+				requeue = append(requeue, relayedIdx[j:]...)
+				break
+			}
 			if chain.IsPermanent(err) {
 				if status, inactive := m.destinationClientInactive(ctx); inactive {
 					m.noteClientInactive(status, err)
@@ -715,7 +800,8 @@ func (m *Module) relayIsolated(ctx context.Context, packets []chain.RelayPacket,
 					break
 				}
 				m.waits.clearPacket(p) // dead for good — stop reporting a wait for it
-				log.Printf(dropToken(p.Type)+"[%s Relay] DROP packet (%s seq=%d height=%d, permanent): %v", m.name, p.Type, p.Sequence, p.Height, err)
+				log.Printf(dropToken(p.Type)+"[%s Relay] DROP packet (%s seq=%d height=%d, permanent): %v%s",
+					m.name, p.Type, p.Sequence, p.Height, err, m.recordDrop(p.Type, p.Sequence, p.Packet, err))
 				continue
 			}
 			if m.holdIfClientInactive(ctx, err) {
@@ -727,6 +813,7 @@ func (m *Module) relayIsolated(ctx context.Context, packets []chain.RelayPacket,
 			continue
 		}
 		m.noteClientActive("")
+		m.noteSpendAllowed()
 		m.settleDelivered(single)
 	}
 	return requeue

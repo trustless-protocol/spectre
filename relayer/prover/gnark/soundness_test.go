@@ -6,8 +6,10 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/sha512"
 	"testing"
 
+	"filippo.io/edwards25519"
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/std/math/uints"
 	"github.com/consensys/gnark/test"
@@ -491,5 +493,87 @@ func TestBatchCircuit_RejectsTamperedSignature(t *testing.T) {
 
 	if err := test.IsSolved(NewBatchCircuit(n), assignment, ecc.BN254.ScalarField()); err == nil {
 		t.Fatal("cofactored batch equation accepted a tampered signature (GF-09)")
+	}
+}
+
+// nonceSig signs msg with the nonce r = ±a, a being the signer's secret scalar, so R = rB
+// is A itself (negate false) or -A (negate true). It is an ordinary valid Ed25519
+// signature (S = r + k*a, k = H(R || A || msg)) with the one property that makes the batch
+// verifier's per-row ECIP check degenerate: R and A are the same point up to sign.
+func nonceSig(t *testing.T, seedByte byte, msg []byte, negate bool) (pub, sig []byte) {
+	t.Helper()
+	seed := make([]byte, ed25519.SeedSize)
+	seed[0] = seedByte
+	h := sha512.Sum512(seed)
+	a, err := edwards25519.NewScalar().SetBytesWithClamping(h[:32])
+	if err != nil {
+		t.Fatalf("clamp secret scalar: %v", err)
+	}
+	A := new(edwards25519.Point).ScalarBaseMult(a)
+	r := a
+	if negate {
+		r = new(edwards25519.Scalar).Negate(a)
+	}
+	R := new(edwards25519.Point).ScalarBaseMult(r)
+	kh := sha512.New()
+	kh.Write(R.Bytes())
+	kh.Write(A.Bytes())
+	kh.Write(msg)
+	k, err := edwards25519.NewScalar().SetUniformBytes(kh.Sum(nil))
+	if err != nil {
+		t.Fatalf("challenge scalar: %v", err)
+	}
+	S := new(edwards25519.Scalar).MultiplyAdd(k, a, r)
+	pub, sig = A.Bytes(), append(R.Bytes(), S.Bytes()...)
+	if !ed25519.Verify(pub, msg, sig) {
+		t.Fatalf("crafted signature (negate=%v) does not verify", negate)
+	}
+	if negate == (string(sig[:32]) == string(pub)) {
+		t.Fatalf("crafted signature has the wrong R (negate=%v)", negate)
+	}
+	return pub, sig
+}
+
+// TestBatchCircuit_AcceptsRIsPlusMinusA is the decentrio/ecip-gnark#26 regression on the
+// Spectre side: a batch whose signers have R = A or R = -A is valid Ed25519 and must still
+// be provable. The ECIP soundness fix must not reject it, or a validator whose signature
+// happens to take that shape would stall the light client.
+func TestBatchCircuit_AcceptsRIsPlusMinusA(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping in-circuit solve in -short mode")
+	}
+	const n = 4
+
+	var blockHash [32]byte
+	for i := range blockHash {
+		blockHash[i] = byte(0x70 + i)
+	}
+	vote := soundnessVote(blockHash)
+
+	plainPub, plainPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	plusPub, plusSig := nonceSig(t, 1, vote, false)
+	minusPub, minusSig := nonceSig(t, 2, vote, true)
+
+	padded, err := witness.PadWithDummies([]witness.ValidatorSignature{
+		{Signature: ed25519.Sign(plainPriv, vote), PublicKey: plainPub, SignedBytes: vote, Active: true},
+		{Signature: plusSig, PublicKey: plusPub, SignedBytes: vote, Active: true},
+		{Signature: minusSig, PublicKey: minusPub, SignedBytes: vote, Active: true},
+	}, n)
+	if err != nil {
+		t.Fatalf("witness.PadWithDummies: %v", err)
+	}
+	hash, err := witness.ComputeWitnessHash(padded)
+	if err != nil {
+		t.Fatalf("witness.ComputeWitnessHash: %v", err)
+	}
+	assignment, err := buildBatchAssignment(padded, hash)
+	if err != nil {
+		t.Fatalf("buildBatchAssignment: %v", err)
+	}
+	if err := test.IsSolved(NewBatchCircuit(n), assignment, ecc.BN254.ScalarField()); err != nil {
+		t.Fatalf("a batch with R = A and R = -A signers was rejected: %v", err)
 	}
 }

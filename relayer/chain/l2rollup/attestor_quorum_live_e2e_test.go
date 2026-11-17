@@ -129,7 +129,7 @@ func TestLiveAttestorQuorumE2E(t *testing.T) {
 	build := func(t *testing.T, addresses ...string) (*l2rollup.SignedAttestedL2Header, error) {
 		t.Helper()
 		builder, buildErr := l2rollup.NewAttestedHeaderBuilder(l2, env.router, env.l2ChainID, env.set,
-			endpoints(addresses...), env.srcChain, env.head.RunMode(), "quorum-e2e")
+			endpoints(addresses...), env.srcChain, env.head.RunMode(), env.head != l2rollup.Finalized, "quorum-e2e")
 		if buildErr != nil {
 			t.Fatalf("NewAttestedHeaderBuilder: %v", buildErr)
 		}

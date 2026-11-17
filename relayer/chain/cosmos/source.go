@@ -233,6 +233,10 @@ const drainInterval = 500 * time.Millisecond
 // as a chain.Event. It uses the batch config (not BatchSize=1) so CheckCosmos
 // returns multi-packet batches the module folds into one RelayPackets multicall.
 func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []chain.Event) []int) (err error) {
+	// Returning stops the inner workers: besides the caller's cancellation this
+	// function now also returns when one of them panics, and the other must not
+	// be left running for the drain below to wait on.
+	ctx, stop := context.WithCancel(ctx)
 	sub := subscriber.NewSubscriber(s.recovery)
 	// Named rather than anonymous: when a shutdown times out, the module reports
 	// "workers still running: [subscribe]" and the two goroutines below are what
@@ -263,6 +267,8 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 		// rather than choosing between two things the operator needs.
 		err = errors.Join(err, stuck)
 	}()
+	// Registered after the drain so it runs before it.
+	defer stop()
 
 	// Use the configured batch window so CheckCosmos returns multi-packet batches
 	// the handler can fold into one multicall (BatchSize=1 would defeat that).
@@ -286,6 +292,10 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case err := <-workers.Failed():
+			// An inner worker panicked. Without it this source reads no events, or
+			// hands none on, so it ends here with the cause.
+			return err
 		case batch := <-ch:
 			events, orig := eventsWithOrigins(batch.Packets, s.ids.CosmosOnEVM)
 			// Re-queue un-relayed packets with a waiting backoff so a packet not yet

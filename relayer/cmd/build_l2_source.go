@@ -231,6 +231,16 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 			return nil, services.L2TimeoutRecovery{}, nil, fmt.Errorf("load L2 recovery state: %w", err)
 		}
 	}
+	// Same place and for the same reason: a corrupt ledger is fatal while there
+	// is still nothing open to unwind. An empty stateDir keeps it in memory.
+	dropLedgerPath := ""
+	if stateDir != "" {
+		dropLedgerPath = filepath.Join(stateDir, services.DropLedgerFileName("l2-to-cosmos"))
+	}
+	drops, err := services.NewDropLedger(dropLedgerPath)
+	if err != nil {
+		return nil, services.L2TimeoutRecovery{}, nil, fmt.Errorf("l2->cosmos: %w", err)
+	}
 
 	l2, err := relayerclient.DialEthRPC(context.Background(), cfg.L2RpcUrl, relayerclient.DefaultRPCTimeout)
 	if err != nil {
@@ -272,7 +282,7 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 	// account proof, and nothing about that is chain-specific any more. It takes the
 	// same endpoint set the source gates heights on, so the block it packages is
 	// bound to a threshold of replicas that independently recognise that height.
-	headerBuilder, err := l2rollup.NewAttestedHeaderBuilder(l2, router, chainID, cfg.Attestors, signingAttestors, cfg.AttestorSrcChain, headKind.RunMode(), fmt.Sprintf("l2-%s", cfg.kind))
+	headerBuilder, err := l2rollup.NewAttestedHeaderBuilder(l2, router, chainID, cfg.Attestors, signingAttestors, cfg.AttestorSrcChain, headKind.RunMode(), includeProvisional, fmt.Sprintf("l2-%s", cfg.kind))
 	if err != nil {
 		l2.Close()
 		if stopErr := cosmosClient.Stop(); stopErr != nil {
@@ -294,7 +304,7 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 		}
 		return nil, services.L2TimeoutRecovery{}, nil, err
 	}
-	trackL2Pending, untrackL2Pending := l2PendingTrackerHooks(timeoutReturn.svc)
+	trackL2Pending, untrackL2Pending, deliveredL2Pending := l2PendingTrackerHooks(timeoutReturn.svc)
 	source := l2rollup.NewSource(cfg.kind, l2, headKind, cfg.L2ICS26ClientID, cfg.L2WasmClientID, cfg.AttestorSrcChain, router, frontier, includeProvisional).
 		WithLogScanChunk(cfg.LogScanChunk).
 		WithRouterDeployBlock(cfg.RouterDeployBlock).
@@ -334,7 +344,9 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 		relay.WithTimeoutScanner(0, func(c context.Context) {
 			timeoutReturn.svc.ScanL2Timeouts(c, timeoutReturn.deps.Cosmos, timeoutReturn.deps.EVM, timeoutReturn.deps.IDs.CosmosOnEVM)
 		}),
-		relay.WithPacketTracker(trackL2Pending, untrackL2Pending),
+		// A receive delivered on Cosmos is final, so it closes the record with a
+		// tombstone; a terminal L2 event (WithSettleHook above) only removes it.
+		relay.WithPacketTracker(trackL2Pending, deliveredL2Pending),
 		// The mirror of the cosmos->l2 hooks, over the SAME Services: that leg
 		// records what a delivered receive owes, this one settles it when the
 		// acknowledgement returns. The overdue reporter lives here rather than on
@@ -347,6 +359,7 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 		// Cosmos still holds a commitment for. The L2 scan window is the
 		// shortest of the four paths (#308), so this is the leg that needs it most.
 		relay.WithPacketFlush(0),
+		relay.WithDropLedger(drops),
 	)
 	logger.Sugar().Infof("l2->cosmos source: %s (attestors=%d threshold=%d src_chain=%s wasm_client=%s head=%s)",
 		cfg.kind, len(cfg.AttestorEndpoints), cfg.Attestors.Threshold, cfg.AttestorSrcChain, cfg.L2WasmClientID, cfg.HeadKind)
@@ -438,7 +451,10 @@ func settleL2OwedAck(svc *services.Services) func(raw []byte) {
 	}
 }
 
-func l2PendingTrackerHooks(svc *services.Services) (relay.TrackFunc, relay.UntrackFunc) {
+// l2PendingTrackerHooks returns the L2 tracker's three operations: track a send,
+// untrack it on a terminal L2 event (no tombstone: the L2 read may not be
+// final), and close one this process delivered to Cosmos (tombstone: final).
+func l2PendingTrackerHooks(svc *services.Services) (track relay.TrackFunc, untrack, delivered relay.UntrackFunc) {
 	trackL2Pending := func(raw []byte, height uint64) bool {
 		var pkt channeltypesv2.Packet
 		if err := pkt.Unmarshal(raw); err != nil {
@@ -455,7 +471,15 @@ func l2PendingTrackerHooks(svc *services.Services) (relay.TrackFunc, relay.Untra
 		}
 		svc.UntrackL2Pending(pkt)
 	}
-	return trackL2Pending, untrackL2Pending
+	deliveredL2Pending := func(raw []byte) {
+		var pkt channeltypesv2.Packet
+		if err := pkt.Unmarshal(raw); err != nil {
+			log.Printf("ERROR [l2->cosmos Relay] settle delivered: decode packet: %v", err)
+			return
+		}
+		svc.SettleDeliveredL2Pending(pkt)
+	}
+	return trackL2Pending, untrackL2Pending, deliveredL2Pending
 }
 
 // runL2Engine drives one L2->Cosmos module until ctx is cancelled. A cancelled
